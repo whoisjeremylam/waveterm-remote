@@ -27,7 +27,7 @@ const previewElectronApi: ElectronApi = {
     onZoomFactorChange: (_callback: (zoomFactor: number) => void) => {},
     onUpdaterStatusChange: (_callback: (status: UpdaterStatus) => void) => {},
     getUpdaterStatus: () => "up-to-date",
-    getUpdaterChannel: () => "",
+    getUpdaterChannel: () => "latest",
     installAppUpdate: () => {},
     onMenuItemAbout: (_callback: () => void) => {},
     updateWindowControlsOverlay: (_rect: Dimensions) => {},
