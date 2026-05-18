@@ -106,5 +106,10 @@
 
 ### General
 
-- Remove checks to `dl.waveterm.dev` (e.g., update checks, download URLs)
+- Remove auto-updater (spec: [[.pi/specs/remove-updater.md]])
+  - [ ] Phase A: Disable `configureAutoUpdater()` in Electron main
+  - [ ] Phase B: Hide update banner + About modal update channel
+  - [ ] Phase C: Stub updater IPC APIs, simplify `updaterStatusAtom`
+  - [ ] Phase D: Set `autoupdate:enabled` default to `false`
+  - [ ] Phase E: Remove `publish` config from `electron-builder.config.cjs`
 - Evaluate which other local-first widgets to remove/diminish
