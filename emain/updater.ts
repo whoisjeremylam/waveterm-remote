@@ -228,26 +228,5 @@ let autoUpdateLock = false;
  * Configures the auto-updater based on the user's preference
  */
 export async function configureAutoUpdater() {
-    if (isDev()) {
-        console.log("skipping auto-updater in dev mode");
-        return;
-    }
-
-    // simple lock to prevent multiple auto-update configuration attempts, this should be very rare
-    if (autoUpdateLock) {
-        console.log("auto-update configuration already in progress, skipping");
-        return;
-    }
-    autoUpdateLock = true;
-
-    try {
-        console.log("Configuring updater");
-        const settings = (await RpcApi.GetFullConfigCommand(ElectronWshClient)).settings;
-        updater = new Updater(settings);
-        await updater.start();
-    } catch (e) {
-        console.warn("error configuring updater", e.toString());
-    }
-
-    autoUpdateLock = false;
+    console.log("skipping auto-updater (disabled in this build)");
 }
