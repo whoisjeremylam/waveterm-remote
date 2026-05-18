@@ -106,10 +106,16 @@
 
 ### General
 
-- Remove auto-updater (spec: [[.pi/specs/remove-updater.md]])
-  - [ ] Phase A: Disable `configureAutoUpdater()` in Electron main
-  - [ ] Phase B: Hide update banner + About modal update channel
-  - [ ] Phase C: Stub updater IPC APIs, simplify `updaterStatusAtom`
-  - [ ] Phase D: Set `autoupdate:enabled` default to `false`
-  - [ ] Phase E: Remove `publish` config from `electron-builder.config.cjs`
+- [x] Remove auto-updater (spec: [[.pi/specs/remove-updater.md]])
+  - [x] Phase A: Disable `configureAutoUpdater()` in Electron main
+  - [x] Phase B: Hide update banner + About modal update channel
+  - [x] Phase C: Stub updater IPC APIs, simplify `updaterStatusAtom`
+  - [x] Phase D: Set `autoupdate:enabled` default to `false`
+  - [x] Phase E: Remove `publish` config from `electron-builder.config.cjs`
+- [ ] Delete updater dead code (spec: [[.pi/specs/remove-updater-delete.md]])
+  - [ ] Phase A: Remove updater references from Electron main (menu, wavesrv, window, wsh)
+  - [ ] Phase B: Delete `emain/updater.ts`
+  - [ ] Phase C: Remove `electron-updater` from `package.json`
+  - [ ] Phase D: Clean up stub IPC APIs (optional)
+  - [ ] Phase E: Clean up Go autoupdate settings (deferred)
 - Evaluate which other local-first widgets to remove/diminish
