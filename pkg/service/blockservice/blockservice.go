@@ -38,11 +38,11 @@ func (bs *BlockService) GetControllerStatus(ctx context.Context, blockId string)
 func (*BlockService) SaveTerminalState_Meta() tsgenmeta.MethodMeta {
 	return tsgenmeta.MethodMeta{
 		Desc:     "save the terminal state to a blockfile",
-		ArgNames: []string{"ctx", "blockId", "state", "stateType", "ptyOffset", "termSize"},
+		ArgNames: []string{"ctx", "blockId", "state", "stateType", "ptyOffset", "termSize", "decModes"},
 	}
 }
 
-func (bs *BlockService) SaveTerminalState(ctx context.Context, blockId string, state string, stateType string, ptyOffset int64, termSize waveobj.TermSize) error {
+func (bs *BlockService) SaveTerminalState(ctx context.Context, blockId string, state string, stateType string, ptyOffset int64, termSize waveobj.TermSize, decModes string) error {
 	_, err := wstore.DBMustGet[*waveobj.Block](ctx, blockId)
 	if err != nil {
 		return err
@@ -59,6 +59,9 @@ func (bs *BlockService) SaveTerminalState(ctx context.Context, blockId string, s
 	fileMeta := wshrpc.FileMeta{
 		"ptyoffset": ptyOffset,
 		"termsize":  termSize,
+	}
+	if decModes != "" {
+		fileMeta["decmodes"] = decModes
 	}
 	err = filestore.WFS.WriteMeta(ctx, blockId, "cache:term:"+stateType, fileMeta, true)
 	if err != nil {
