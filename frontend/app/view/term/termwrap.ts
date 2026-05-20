@@ -74,6 +74,12 @@ type TermWrapOptions = {
     nodeModel?: BlockNodeModel;
 };
 
+// DEC private modes that are safe to replay on durable reconnect.
+// Mouse tracking (1000-1006) and bracketed paste (2004) are included.
+// Alternate screen (47/1049), cursor visibility (25), and synchronized
+// output (2026) are excluded to avoid unintended display side effects.
+const SafeReplayDecModes = new Set([1000, 1002, 1003, 1005, 1006, 2004]);
+
 export class TermWrap {
     tabId: string;
     blockId: string;
@@ -228,11 +234,13 @@ export class TermWrap {
                 if (params == null || params.length < 1) {
                     return false;
                 }
-                const mode = params[0] as number;
-                this.activeDecModes.add(mode);
-                if (mode === 2026) {
-                    this.lastMode2026SetTs = Date.now();
-                    this.inSyncTransaction = true;
+                for (const mode of params) {
+                    const m = mode as number;
+                    this.activeDecModes.add(m);
+                    if (m === 2026) {
+                        this.lastMode2026SetTs = Date.now();
+                        this.inSyncTransaction = true;
+                    }
                 }
                 return false;
             })
@@ -240,20 +248,36 @@ export class TermWrap {
         this.toDispose.push(
             this.terminal.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
                 if (params == null || params.length < 1) {
+                    // No parameters: clear all DEC modes
+                    this.activeDecModes.clear();
+                    if (this.inSyncTransaction) {
+                        this.lastMode2026ResetTs = Date.now();
+                        this.inSyncTransaction = false;
+                        const wasRepaint = this.inRepaintTransaction;
+                        this.inRepaintTransaction = false;
+                        if (wasRepaint && Date.now() - this.lastClearScrollbackTs <= MaxRepaintTransactionMs) {
+                            setTimeout(() => {
+                                console.log("[termwrap] repaint transaction complete, scrolling to bottom");
+                                this.terminal.scrollToBottom();
+                            }, 20);
+                        }
+                    }
                     return false;
                 }
-                const mode = params[0] as number;
-                this.activeDecModes.delete(mode);
-                if (mode === 2026) {
-                    this.lastMode2026ResetTs = Date.now();
-                    this.inSyncTransaction = false;
-                    const wasRepaint = this.inRepaintTransaction;
-                    this.inRepaintTransaction = false;
-                    if (wasRepaint && Date.now() - this.lastClearScrollbackTs <= MaxRepaintTransactionMs) {
-                        setTimeout(() => {
-                            console.log("[termwrap] repaint transaction complete, scrolling to bottom");
-                            this.terminal.scrollToBottom();
-                        }, 20);
+                for (const mode of params) {
+                    const m = mode as number;
+                    this.activeDecModes.delete(m);
+                    if (m === 2026) {
+                        this.lastMode2026ResetTs = Date.now();
+                        this.inSyncTransaction = false;
+                        const wasRepaint = this.inRepaintTransaction;
+                        this.inRepaintTransaction = false;
+                        if (wasRepaint && Date.now() - this.lastClearScrollbackTs <= MaxRepaintTransactionMs) {
+                            setTimeout(() => {
+                                console.log("[termwrap] repaint transaction complete, scrolling to bottom");
+                                this.terminal.scrollToBottom();
+                            }, 20);
+                        }
                     }
                 }
                 return false;
@@ -615,7 +639,7 @@ export class TermWrap {
         if (!decModesStr) {
             return;
         }
-        const modes = decModesStr.split(",").map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
+        const modes = decModesStr.split(",").map((s) => parseInt(s, 10)).filter((n) => !isNaN(n) && SafeReplayDecModes.has(n));
         if (modes.length === 0) {
             return;
         }

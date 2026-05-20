@@ -60,9 +60,8 @@ func (bs *BlockService) SaveTerminalState(ctx context.Context, blockId string, s
 		"ptyoffset": ptyOffset,
 		"termsize":  termSize,
 	}
-	if decModes != "" {
-		fileMeta["decmodes"] = decModes
-	}
+	// Always write decmodes (even empty string) so stale values are overwritten
+	fileMeta["decmodes"] = decModes
 	err = filestore.WFS.WriteMeta(ctx, blockId, "cache:term:"+stateType, fileMeta, true)
 	if err != nil {
 		return fmt.Errorf("cannot save terminal state meta: %w", err)
