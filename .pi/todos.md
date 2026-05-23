@@ -25,10 +25,10 @@
 
 ### High Priority — Bugfix
 
-- [ ] **Durable session auto-reconnect unreliable** (draft: [[.pi/draft-issue-autoconnect-bugs.md]])
-  - Bug #1 (P0): Route-level cooldown consumed before connection check — cooldown wasted when SSH is down
-  - Bug #2 (P0): connStates reconciliation race — buffered channel drops signals during rapid state flaps
-  - Bug #3 (P0): singleflight caches transient reconnect failures in tight timing windows
+- [x] **Durable session auto-reconnect unreliable** (draft: [[.pi/draft-issue-autoconnect-bugs.md]]) — P0 bugs fixed 2026-05-23
+  - [x] Bug #1 (P0): Route-level cooldown consumed before connection check — moved `lastAutoReconnectAttempt.Set` into `attemptAutoReconnect` after `IsConnected` passes
+  - [x] Bug #2 (P0): connStates reconciliation race — replaced `processed bool` with generation counters (`actualGen` / `procGen`); `reconcileConn` now sends follow-up signal if `actualGen != procGen` at finish
+  - [x] Bug #3 (P0): singleflight caches transient reconnect failures — split `reconnectGroup` into `reconnectConnGroup` and `reconnectRouteGroup`; route-level `attemptAutoReconnect` now calls `ReconnectJobRoute` instead of sharing the connection-level cache
   - Missing #1 (P1): `NotifySystemResumeCommand` is a no-op — system wake doesn't trigger reconnect
   - Missing #2 (P1): No network-online detection — relies on slow TCP failure detection
   - Missing #3 (P1): No SSH/TCP keepalive configuration — zombie connections persist
@@ -115,6 +115,17 @@
 - **Vertical tabs** — Tab layout optimized for remote host switching
 
 
+
+### Agent Orchestration API
+
+- [ ] **wsh Agent API** — Agent orchestration via wsh commands (spec: [[.pi/specs/wsh-agent-api.md]])
+  - Scope guardrail: "anything a human could do via the UI or keyboard"
+  - Phase 1: `--json` output on existing read commands (`block list`, `connection list`, `tab list`)
+  - Phase 2: New read commands (`block get` with scrollback, `config get`)
+  - Phase 3: Write commands (`block create` with options, `block send-keys`, `block focus`, `config set`)
+  - Phase 4: Agent helpers (`agent spawn`, `agent help`)
+  - Discovery: `WAVE_TERMINAL=1` env var + `wsh agent help`
+  - Security: no new auth surface — agent inherits user's permissions
 
 ### Forwarding Enhancements
 
