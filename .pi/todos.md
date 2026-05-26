@@ -29,10 +29,11 @@
   - [x] Bug #1 (P0): Route-level cooldown consumed before connection check — moved `lastAutoReconnectAttempt.Set` into `attemptAutoReconnect` after `IsConnected` passes
   - [x] Bug #2 (P0): connStates reconciliation race — replaced `processed bool` with generation counters (`actualGen` / `procGen`); `reconcileConn` now sends follow-up signal if `actualGen != procGen` at finish
   - [x] Bug #3 (P0): singleflight caches transient reconnect failures — split `reconnectGroup` into `reconnectConnGroup` and `reconnectRouteGroup`; route-level `attemptAutoReconnect` now calls `ReconnectJobRoute` instead of sharing the connection-level cache
+  - [x] Decision 2026-05-23: Server reboot / `wsh` death → manual reconnect (do NOT auto-restart fresh shell). Auto-restart would change durable-session semantics from "resume existing shell" to "keep shell open at all costs," creating context-loss confusion and `wsh` re-install loops.
   - Missing #1 (P1): `NotifySystemResumeCommand` is a no-op — system wake doesn't trigger reconnect
   - Missing #2 (P1): No network-online detection — relies on slow TCP failure detection
   - Missing #3 (P1): No SSH/TCP keepalive configuration — zombie connections persist
-  - Edge cases (P2): job manager death detection, respect manual disconnect, reconnect UI indicator
+  - Edge cases (P2): respect manual disconnect, reconnect UI indicator
   - GitHub issue: https://github.com/whoisjeremylam/waveterm-remote/issues/4
 
 - [x] **Tmux mouse integration lost on durable session reconnect** — FIXED 2026-05-19
@@ -132,6 +133,14 @@
 - DynamicForward (SOCKS proxy) — out of scope for v1, needs SOCKS5 handler
 - `wsh ssh -L` / `-R` CLI flags
 - UI status indicator for active port forwards
+
+### Session Persistence (Tmux + Wsh Overlap)
+
+> Jeremy's note 2026-05-23: "I frequently lose all sessions when the server automatically restarts each week (part of a backup). I have to recreate tmux sessions manually."
+
+- **Tmux session auto-restore on reconnect** — After server reboot + reconnect, automatically recreate tmux sessions (restore layout, windows, sessions). Currently lost because `wsh` / job manager dies and WaveTerm only reconnects the raw shell.
+- **Tab name sync with tmux session name** — WaveTerm tab label follows tmux session name for visibility.
+- **Bring tmux features into wsh** — Tmux provides persistence, session multiplexing, and screen visibility (for agents). Consider which tmux features overlap with WaveTerm durable sessions and where wsh could natively replicate them (session restore, window splitting, scrollback capture).
 
 ### UX Improvements
 
