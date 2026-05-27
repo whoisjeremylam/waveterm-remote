@@ -156,11 +156,12 @@ func (cm *ConnMonitor) checkConnection() {
 		cm.setConnHealthStatus(ConnHealthStatus_Stalled)
 
 		// Auto-disconnect on persistent stall (Phase 1: Gap C)
+		// Note: disconnect regardless of 'urgent' — stalled means keystrokes aren't reaching remote anyway
 		stallStart := cm.StallStartTime.Load()
 		now := time.Now().UnixMilli()
 		if stallStart == 0 {
 			cm.StallStartTime.Store(now)
-		} else if !urgent {
+		} else {
 			thresholdMs := cm.getStallDisconnectThresholdMs()
 			if now-stallStart > thresholdMs {
 				log.Printf("[conncontroller] conn:%s stall auto-disconnect after %dms, disconnecting", cm.Conn.GetName(), now-stallStart)

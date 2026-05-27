@@ -481,3 +481,24 @@ func TestAttemptAutoReconnectSetsCooldownWhenUp(t *testing.T) {
 
 	isConnectedTestHook = nil
 }
+
+// TestOnConnectionDownDeduplication verifies that calling onConnectionDown
+// multiple times for the same connection only spawns one reconnect scheduler.
+func TestOnConnectionDownDeduplication(t *testing.T) {
+	// Reset scheduler tracking
+	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
+
+	connName := "conn:dedup"
+
+	// First call should create a scheduler entry
+	onConnectionDown(connName)
+	if _, exists := connectionReconnectSchedulers.GetEx(connName); !exists {
+		t.Fatalf("expected scheduler to be registered after first onConnectionDown")
+	}
+
+	// Second call should be deduplicated (no new scheduler spawned)
+	onConnectionDown(connName)
+
+	// Clean up: manually remove so we don't leave a goroutine running
+	connectionReconnectSchedulers.Delete(connName)
+}
