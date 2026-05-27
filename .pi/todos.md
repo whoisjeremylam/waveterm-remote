@@ -30,11 +30,20 @@
   - [x] Bug #2 (P0): connStates reconciliation race — replaced `processed bool` with generation counters (`actualGen` / `procGen`); `reconcileConn` now sends follow-up signal if `actualGen != procGen` at finish
   - [x] Bug #3 (P0): singleflight caches transient reconnect failures — split `reconnectGroup` into `reconnectConnGroup` and `reconnectRouteGroup`; route-level `attemptAutoReconnect` now calls `ReconnectJobRoute` instead of sharing the connection-level cache
   - [x] Decision 2026-05-23: Server reboot / `wsh` death → manual reconnect (do NOT auto-restart fresh shell). Auto-restart would change durable-session semantics from "resume existing shell" to "keep shell open at all costs," creating context-loss confusion and `wsh` re-install loops.
-  - Missing #1 (P1): `NotifySystemResumeCommand` is a no-op — system wake doesn't trigger reconnect
-  - Missing #2 (P1): No network-online detection — relies on slow TCP failure detection
-  - Missing #3 (P1): No SSH/TCP keepalive configuration — zombie connections persist
+  - GitHub issue (problem): https://github.com/whoisjeremylam/waveterm-remote/issues/7
+  - GitHub issue (implementation): https://github.com/whoisjeremylam/waveterm-remote/issues/8
+  - Branch: `fix/auto-reconnect-detection-gaps`
+  - [ ] Phase 1 (Gap C): Auto-disconnect on stall — `ConnMonitor` detects stall but doesn't set `Status=Disconnected`
+    - Add configurable `ConnStallDisconnectThreshold` to `ConnKeywords`
+    - Trigger `conn.Close()` when stall exceeds threshold and `!isUrgent()`
+    - This makes sleep/Wi-Fi/VPN interruptions self-healing via existing `onConnectionUp`
+  - [ ] Phase 2 (Gap A): Implement `NotifySystemResumeCommand` — currently no-op stub
+    - On system wake, force disconnect/reconnect for all stalled connections
+    - Fast-path: bypass monitor tick timing
+  - [ ] Phase 3 (Gap B): Network-online polling — deferred, edge-case coverage
+    - Periodic check when durable jobs are disconnected
+    - Cross-platform network detection
   - Edge cases (P2): respect manual disconnect, reconnect UI indicator
-  - GitHub issue: https://github.com/whoisjeremylam/waveterm-remote/issues/4
 
 - [x] **Tmux mouse integration lost on durable session reconnect** — FIXED 2026-05-19
   - Bug: tmux mouse mode (click to switch windows, wheel scrollback, click-drag select) works in new sessions but NOT in reconnected durable sessions after full WaveTerm restart
