@@ -33,9 +33,10 @@
   - GitHub issue (problem): https://github.com/whoisjeremylam/waveterm-remote/issues/7
   - GitHub issue (implementation): https://github.com/whoisjeremylam/waveterm-remote/issues/8
   - Branch: `fix/auto-reconnect-detection-gaps`
-  - [ ] Phase 1 (Gap C): Auto-disconnect on stall — `ConnMonitor` detects stall but doesn't set `Status=Disconnected`
-    - Add configurable `ConnStallDisconnectThreshold` to `ConnKeywords`
-    - Trigger `conn.Close()` when stall exceeds threshold and `!isUrgent()`
+  - [x] Phase 1 (Gap C): Auto-disconnect on stall — `ConnMonitor` detects stall but doesn't set `Status=Disconnected`
+    - Commit `b4c4dbea`: Add configurable `ConnStallDisconnectThreshold` to `ConnKeywords`
+    - Trigger `conn.Close()` when stall exceeds threshold (removed `!isUrgent()` guard per spec review)
+    - Commit `a157b234`: Add `AttemptReconnect` helper + reconnect scheduler in `onConnectionDown` (fixes GAP-1)
     - This makes sleep/Wi-Fi/VPN interruptions self-healing via existing `onConnectionUp`
   - [ ] Phase 2 (Gap A): Implement `NotifySystemResumeCommand` — currently no-op stub
     - On system wake, force disconnect/reconnect for all stalled connections

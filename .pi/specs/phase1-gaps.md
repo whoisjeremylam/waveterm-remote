@@ -144,9 +144,25 @@ This is not a functional bug — `Close()` is idempotent (checks status via `lif
 | **P2** | GAP-5 | Document timing window | No code change, awareness only |
 | **P2** | GAP-6 | Consider field rename | Cosmetic |
 
-## Recommended Implementation Order
+## Resolution
 
-1. **GAP-2** (urgent guard fix) — 5 lines, fixes the core bug that prevents Phase 1 from working in the primary scenario
-2. **GAP-1** (reconnect loop) — implement Option D (reconnect scheduler in `onConnectionDown` + `NotifySystemResumeCommand` fast-path). This is what makes the whole feature actually work end-to-end.
-3. **GAP-3** (tests) — validate the corrected logic
-4. **GAP-4** (docs) — make the feature discoverable
+All gaps were addressed in commit `a157b234` on branch `fix/auto-reconnect-detection-gaps`.
+
+| Gap | Fix | Lines | File(s) |
+|-----|-----|-------|---------|
+| GAP-1 | Option A — reconnect scheduler in `onConnectionDown` + `AttemptReconnect` helper | ~120 | `pkg/jobcontroller/jobcontroller.go`, `pkg/remote/conncontroller/conncontroller.go` |
+| GAP-2 | Remove `!urgent` guard from stall-disconnect | 2 | `pkg/remote/conncontroller/connmonitor.go` |
+| GAP-3 | 11 new tests in `conncontroller_test.go`, 1 deduplication test in `jobcontroller_test.go` | ~276 | `pkg/remote/conncontroller/conncontroller_test.go`, `pkg/jobcontroller/jobcontroller_test.go` |
+| GAP-4 | Document `conn:stallautodisconnect` and `conn:stalldisconnectthreshold` | 2 | `docs/docs/connections.mdx` |
+
+**Test hooks added:** `connectInternalTestHook`, `getConnectionConfigTestHook` in `conncontroller.go` to enable unit testing without real SSH infrastructure.
+
+**End-to-end flow after fixes:**
+
+1. Connection stalls (keepalive timeout) → `ConnHealthStatus = Stalled`
+2. Stall persists > threshold (default 30s) → `disconnectOnStall()` calls `conn.Close()`
+3. `Status = Disconnected` → `FireConnChangeEvent()` → `onConnectionDown()`
+4. `onConnectionDown()` spawns `scheduleConnectionReconnect()` goroutine
+5. Scheduler attempts `Connect()` every 30s (up to 5min) while durable jobs are running
+6. When network returns, `Connect()` succeeds → `Status = Connected` → `onConnectionUp()`
+7. `onConnectionUp()` calls `ReconnectJob` for all durable sessions → sessions restored
