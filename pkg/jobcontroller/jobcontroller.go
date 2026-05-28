@@ -572,6 +572,9 @@ func HandleSystemResume(ctx context.Context) {
 			continue
 		}
 
+		// Clean up any stale scheduler entry so we don't race with it
+		connectionReconnectSchedulers.Delete(connName)
+
 		// Stalled (zombie after sleep) — force disconnect first so reconnect starts fresh
 		if status.Status == conncontroller.Status_Connected && status.ConnHealthStatus == conncontroller.ConnHealthStatus_Stalled {
 			log.Printf("[system] connection %s stalled after resume, forcing disconnect", connName)
@@ -579,12 +582,8 @@ func HandleSystemResume(ctx context.Context) {
 			if err == nil {
 				conn := conncontroller.MaybeGetConn(connOpts)
 				if conn != nil {
-					go func(c *conncontroller.SSHConn) {
-						defer func() {
-							panichandler.PanicHandler("jobcontroller:HandleSystemResume-close", recover())
-						}()
-						c.Close()
-					}(conn)
+					// Close synchronously — ensures status is Disconnected before we attempt reconnect
+					conn.Close()
 				}
 			}
 		}
@@ -686,7 +685,8 @@ func scheduleConnectionReconnect(connName string) {
 			return
 		}
 
-		ctx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
+		// Use a generous timeout for job lookup — slow DB should not kill the scheduler
+		ctx, cancelFn := context.WithTimeout(context.Background(), 15*time.Second)
 		hasJobs := hasRunningDurableJobsForConn(ctx, connName)
 		cancelFn()
 		if !hasJobs {
@@ -695,7 +695,12 @@ func scheduleConnectionReconnect(connName string) {
 		}
 
 		log.Printf("[conn:%s] attempting scheduled reconnect...", connName)
-		ctx, cancelFn = context.WithTimeout(context.Background(), 30*time.Second)
+		// In aggressive mode, use a shorter timeout so ticks don't pile up
+		connectTimeout := 30 * time.Second
+		if aggressiveMode {
+			connectTimeout = 8 * time.Second
+		}
+		ctx, cancelFn = context.WithTimeout(context.Background(), connectTimeout)
 		err = conncontroller.AttemptReconnect(ctx, connName)
 		cancelFn()
 		if err != nil {
