@@ -17,9 +17,6 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/wps"
 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
 )
-
-// TestShouldAttemptAutoReconnect verifies that the cooldown timestamp
-// is NOT consumed by shouldAttemptAutoReconnect; it is only checked.
 func TestShouldAttemptAutoReconnect(t *testing.T) {
 	// Reset global state
 	lastAutoReconnectAttempt = ds.MakeSyncMap[int64]()
@@ -485,8 +482,6 @@ func TestAttemptAutoReconnectSetsCooldownWhenUp(t *testing.T) {
 	isConnectedTestHook = nil
 }
 
-// TestOnConnectionDownDeduplication verifies that calling onConnectionDown
-// multiple times for the same connection only spawns one reconnect scheduler.
 func TestOnConnectionDownDeduplication(t *testing.T) {
 	// Reset scheduler tracking
 	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
