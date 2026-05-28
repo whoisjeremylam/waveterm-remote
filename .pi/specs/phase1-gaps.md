@@ -1,17 +1,32 @@
-# Phase 1 (Gap C) Implementation Gaps
+# Phase 1–3 Auto-Reconnect Implementation (Complete)
 
 **Branch:** `fix/auto-reconnect-detection-gaps`
 **Date:** 2026-05-27
-**Related:** Issue #7 (problem), Issue #8 (implementation plan)
+**Related:** Issue #7 (problem), Issue #8 (implementation plan), Issue #9 (future: native network hooks)
 
 ## What Phase 1 Implements
 
-Auto-disconnect on persistent stall in `ConnMonitor`: when a connection stalls (keepalive timeout) for longer than a configurable threshold (default 30s), and the user isn't actively typing, the connection is forcibly closed via `conn.Close()`. This converts a zombie "Connected" state into "Disconnected," allowing the existing auto-reconnect machinery to detect the state change.
+Auto-disconnect on persistent stall in `ConnMonitor`: when a connection stalls (keepalive timeout) for longer than a configurable threshold (default 30s), the connection is forcibly closed via `conn.Close()`. This converts a zombie "Connected" state into "Disconnected," allowing the existing auto-reconnect machinery to detect the state change.
 
 **Files changed:**
 - `pkg/remote/conncontroller/connmonitor.go` — stall tracking + disconnect logic
 - `pkg/wconfig/settingsconfig.go` — `ConnStallAutoDisconnect`, `ConnStallDisconnectThreshold`
 - `pkg/remote/sshclient.go` — merge function for new config fields
+
+## What Phase 2 Implements
+
+macOS sleep/wake fast-path: `NotifySystemResumeCommand` is no longer a no-op. On system resume (Electron `powerMonitor` event), the Go backend iterates all connections with durable jobs, forces disconnect on stalled zombies, and immediately spawns `AttemptReconnect()` goroutines — bypassing the 30s scheduler tick.
+
+**Files changed:**
+- `pkg/wshrpc/wshserver/wshserver.go` — `NotifySystemResumeCommand` calls `HandleSystemResume`
+- `pkg/jobcontroller/jobcontroller.go` — `HandleSystemResume` added
+
+## What Phase 3 Implements
+
+Aggressive reconnect scheduler: when `AttemptReconnect` fails with a network-unreachable error (dial tcp i/o timeout, no route, DNS failure), the scheduler switches from 30s to 5s interval for 2 minutes. This catches Wi-Fi/VPN return quickly without any native modules.
+
+**Files changed:**
+- `pkg/jobcontroller/jobcontroller.go` — `isNetworkUnreachableError`, aggressive mode in `scheduleConnectionReconnect`
 
 ## Gaps Found
 
@@ -146,23 +161,40 @@ This is not a functional bug — `Close()` is idempotent (checks status via `lif
 
 ## Resolution
 
-All gaps were addressed in commit `a157b234` on branch `fix/auto-reconnect-detection-gaps`.
+All gaps were addressed across commits `a157b234` (Phase 1 fixes), `1672eb37` (Phase 2 wake fast-path), and `ec341ebb` (Phase 3 aggressive scheduler).
 
-| Gap | Fix | Lines | File(s) |
-|-----|-----|-------|---------|
-| GAP-1 | Option A — reconnect scheduler in `onConnectionDown` + `AttemptReconnect` helper | ~120 | `pkg/jobcontroller/jobcontroller.go`, `pkg/remote/conncontroller/conncontroller.go` |
-| GAP-2 | Remove `!urgent` guard from stall-disconnect | 2 | `pkg/remote/conncontroller/connmonitor.go` |
-| GAP-3 | 11 new tests in `conncontroller_test.go`, 1 deduplication test in `jobcontroller_test.go` | ~276 | `pkg/remote/conncontroller/conncontroller_test.go`, `pkg/jobcontroller/jobcontroller_test.go` |
-| GAP-4 | Document `conn:stallautodisconnect` and `conn:stalldisconnectthreshold` | 2 | `docs/docs/connections.mdx` |
+| Phase | Gap | Fix | Lines | File(s) |
+|-------|-----|-----|-------|---------|
+| Phase 1 | GAP-1 | Reconnect scheduler in `onConnectionDown` + `AttemptReconnect` helper | ~120 | `pkg/jobcontroller/jobcontroller.go`, `pkg/remote/conncontroller/conncontroller.go` |
+| Phase 1 | GAP-2 | Remove `!urgent` guard from stall-disconnect | 2 | `pkg/remote/conncontroller/connmonitor.go` |
+| Phase 1 | GAP-3 | 11 new tests in `conncontroller_test.go`, 2 in `jobcontroller_test.go` | ~300 | `pkg/remote/conncontroller/conncontroller_test.go`, `pkg/jobcontroller/jobcontroller_test.go` |
+| Phase 1 | GAP-4 | Document `conn:stallautodisconnect` and `conn:stalldisconnectthreshold` | 2 | `docs/docs/connections.mdx` |
+| Phase 2 | — | `NotifySystemResumeCommand` fast-path wake | ~35 | `pkg/wshrpc/wshserver/wshserver.go`, `pkg/jobcontroller/jobcontroller.go` |
+| Phase 3 | — | Aggressive scheduler (5s interval on network-unreachable) | ~50 | `pkg/jobcontroller/jobcontroller.go` |
 
-**Test hooks added:** `connectInternalTestHook`, `getConnectionConfigTestHook` in `conncontroller.go` to enable unit testing without real SSH infrastructure.
+**Test hooks added:** `connectInternalTestHook`, `getConnectionConfigTestHook` in `conncontroller.go`; `hasRunningDurableJobsTestHook` in `jobcontroller.go`.
 
-**End-to-end flow after fixes:**
+## End-to-End Auto-Reconnect Flow
 
-1. Connection stalls (keepalive timeout) → `ConnHealthStatus = Stalled`
-2. Stall persists > threshold (default 30s) → `disconnectOnStall()` calls `conn.Close()`
-3. `Status = Disconnected` → `FireConnChangeEvent()` → `onConnectionDown()`
-4. `onConnectionDown()` spawns `scheduleConnectionReconnect()` goroutine
-5. Scheduler attempts `Connect()` every 30s (up to 5min) while durable jobs are running
-6. When network returns, `Connect()` succeeds → `Status = Connected` → `onConnectionUp()`
-7. `onConnectionUp()` calls `ReconnectJob` for all durable sessions → sessions restored
+### Sleep/Wake (macOS)
+1. macOS sleep → network drops
+2. Wake → `powerMonitor.resume` → `NotifySystemResumeCommand`
+3. `HandleSystemResume` → disconnect stalled + `AttemptReconnect()` immediately
+4. Network back? `Connect()` succeeds → `onConnectionUp` → `ReconnectJob`
+5. **Delay: ~1-2s**
+
+### Wi-Fi/VPN Change
+1. Wi-Fi drops/VPN toggles → connection stalls
+2. Stall >30s → `disconnectOnStall()` → `Status = Disconnected`
+3. `onConnectionDown` → scheduler starts
+4. First `AttemptReconnect` fails with `dial tcp: i/o timeout`
+5. Scheduler switches to aggressive: **5s interval for 2 minutes**
+6. User switches to good Wi-Fi → next 5s tick: `Connect()` succeeds
+7. **Delay: ~5-10s** (vs. ~60s before)
+
+### General Network Drop
+1. Network drops → keepalive stall detected (~20s)
+2. Stall threshold (~30s) → auto-disconnect
+3. Scheduler tries every 30s for 5 minutes
+4. Network returns within 5min → auto-reconnect, sessions restored
+5. **Delay: ~30-60s** (worst case, but fully automatic)
