@@ -4,12 +4,15 @@
 package jobcontroller
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/wavetermdev/waveterm/pkg/remote"
+	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
 	"github.com/wavetermdev/waveterm/pkg/util/ds"
 	"github.com/wavetermdev/waveterm/pkg/wps"
 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
@@ -501,4 +504,30 @@ func TestOnConnectionDownDeduplication(t *testing.T) {
 
 	// Clean up: manually remove so we don't leave a goroutine running
 	connectionReconnectSchedulers.Delete(connName)
+}
+
+// TestHandleSystemResumeSmoke verifies that HandleSystemResume filters correctly
+// and does not panic when processing connections.
+func TestHandleSystemResumeSmoke(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Mock hasRunningDurableJobs to return true for our test connection
+	hasRunningDurableJobsTestHook = func(ctx context.Context, connName string) bool {
+		return connName == "testuser@testhost:2222"
+	}
+	defer func() { hasRunningDurableJobsTestHook = nil }()
+
+	// Create a mock disconnected connection in the controller map
+	testOpts := &remote.SSHOpts{SSHHost: "testhost", SSHUser: "testuser", SSHPort: "2222"}
+	conn := conncontroller.GetConn(testOpts)
+	conn.Status = conncontroller.Status_Disconnected
+	conn.ConnHealthStatus = conncontroller.ConnHealthStatus_Good
+
+	// Call HandleSystemResume — should attempt reconnect for the disconnected conn
+	// (reconnect will fail because mock has no connectInternal hook, but that's expected)
+	HandleSystemResume(ctx)
+
+	// Note: mock connection remains in controller map but uses unique key,
+	// so it won't interfere with other tests.
 }

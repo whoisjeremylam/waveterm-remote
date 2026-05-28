@@ -38,9 +38,11 @@
     - Trigger `conn.Close()` when stall exceeds threshold (removed `!isUrgent()` guard per spec review)
     - Commit `a157b234`: Add `AttemptReconnect` helper + reconnect scheduler in `onConnectionDown` (fixes GAP-1)
     - This makes sleep/Wi-Fi/VPN interruptions self-healing via existing `onConnectionUp`
-  - [ ] Phase 2 (Gap A): Implement `NotifySystemResumeCommand` — currently no-op stub
-    - On system wake, force disconnect/reconnect for all stalled connections
-    - Fast-path: bypass monitor tick timing
+  - [x] Phase 2 (Gap A): Implement `NotifySystemResumeCommand` — commit `a157b234` + Phase 2 additions
+    - `emain.ts` already hooks `powerMonitor.on('resume')` → calls `NotifySystemResumeCommand`
+    - `wshserver.go`: `NotifySystemResumeCommand` now calls `jobcontroller.HandleSystemResume(ctx)` instead of no-op
+    - `jobcontroller.go`: `HandleSystemResume` iterates all connections, finds those with durable jobs, forces disconnect on stalled zombies, spawns `AttemptReconnect()` goroutines for immediate reconnect
+    - Fast-path: bypasses 30s scheduler tick, attempts reconnect within ~1-2s of system wake
   - [ ] Phase 3 (Gap B): Network-online polling — deferred, edge-case coverage
     - Periodic check when durable jobs are disconnected
     - Cross-platform network detection

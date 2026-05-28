@@ -18,6 +18,7 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/blocklogger"
 	"github.com/wavetermdev/waveterm/pkg/filestore"
 	"github.com/wavetermdev/waveterm/pkg/panichandler"
+	"github.com/wavetermdev/waveterm/pkg/remote"
 	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
 	"github.com/wavetermdev/waveterm/pkg/streamclient"
 	"github.com/wavetermdev/waveterm/pkg/util/ds"
@@ -109,9 +110,10 @@ var (
 	terminateJobManagerGroup singleflight.Group
 
 	// test hooks for unit testing auto-reconnect behavior
-	isConnectedTestHook    func(connName string) (bool, error)
-	reconcileOnUpTestHook  func(connName string)
-	reconcileOnDownTestHook func(connName string)
+	isConnectedTestHook              func(connName string) (bool, error)
+	reconcileOnUpTestHook            func(connName string)
+	reconcileOnDownTestHook          func(connName string)
+	hasRunningDurableJobsTestHook    func(ctx context.Context, connName string) bool
 
 	// active connection-reconnect schedulers (deduplication for onConnectionDown)
 	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
@@ -547,6 +549,62 @@ func onConnectionUp(connName string) {
 	log.Printf("[conn:%s] finished reconnecting jobs: %d/%d successful", connName, successCount, len(jobsToReconnect))
 }
 
+// HandleSystemResume is called on macOS system wake (via NotifySystemResumeCommand).
+// It forces a disconnect/reconnect cycle for all connections with running durable jobs
+// that are either stalled or disconnected, bypassing the normal monitor tick timing.
+func HandleSystemResume(ctx context.Context) {
+	log.Printf("[system] handling system resume, checking connections for fast-path reconnect")
+
+	allStatuses := conncontroller.GetAllConnStatus()
+	for _, status := range allStatuses {
+		connName := status.Connection
+		if conncontroller.IsLocalConnName(connName) {
+			continue
+		}
+		if !hasRunningDurableJobsForConn(ctx, connName) {
+			continue
+		}
+
+		// Already connected and healthy — nothing to do
+		if status.Status == conncontroller.Status_Connected && status.ConnHealthStatus == conncontroller.ConnHealthStatus_Good {
+			continue
+		}
+
+		// Stalled (zombie after sleep) — force disconnect first so reconnect starts fresh
+		if status.Status == conncontroller.Status_Connected && status.ConnHealthStatus == conncontroller.ConnHealthStatus_Stalled {
+			log.Printf("[system] connection %s stalled after resume, forcing disconnect", connName)
+			connOpts, err := remote.ParseOpts(connName)
+			if err == nil {
+				conn := conncontroller.MaybeGetConn(connOpts)
+				if conn != nil {
+					go func(c *conncontroller.SSHConn) {
+						defer func() {
+							panichandler.PanicHandler("jobcontroller:HandleSystemResume-close", recover())
+						}()
+						c.Close()
+					}(conn)
+				}
+			}
+		}
+
+		// Attempt immediate reconnect (bypasses 30s scheduler tick)
+		log.Printf("[system] fast-path reconnect for %s", connName)
+		go func(cn string) {
+			defer func() {
+				panichandler.PanicHandler("jobcontroller:HandleSystemResume-reconnect", recover())
+			}()
+			reconnectCtx, cancelFn := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancelFn()
+			err := conncontroller.AttemptReconnect(reconnectCtx, cn)
+			if err != nil {
+				log.Printf("[system] fast-path reconnect for %s failed: %v", cn, err)
+			} else {
+				log.Printf("[system] fast-path reconnect for %s succeeded", cn)
+			}
+		}(connName)
+	}
+}
+
 func onConnectionDown(connName string) {
 	log.Printf("[conn:%s] connection became disconnected", connName)
 
@@ -616,6 +674,9 @@ func scheduleConnectionReconnect(connName string) {
 
 // hasRunningDurableJobsForConn checks if a connection has any running durable jobs.
 func hasRunningDurableJobsForConn(ctx context.Context, connName string) bool {
+	if hasRunningDurableJobsTestHook != nil {
+		return hasRunningDurableJobsTestHook(ctx, connName)
+	}
 	allJobs, err := wstore.DBGetAllObjsByType[*waveobj.Job](ctx, waveobj.OType_Job)
 	if err != nil {
 		log.Printf("[conn:%s] error getting jobs for reconnect check: %v", connName, err)
