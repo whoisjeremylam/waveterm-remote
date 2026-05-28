@@ -119,8 +119,10 @@ var (
 	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
 )
 
-const ConnReconnectInterval    = 30 * time.Second
-const ConnReconnectMaxDuration = 5 * time.Minute
+const ConnReconnectInterval              = 30 * time.Second
+const ConnReconnectMaxDuration           = 5 * time.Minute
+const ConnReconnectAggressiveInterval    = 5 * time.Second
+const ConnReconnectAggressiveDuration    = 2 * time.Minute
 
 func InitJobController() {
 	go connReconcileWorker()
@@ -627,11 +629,44 @@ func onConnectionDown(connName string) {
 	}()
 }
 
+// isNetworkUnreachableError returns true when an error indicates the local
+// network is down or unreachable (e.g., Wi-Fi changed, no route, interface down).
+// It filters out server-side errors like connection refused or auth failures.
+func isNetworkUnreachableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	networkPatterns := []string{
+		"no route to host",
+		"network is unreachable",
+		"no such host",
+		"temporary failure in name resolution",
+		"connection timed out",
+	}
+	for _, p := range networkPatterns {
+		if strings.Contains(s, p) {
+			return true
+		}
+	}
+	// Dial timeout specifically (not general I/O timeout after connect)
+	if strings.Contains(s, "dial tcp") && strings.Contains(s, "i/o timeout") {
+		return true
+	}
+	return false
+}
+
 // scheduleConnectionReconnect periodically attempts to reconnect a connection
 // that has running durable jobs. It stops when the connection comes back up
 // or when no running durable jobs remain.
+// When the network appears unreachable (e.g., after Wi-Fi change), it switches
+// to aggressive mode: 5s interval for up to 2 minutes to catch the network
+// return faster.
 func scheduleConnectionReconnect(connName string) {
 	startTime := time.Now()
+	aggressiveMode := false
+	var aggressiveUntil time.Time
+
 	ticker := time.NewTicker(ConnReconnectInterval)
 	defer ticker.Stop()
 
@@ -665,9 +700,29 @@ func scheduleConnectionReconnect(connName string) {
 		cancelFn()
 		if err != nil {
 			log.Printf("[conn:%s] scheduled reconnect failed: %v", connName, err)
+
+			// Switch to aggressive mode when network is unreachable
+			if isNetworkUnreachableError(err) {
+				if !aggressiveMode {
+					log.Printf("[conn:%s] network unreachable, switching to aggressive mode (5s interval)", connName)
+					aggressiveMode = true
+				}
+				// Extend aggressive window each time we see a network error
+				aggressiveUntil = time.Now().Add(ConnReconnectAggressiveDuration)
+				ticker.Stop()
+				ticker = time.NewTicker(ConnReconnectAggressiveInterval)
+			}
 		} else {
 			log.Printf("[conn:%s] scheduled reconnect succeeded", connName)
 			return
+		}
+
+		// Return to normal interval when aggressive window expires
+		if aggressiveMode && time.Now().After(aggressiveUntil) {
+			log.Printf("[conn:%s] aggressive mode expired, returning to normal interval", connName)
+			aggressiveMode = false
+			ticker.Stop()
+			ticker = time.NewTicker(ConnReconnectInterval)
 		}
 	}
 }

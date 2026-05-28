@@ -43,9 +43,13 @@
     - `wshserver.go`: `NotifySystemResumeCommand` now calls `jobcontroller.HandleSystemResume(ctx)` instead of no-op
     - `jobcontroller.go`: `HandleSystemResume` iterates all connections, finds those with durable jobs, forces disconnect on stalled zombies, spawns `AttemptReconnect()` goroutines for immediate reconnect
     - Fast-path: bypasses 30s scheduler tick, attempts reconnect within ~1-2s of system wake
-  - [ ] Phase 3 (Gap B): Network-online polling — deferred, edge-case coverage
-    - Periodic check when durable jobs are disconnected
-    - Cross-platform network detection
+  - [x] Phase 3 (Gap B): Aggressive scheduler enhancement — implemented as Option B
+    - `isNetworkUnreachableError()` detects dial tcp i/o timeout, no route, DNS failure
+    - On network-unreachable error: switch to 5s interval for 2 minutes
+    - When user switches back to good Wi-Fi, next 5s tick reconnects automatically
+    - After 2 minutes aggressive: returns to 30s interval for remaining scheduler window
+    - If still no network after total 5 min: scheduler gives up (manual reconnect required)
+    - No native modules, zero build risk, cross-platform automatically
   - Edge cases (P2): respect manual disconnect, reconnect UI indicator
 
 - [x] **Tmux mouse integration lost on durable session reconnect** — FIXED 2026-05-19
