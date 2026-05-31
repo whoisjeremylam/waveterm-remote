@@ -1026,6 +1026,7 @@ func (conn *SSHConn) waitForDisconnect() {
 		return
 	}
 
+	statusChanged := false
 	conn.WithLock(func() {
 		// disconnects happen for a variety of reasons (like network, etc. and are typically transient)
 		// so we just set the status to "disconnected" here (not error)
@@ -1034,12 +1035,17 @@ func (conn *SSHConn) waitForDisconnect() {
 			conn.Error = err.Error()
 		}
 		if conn.Status != Status_Error {
+			if conn.Status != Status_Disconnected {
+				statusChanged = true
+			}
 			conn.Status = Status_Disconnected
 		}
 		conn.ConnHealthStatus = ConnHealthStatus_Good
 	})
-	// Fire event BEFORE closeInternal so UI updates even if cleanup blocks.
-	conn.FireConnChangeEvent()
+	// Only fire event if we actually changed status (avoid duplicate after explicit Close())
+	if statusChanged {
+		conn.FireConnChangeEvent()
+	}
 	conn.closeInternal_withlifecyclelock(client)
 }
 
