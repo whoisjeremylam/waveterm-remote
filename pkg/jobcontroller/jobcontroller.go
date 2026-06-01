@@ -722,15 +722,41 @@ func isNetworkUnreachableError(err error) bool {
 // The first reconnect attempt fires immediately; subsequent attempts follow
 // the scheduler interval. This avoids the 30s fixed delay from ticker-based
 // loops when the network returns quickly.
+func updateRetryState(connName string, attempt int, nextAttempt int64, errMsg string) {
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.SetReconnectState(attempt, nextAttempt, errMsg)
+		conn.FireConnChangeEvent()
+	}
+}
+
+func clearRetryState(connName string) {
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.ClearReconnectState()
+		conn.FireConnChangeEvent()
+	}
+}
+
 func scheduleConnectionReconnect(connName string) {
 	log.Printf("[conn:%s] reconnect scheduler started", connName)
 	startTime := time.Now()
 	aggressiveMode := false
 	var aggressiveUntil time.Time
+	attempt := 0
 
 	for {
 		if time.Since(startTime) > ConnReconnectMaxDuration {
 			log.Printf("[conn:%s] reconnect scheduler reached max duration, stopping", connName)
+			clearRetryState(connName)
 			return
 		}
 
@@ -739,6 +765,7 @@ func scheduleConnectionReconnect(connName string) {
 			log.Printf("[conn:%s] error checking connection status: %v", connName, checkErr)
 		} else if isConnected {
 			log.Printf("[conn:%s] connection is back up, stopping reconnect scheduler", connName)
+			clearRetryState(connName)
 			return
 		}
 
@@ -748,6 +775,7 @@ func scheduleConnectionReconnect(connName string) {
 		cancelFn()
 		if !hasJobs {
 			log.Printf("[conn:%s] no running durable jobs, stopping reconnect scheduler", connName)
+			clearRetryState(connName)
 			return
 		}
 
@@ -756,6 +784,8 @@ func scheduleConnectionReconnect(connName string) {
 		if checkErr != nil {
 			log.Printf("[conn:%s] skipping reconnect attempt (status check failed), will retry next interval", connName)
 		} else {
+			attempt++
+			updateRetryState(connName, attempt, 0, "") // active attempt
 			connectTimeout := 5 * time.Second
 			log.Printf("[conn:%s] scheduler attempt start (timeout=%s, aggressive=%v)", connName, connectTimeout, aggressiveMode)
 			attemptStart := time.Now()
@@ -766,6 +796,14 @@ func scheduleConnectionReconnect(connName string) {
 			if err != nil {
 				isNetErr := isNetworkUnreachableError(err)
 				log.Printf("[conn:%s] scheduler attempt failed in %v (net-unreachable=%v): %v", connName, attemptDuration, isNetErr, err)
+
+				// Update retry state with failure info and next attempt time
+				interval := ConnReconnectInterval
+				if aggressiveMode {
+					interval = ConnReconnectAggressiveInterval
+				}
+				nextAttempt := time.Now().Add(interval).UnixMilli()
+				updateRetryState(connName, attempt, nextAttempt, err.Error())
 
 				// Switch to aggressive mode when network is unreachable
 				if isNetErr {
@@ -778,6 +816,7 @@ func scheduleConnectionReconnect(connName string) {
 				}
 			} else {
 				log.Printf("[conn:%s] scheduler attempt succeeded in %v", connName, attemptDuration)
+				clearRetryState(connName)
 				return
 			}
 		}
