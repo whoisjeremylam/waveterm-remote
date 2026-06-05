@@ -60,6 +60,8 @@ const (
 	ConnErrCode_UserTimeout    = "user-timeout"
 	ConnErrCode_AuthFailed     = "auth-failed"
 	ConnErrCode_Unknown        = "unknown"
+
+	DefaultConnectionTimeout = 60 * time.Second
 )
 
 // Dial error subcodes for more granular classification
@@ -835,6 +837,7 @@ func createClientConfig(connCtx context.Context, sshKeywords *wconfig.ConnKeywor
 		Auth:              authMethods,
 		HostKeyCallback:   hostKeyCallback,
 		HostKeyAlgorithms: hostKeyAlgorithms(networkAddr),
+		Timeout:           DefaultConnectionTimeout,
 	}, nil
 }
 
@@ -843,29 +846,141 @@ func connectInternal(ctx context.Context, networkAddr string, clientConfig *ssh.
 	var err error
 	if currentClient == nil {
 		d := net.Dialer{Timeout: clientConfig.Timeout}
+		dialStart := time.Now()
 		blocklogger.Infof(ctx, "[conndebug] ssh dial %s\n", networkAddr)
 		clientConn, err = d.DialContext(ctx, "tcp", networkAddr)
+		dialDur := time.Since(dialStart)
 		if err != nil {
 			subCode := ClassifyDialErrorSubCode(err)
-			blocklogger.Infof(ctx, "[conndebug] ERROR dial error [%s]: %v\n", subCode, err)
+			blocklogger.Infof(ctx, "[conndebug] ERROR dial error [%s] after %v: %v\n", subCode, dialDur, err)
+			// Log explicit classification for scheduler diagnostics
+			if ctx.Err() != nil {
+				log.Printf("[conndebug] dial %s: context canceled/deadline after %v (ctx-err=%v, dial-err=%v)", networkAddr, dialDur, ctx.Err(), err)
+			} else {
+				log.Printf("[conndebug] dial %s: network error after %v (subcode=%s, err=%v)", networkAddr, dialDur, subCode, err)
+			}
 			return nil, utilds.MakeSubCodedError(ConnErrCode_Dial, subCode, err)
 		}
+		log.Printf("[conndebug] dial %s: succeeded in %v", networkAddr, dialDur)
 	} else {
+		dialStart := time.Now()
 		blocklogger.Infof(ctx, "[conndebug] ssh dial (from client) %s\n", networkAddr)
 		clientConn, err = currentClient.DialContext(ctx, "tcp", networkAddr)
+		dialDur := time.Since(dialStart)
 		if err != nil {
 			subCode := ClassifyDialErrorSubCode(err)
-			blocklogger.Infof(ctx, "[conndebug] ERROR dial error [%s]: %v\n", subCode, err)
+			blocklogger.Infof(ctx, "[conndebug] ERROR dial error [%s] after %v: %v\n", subCode, dialDur, err)
+			if ctx.Err() != nil {
+				log.Printf("[conndebug] proxy dial %s: context canceled/deadline after %v (ctx-err=%v, dial-err=%v)", networkAddr, dialDur, ctx.Err(), err)
+			} else {
+				log.Printf("[conndebug] proxy dial %s: network error after %v (subcode=%s, err=%v)", networkAddr, dialDur, subCode, err)
+			}
 			return nil, utilds.MakeSubCodedError(ConnErrCode_ProxyJumpDial, subCode, err)
 		}
+		log.Printf("[conndebug] proxy dial %s: succeeded in %v", networkAddr, dialDur)
 	}
-	c, chans, reqs, err := ssh.NewClientConn(clientConn, networkAddr, clientConfig)
+
+	// Enforce context deadline during SSH handshake since ssh.NewClientConn
+	// does not accept a context and can stall indefinitely on an unresponsive server.
+	// For direct TCP connections, we use SetDeadline on the net.Conn.
+	// For proxy jumps, chanConn doesn't support SetDeadline, so we use a
+	// goroutine-with-timeout pattern.
+	var sshClient *ssh.Client
+
+	if currentClient == nil {
+		// Direct connection: SetDeadline works on TCP connections.
+		// Use the context deadline if present (allows interactive auth to complete),
+		// but enforce a minimum of 5s from now to prevent indefinite stalls.
+		if deadline, ok := ctx.Deadline(); ok {
+			minDeadline := time.Now().Add(5 * time.Second)
+			if deadline.Before(minDeadline) {
+				clientConn.SetDeadline(minDeadline)
+			} else {
+				clientConn.SetDeadline(deadline)
+			}
+		} else {
+			// No context deadline — apply generous fallback
+			clientConn.SetDeadline(time.Now().Add(DefaultConnectionTimeout))
+		}
+
+		handshakeStart := time.Now()
+		c, chans, reqs, err := ssh.NewClientConn(clientConn, networkAddr, clientConfig)
+		clientConn.SetDeadline(time.Time{}) // clear deadline after handshake
+		handshakeDur := time.Since(handshakeStart)
+		if err != nil {
+			blocklogger.Infof(ctx, "[conndebug] ERROR ssh auth/negotiation: %s\n", SimpleMessageFromPossibleConnectionError(err))
+			log.Printf("[conndebug] ssh handshake %s: failed in %v (err=%v)", networkAddr, handshakeDur, err)
+			clientConn.Close()
+			return nil, err
+		}
+		log.Printf("[conndebug] ssh handshake %s: succeeded in %v", networkAddr, handshakeDur)
+		sshClient = ssh.NewClient(c, chans, reqs)
+	} else {
+		// Proxy jump: chanConn doesn't support SetDeadline.
+		// Use a goroutine-with-timeout pattern.
+		type connResult struct {
+			client *ssh.Client
+			err    error
+		}
+		resultCh := make(chan connResult, 1)
+		handshakeStart := time.Now()
+		go func() {
+			defer func() {
+				panichandler.PanicHandler("sshclient:proxyjump-handshake", recover())
+			}()
+			c, chans, reqs, err := ssh.NewClientConn(clientConn, networkAddr, clientConfig)
+			if err != nil {
+				clientConn.Close()
+				resultCh <- connResult{nil, err}
+				return
+			}
+			resultCh <- connResult{ssh.NewClient(c, chans, reqs), nil}
+		}()
+
+		var timeout time.Duration
+		if deadline, ok := ctx.Deadline(); ok {
+			minDeadline := time.Now().Add(5 * time.Second)
+			if deadline.Before(minDeadline) {
+				timeout = 5 * time.Second
+			} else {
+				timeout = time.Until(deadline)
+			}
+		} else {
+			timeout = DefaultConnectionTimeout
+		}
+
+		select {
+		case result := <-resultCh:
+			handshakeDur := time.Since(handshakeStart)
+			sshClient = result.client
+			err = result.err
+			if err != nil {
+				log.Printf("[conndebug] ssh handshake (proxy) %s: failed in %v (err=%v)", networkAddr, handshakeDur, err)
+			} else {
+				log.Printf("[conndebug] ssh handshake (proxy) %s: succeeded in %v", networkAddr, handshakeDur)
+			}
+		case <-time.After(timeout):
+			handshakeDur := time.Since(handshakeStart)
+			log.Printf("[conndebug] ssh handshake (proxy) %s: timed out after %v (timeout=%v)", networkAddr, handshakeDur, timeout)
+			clientConn.Close()
+			// Drain any late result to avoid leaking a completed client.
+			select {
+			case result := <-resultCh:
+				if result.client != nil {
+					result.client.Close()
+				}
+			default:
+			}
+			err = fmt.Errorf("ssh handshake timed out (proxy jump)")
+		}
+	}
+
 	if err != nil {
 		blocklogger.Infof(ctx, "[conndebug] ERROR ssh auth/negotiation: %s\n", SimpleMessageFromPossibleConnectionError(err))
 		return nil, err
 	}
 	blocklogger.Infof(ctx, "[conndebug] successful ssh connection to %s\n", networkAddr)
-	return ssh.NewClient(c, chans, reqs), nil
+	return sshClient, nil
 }
 
 func ConnectToClient(connCtx context.Context, opts *SSHOpts, currentClient *ssh.Client, jumpNum int32, connFlags *wconfig.ConnKeywords) (*ssh.Client, int32, error) {
@@ -1205,6 +1320,12 @@ func mergeKeywords(oldKeywords *wconfig.ConnKeywords, newKeywords *wconfig.ConnK
 	}
 	if newKeywords.SshPasswordSecretName != nil {
 		outKeywords.SshPasswordSecretName = newKeywords.SshPasswordSecretName
+	}
+	if newKeywords.ConnStallAutoDisconnect != nil {
+		outKeywords.ConnStallAutoDisconnect = newKeywords.ConnStallAutoDisconnect
+	}
+	if newKeywords.ConnStallDisconnectThreshold != nil {
+		outKeywords.ConnStallDisconnectThreshold = newKeywords.ConnStallDisconnectThreshold
 	}
 
 	return &outKeywords

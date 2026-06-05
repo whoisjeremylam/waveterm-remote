@@ -120,3 +120,69 @@
 **Key insight:** The protocol is generic AI-agent-agnostic infrastructure. The Claude-specific parts are just a regex (`/^claude\b/`) and an SVG icon. Replacing them with pi equivalents would be trivial if we want this later.
 
 **Decision:** Keep the underlying OSC 16162 shell integration infrastructure intact for now. Only the visual indicator (sparkle/Claude icon) and Wave-AI-specific tooltips were removed. If we want pi agent integration later, we can add `piActiveAtom` and a pi icon with minimal changes.
+
+## 2026-05-20: MOSH Research — Not a Priority
+
+**Finding:** MOSH (Mobile Shell) provides seamless reconnection (roaming, sleep/wake) and client-side local echo via UDP-based State Synchronization Protocol. However, it's not a priority for this fork.
+
+**Why not:**
+- **No port forwarding** — open issue since 2014, no movement. Port forwarding is a core requirement.
+- **No OSC52 clipboard** — remote programs can't put text in local clipboard.
+- **No scrollback** — only syncs visible terminal state.
+- **No file transfer** (scp/sftp).
+- **C++ only** — no Go or JS library implementations of the core protocol.
+- **Slow development** — last release 1.4.0 (October 2022).
+
+**Alternative: tsshd (trzsz-ssh)** — Go-based, supports full SSH features (port forwarding, agent forwarding, X11, scrollback, OSC52) + UDP roaming via QUIC/KCP. More architecturally relevant but would require significant integration effort.
+
+**Local echo with wsh** — Technically possible (Wave Terminal already knows screen state and intercepts keystrokes), but non-trivial (must detect line-editing vs application mode, validate predictions against round-trip timing). Low value for typical homelab latency (<50ms).
+
+## 2026-05-23: Auto-Reconnect P0 Fixed; Server Reboot → Manual Reconnect
+
+**Decision:** After fixing the three P0 auto-reconnect bugs (cooldown race, reconcile race, singleflight deduplication), we explicitly chose **NOT** to implement auto-restart of fresh shells on server reboot or `wsh` death.
+
+**Why manual reconnect:**
+- Auto-restart would change durable-session semantics from *"resume my existing remote shell"* to *"keep a shell open at all costs."*
+- Context loss (cwd, env, running processes) is confusing for users who think their old session survived.
+- Risk of `wsh` re-install loops after server reboot.
+- Cleaner to let the user explicitly click Connect and know it's a fresh session.
+
+**What we did:**
+- `ReconnectJob` now correctly detects `JobManagerGone` and marks the job done.
+- User sees `[session gone]` in the terminal and clicks Connect to start fresh.
+
+**Future direction (Jeremy's idea):** Tmux auto-restore on reconnect — instead of restarting raw shells, recreate tmux sessions/layouts after server reboot. This preserves tmux's own session persistence while giving WaveTerm visibility into the sessions.
+
+---
+
+## 2026-06-01: CPU Spin Bug — Root Cause & Fix Strategy
+
+**Decision:** Fix the `x/crypto/ssh` drain loop bug locally via `go.mod` replace directive, not by reordering cleanup in waveterm.
+
+**Root cause:** `golang.org/x/crypto@v0.52.0` `ssh/mux.go` and `ssh/channel.go` have drain loops that spin forever when `globalResponses`/`ch.msg` channels are closed. Receiving from a closed channel always succeeds immediately (returns zero value), so `default` case is never reached. Tracked as [golang/go#79658](https://github.com/golang/go/issues/79658).
+
+**Upstream fixes:** Commits 4c4d20b (mux.go) and e3e62d9 (channel.go) on May 27, 2026. Not yet in a tagged release (awaiting v0.53.0).
+
+**Why the reorder workaround (issue #22 commit eb2c659a) was rolled back:**
+- Only addressed the cleanup goroutine path, not keepalive monitors or `mux.loop()` exiting independently
+- Wake-from-sleep pprof showed 37 spinning goroutines + 37 blocked on Mutex.Lock — reorder can't prevent all
+- Original close order (client first) is correct: force-closes transport, unblocking pending `writePacket` calls
+- With the mux patch, drain loops exit immediately on closed channels regardless of call order
+
+**Implementation:**
+- `local_crypto_patch/contents/` — local copy of `x/crypto v0.52.0` with the 2-line drain loop fix applied
+- `go.mod` replace directive: `replace golang.org/x/crypto v0.52.0 => ./local_crypto_patch/contents`
+- Rollback plan: when `x/crypto >= v0.53.0` released, remove replace, delete `local_crypto_patch/`, `go mod tidy`
+
+**Consequences:**
+- 100% CPU (wifi switch) and 900% CPU (wake from sleep) bugs both resolved
+- No additional goroutines or timeouts needed in cleanup path
+- Original close order restored (client first, then listener)
+
+---
+
+**Priority order:**
+1. Fix auto-reconnect bugs in durable sessions (#4) — DONE 2026-05-23
+2. SSH port forwarding (spec ready)
+3. Remote file paste (image paste + drag-drop for SSH sessions) — primary use case: pi / Claude Code TUI
+4. MOSH/tsshd support (backlog, if roaming becomes a real pain point)

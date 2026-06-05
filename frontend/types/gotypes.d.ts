@@ -713,6 +713,8 @@ declare global {
         "conn:wshpath"?: string;
         "conn:shellpath"?: string;
         "conn:ignoresshconfig"?: boolean;
+        "conn:stallautodisconnect"?: boolean;
+        "conn:stalldisconnectthreshold"?: number;
         "display:hidden"?: boolean;
         "display:order"?: number;
         "term:*"?: boolean;
@@ -767,6 +769,9 @@ declare global {
         wshversion?: string;
         lastactivitybeforestalledtime?: number;
         keepalivesenttime?: number;
+        reconnectattempt?: number;
+        reconnectnextattempt?: number;
+        reconnecterror?: string;
     };
 
     // wshrpc.CpuDataRequest

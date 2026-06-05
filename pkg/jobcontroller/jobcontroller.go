@@ -18,6 +18,7 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/blocklogger"
 	"github.com/wavetermdev/waveterm/pkg/filestore"
 	"github.com/wavetermdev/waveterm/pkg/panichandler"
+	"github.com/wavetermdev/waveterm/pkg/remote"
 	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
 	"github.com/wavetermdev/waveterm/pkg/streamclient"
 	"github.com/wavetermdev/waveterm/pkg/util/ds"
@@ -71,7 +72,8 @@ const AutoReconnectCooldown = 30 * time.Second
 
 type connState struct {
 	actual      bool
-	processed   bool
+	procGen     int
+	actualGen   int
 	reconciling bool
 }
 
@@ -103,9 +105,24 @@ var (
 
 	lastAutoReconnectAttempt = ds.MakeSyncMap[int64]()
 
-	reconnectGroup           singleflight.Group
+	reconnectConnGroup       singleflight.Group
+	reconnectRouteGroup      singleflight.Group
 	terminateJobManagerGroup singleflight.Group
+
+	// test hooks for unit testing auto-reconnect behavior
+	isConnectedTestHook              func(connName string) (bool, error)
+	reconcileOnUpTestHook            func(connName string)
+	reconcileOnDownTestHook          func(connName string)
+	hasRunningDurableJobsTestHook    func(ctx context.Context, connName string) bool
+
+	// active connection-reconnect schedulers (deduplication for onConnectionDown)
+	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
 )
+
+const ConnReconnectInterval              = 5 * time.Second
+const ConnReconnectMaxDuration           = 5 * time.Minute
+const ConnReconnectAggressiveInterval    = 3 * time.Second
+const ConnReconnectAggressiveDuration    = 2 * time.Minute
 
 func InitJobController() {
 	go connReconcileWorker()
@@ -250,37 +267,50 @@ func reconcileAllConns() {
 	defer connStates.Unlock()
 
 	for connName, cs := range connStates.m {
-		if cs.reconciling || cs.actual == cs.processed {
+		if cs.reconciling || cs.actualGen == cs.procGen {
 			continue
 		}
 
 		cs.reconciling = true
 		actual := cs.actual
-		go reconcileConn(connName, actual)
+		actualGen := cs.actualGen
+		go reconcileConn(connName, actual, actualGen)
 	}
 }
 
-func reconcileConn(connName string, targetState bool) {
+func reconcileConn(connName string, targetState bool, targetGen int) {
 	defer func() {
 		panichandler.PanicHandler("jobcontroller:reconcileConn", recover())
 	}()
 
 	if targetState {
-		onConnectionUp(connName)
+		if reconcileOnUpTestHook != nil {
+			reconcileOnUpTestHook(connName)
+		} else {
+			onConnectionUp(connName)
+		}
 	} else {
-		onConnectionDown(connName)
+		if reconcileOnDownTestHook != nil {
+			reconcileOnDownTestHook(connName)
+		} else {
+			onConnectionDown(connName)
+		}
 	}
 
 	connStates.Lock()
-	defer connStates.Unlock()
 	if cs, exists := connStates.m[connName]; exists {
-		cs.processed = targetState
+		cs.procGen = targetGen
 		cs.reconciling = false
-	}
-
-	select {
-	case connStates.reconcileCh <- struct{}{}:
-	default:
+		needsSignal := cs.actualGen != cs.procGen
+		connStates.Unlock()
+		if needsSignal {
+			select {
+			case connStates.reconcileCh <- struct{}{}:
+			default:
+			}
+		}
+	} else {
+		connStates.Unlock()
 	}
 }
 
@@ -381,13 +411,11 @@ func shouldAttemptAutoReconnect(jobId string) bool {
 	lastAttempt, exists := lastAutoReconnectAttempt.GetEx(jobId)
 
 	if !exists {
-		lastAutoReconnectAttempt.Set(jobId, now)
 		return true
 	}
 
 	timeSinceLastAttempt := time.Duration(now-lastAttempt) * time.Second
 	if timeSinceLastAttempt >= AutoReconnectCooldown {
-		lastAutoReconnectAttempt.Set(jobId, now)
 		return true
 	}
 
@@ -401,16 +429,24 @@ func attemptAutoReconnect(jobId string, connName string) {
 
 	time.Sleep(AutoReconnectDelay)
 
-	isConnected, err := conncontroller.IsConnected(connName)
+	var isConnected bool
+	var err error
+	if isConnectedTestHook != nil {
+		isConnected, err = isConnectedTestHook(connName)
+	} else {
+		isConnected, err = conncontroller.IsConnected(connName)
+	}
 	if err != nil || !isConnected {
 		log.Printf("[job:%s] connection %s is down, skipping auto-reconnect", jobId, connName)
 		return
 	}
 
+	lastAutoReconnectAttempt.Set(jobId, time.Now().Unix())
+
 	log.Printf("[job:%s] connection %s still up after route down, attempting auto-reconnect to determine job manager status", jobId, connName)
 	ctx, cancelFn := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelFn()
-	err = ReconnectJob(ctx, jobId, nil)
+	err = ReconnectJobRoute(ctx, jobId, nil)
 	if err != nil {
 		log.Printf("[job:%s] auto-reconnect failed: %v", jobId, err)
 	} else {
@@ -440,10 +476,13 @@ func handleConnChangeEvent(event *wps.WaveEvent) {
 	connStates.Lock()
 	cs, exists := connStates.m[connName]
 	if !exists {
-		cs = &connState{actual: false, processed: false, reconciling: false}
+		cs = &connState{actual: false, procGen: 0, actualGen: 0, reconciling: false}
 		connStates.m[connName] = cs
 	}
-	cs.actual = connStatus.Connected
+	if cs.actual != connStatus.Connected {
+		cs.actual = connStatus.Connected
+		cs.actualGen++
+	}
 	connStates.Unlock()
 
 	select {
@@ -512,8 +551,309 @@ func onConnectionUp(connName string) {
 	log.Printf("[conn:%s] finished reconnecting jobs: %d/%d successful", connName, successCount, len(jobsToReconnect))
 }
 
+// HandleSystemResume is called on macOS system wake (via NotifySystemResumeCommand).
+// It forces a disconnect/reconnect cycle for all connections with running durable jobs
+// that are either stalled or disconnected, bypassing the normal monitor tick timing.
+func HandleSystemResume(ctx context.Context) {
+	log.Printf("[system] handling system resume, checking connections for fast-path reconnect")
+
+	allStatuses := conncontroller.GetAllConnStatus()
+	for _, status := range allStatuses {
+		connName := status.Connection
+		if conncontroller.IsLocalConnName(connName) {
+			continue
+		}
+		if !hasRunningDurableJobsForConn(ctx, connName) {
+			continue
+		}
+		if needsInteractiveAuth(connName) {
+			log.Printf("[system] connection %s may require interactive auth, skipping fast-path reconnect", connName)
+			continue
+		}
+
+		// Already connected and healthy — nothing to do
+		if status.Status == conncontroller.Status_Connected && status.ConnHealthStatus == conncontroller.ConnHealthStatus_Good {
+			continue
+		}
+
+		// Clean up any stale scheduler entry so we don't race with it
+		connectionReconnectSchedulers.Delete(connName)
+
+		// Stalled (zombie after sleep) — force disconnect first so reconnect starts fresh
+		if status.Status == conncontroller.Status_Connected && status.ConnHealthStatus == conncontroller.ConnHealthStatus_Stalled {
+			log.Printf("[system] connection %s stalled after resume, forcing disconnect", connName)
+			connOpts, err := remote.ParseOpts(connName)
+			if err == nil {
+				conn := conncontroller.MaybeGetConn(connOpts)
+				if conn != nil {
+					// Close synchronously — ensures status is Disconnected before we attempt reconnect
+					conn.Close()
+				}
+			}
+		}
+
+		// Attempt immediate reconnect (bypasses 30s scheduler tick)
+		log.Printf("[system] fast-path reconnect for %s", connName)
+		go func(cn string) {
+			defer func() {
+				panichandler.PanicHandler("jobcontroller:HandleSystemResume-reconnect", recover())
+			}()
+			reconnectCtx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelFn()
+			err := conncontroller.AttemptReconnect(reconnectCtx, cn)
+			if err != nil {
+				log.Printf("[system] fast-path reconnect for %s failed: %v", cn, err)
+			} else {
+				log.Printf("[system] fast-path reconnect for %s succeeded", cn)
+			}
+		}(connName)
+	}
+}
+
+// needsInteractiveAuth checks if a connection might require password or
+// keyboard-interactive authentication. When true, automatic reconnect
+// cannot succeed without user involvement, so the scheduler should skip it.
+func needsInteractiveAuth(connName string) bool {
+	config := wconfig.GetWatcher().GetFullConfig()
+	connConfig, ok := config.Connections[connName]
+	if !ok {
+		return true // safe default: assume interactive auth needed
+	}
+
+	// If batch mode is on, interactive prompts are suppressed —
+	// the attempt will just fail, so the scheduler can run (it won't block on user input)
+	if utilfn.SafeDeref(connConfig.SshBatchMode) {
+		return false
+	}
+
+	// If a password is stored in the secret store, no user prompt is needed
+	if connConfig.SshPasswordSecretName != nil && *connConfig.SshPasswordSecretName != "" {
+		return false
+	}
+
+	// Check if either interactive method is in the preferred auth order.
+	// If PreferredAuthentications is set, only those methods will be tried.
+	if connConfig.SshPreferredAuthentications != nil {
+		hasInteractive := false
+		for _, method := range connConfig.SshPreferredAuthentications {
+			if method == "password" || method == "keyboard-interactive" {
+				hasInteractive = true
+				break
+			}
+		}
+		if !hasInteractive {
+			return false // only key-based auth configured
+		}
+	}
+
+	// Check if password or keyboard-interactive auth is enabled (both default true)
+	passwordAuth := utilfn.SafeDeref(connConfig.SshPasswordAuthentication)
+	kbdAuth := utilfn.SafeDeref(connConfig.SshKbdInteractiveAuthentication)
+	return passwordAuth || kbdAuth
+}
+
 func onConnectionDown(connName string) {
 	log.Printf("[conn:%s] connection became disconnected", connName)
+
+	// Skip local connections — they don't need SSH reconnect
+	if conncontroller.IsLocalConnName(connName) {
+		return
+	}
+
+	// Skip auto-reconnect for connections that might need password input.
+	// The scheduler can't type a password — the user must reconnect manually.
+	if needsInteractiveAuth(connName) {
+		log.Printf("[conn:%s] connection may require interactive auth (password/keyboard-interactive), skipping auto-reconnect scheduler", connName)
+		return
+	}
+
+	// Deduplicate: only one scheduler per connection at a time
+	if _, exists := connectionReconnectSchedulers.GetEx(connName); exists {
+		return
+	}
+	connectionReconnectSchedulers.Set(connName, true)
+	go func() {
+		defer func() {
+			panichandler.PanicHandler("jobcontroller:scheduleConnectionReconnect", recover())
+		}()
+		defer connectionReconnectSchedulers.Delete(connName)
+		scheduleConnectionReconnect(connName)
+	}()
+}
+
+// isNetworkUnreachableError returns true when an error indicates the local
+// network is down or unreachable (e.g., Wi-Fi changed, no route, interface down).
+// It filters out server-side errors like connection refused or auth failures.
+func isNetworkUnreachableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	networkPatterns := []string{
+		"no route to host",
+		"network is unreachable",
+		"no such host",
+		"temporary failure in name resolution",
+		"connection timed out",
+		"can't assign requested address",
+		"address not available",
+	}
+	for _, p := range networkPatterns {
+		if strings.Contains(s, p) {
+			return true
+		}
+	}
+	// Dial timeout specifically (not general I/O timeout after connect)
+	if strings.Contains(s, "dial tcp") && strings.Contains(s, "i/o timeout") {
+		return true
+	}
+	if strings.Contains(s, "context deadline exceeded") {
+		return true
+	}
+	return false
+}
+
+// scheduleConnectionReconnect periodically attempts to reconnect a connection
+// that has running durable jobs. It stops when the connection comes back up
+// or when no running durable jobs remain.
+// When the network appears unreachable (e.g., after Wi-Fi change), it switches
+// to aggressive mode: 5s interval for up to 2 minutes to catch the network
+// return faster.
+// The first reconnect attempt fires immediately; subsequent attempts follow
+// the scheduler interval. This avoids the 30s fixed delay from ticker-based
+// loops when the network returns quickly.
+func updateRetryState(connName string, attempt int, nextAttempt int64, errMsg string) {
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.SetReconnectState(attempt, nextAttempt, errMsg)
+		conn.FireConnChangeEvent()
+	}
+}
+
+func clearRetryState(connName string) {
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.ClearReconnectState()
+		conn.FireConnChangeEvent()
+	}
+}
+
+func scheduleConnectionReconnect(connName string) {
+	log.Printf("[conn:%s] reconnect scheduler started", connName)
+	startTime := time.Now()
+	aggressiveMode := false
+	var aggressiveUntil time.Time
+	attempt := 0
+
+	for {
+		if time.Since(startTime) > ConnReconnectMaxDuration {
+			log.Printf("[conn:%s] reconnect scheduler reached max duration, stopping", connName)
+			clearRetryState(connName)
+			return
+		}
+
+		isConnected, checkErr := conncontroller.IsConnected(connName)
+		if checkErr != nil {
+			log.Printf("[conn:%s] error checking connection status: %v", connName, checkErr)
+		} else if isConnected {
+			log.Printf("[conn:%s] connection is back up, stopping reconnect scheduler", connName)
+			clearRetryState(connName)
+			return
+		}
+
+		// Use a generous timeout for job lookup — slow DB should not kill the scheduler
+		ctx, cancelFn := context.WithTimeout(context.Background(), 15*time.Second)
+		hasJobs := hasRunningDurableJobsForConn(ctx, connName)
+		cancelFn()
+		if !hasJobs {
+			log.Printf("[conn:%s] no running durable jobs, stopping reconnect scheduler", connName)
+			clearRetryState(connName)
+			return
+		}
+
+		// Only attempt reconnect if we successfully checked connection status.
+		// If status check failed, skip and wait for the next interval.
+		if checkErr != nil {
+			log.Printf("[conn:%s] skipping reconnect attempt (status check failed), will retry next interval", connName)
+		} else {
+			attempt++
+			updateRetryState(connName, attempt, 0, "") // active attempt
+			connectTimeout := 5 * time.Second
+			log.Printf("[conn:%s] scheduler attempt start (timeout=%s, aggressive=%v)", connName, connectTimeout, aggressiveMode)
+			attemptStart := time.Now()
+			ctx, cancelFn := context.WithTimeout(context.Background(), connectTimeout)
+			err := conncontroller.AttemptReconnect(ctx, connName)
+			cancelFn()
+			attemptDuration := time.Since(attemptStart)
+			if err != nil {
+				isNetErr := isNetworkUnreachableError(err)
+				log.Printf("[conn:%s] scheduler attempt failed in %v (net-unreachable=%v): %v", connName, attemptDuration, isNetErr, err)
+
+				// Update retry state with failure info and next attempt time
+				interval := ConnReconnectInterval
+				if aggressiveMode {
+					interval = ConnReconnectAggressiveInterval
+				}
+				nextAttempt := time.Now().Add(interval).UnixMilli()
+				updateRetryState(connName, attempt, nextAttempt, err.Error())
+
+				// Switch to aggressive mode when network is unreachable
+				if isNetErr {
+					if !aggressiveMode {
+						log.Printf("[conn:%s] network unreachable, switching to aggressive mode (5s interval)", connName)
+						aggressiveMode = true
+					}
+					// Extend aggressive window each time we see a network error
+					aggressiveUntil = time.Now().Add(ConnReconnectAggressiveDuration)
+				}
+			} else {
+				log.Printf("[conn:%s] scheduler attempt succeeded in %v", connName, attemptDuration)
+				clearRetryState(connName)
+				return
+			}
+		}
+
+		// Return to normal interval when aggressive window expires
+		if aggressiveMode && time.Now().After(aggressiveUntil) {
+			log.Printf("[conn:%s] aggressive mode expired, returning to normal interval", connName)
+			aggressiveMode = false
+		}
+
+		// Wait for next interval before retrying
+		interval := ConnReconnectInterval
+		if aggressiveMode {
+			interval = ConnReconnectAggressiveInterval
+		}
+		timer := time.NewTimer(interval)
+		<-timer.C
+		timer.Stop()
+	}
+}
+
+// hasRunningDurableJobsForConn checks if a connection has any running durable jobs.
+func hasRunningDurableJobsForConn(ctx context.Context, connName string) bool {
+	if hasRunningDurableJobsTestHook != nil {
+		return hasRunningDurableJobsTestHook(ctx, connName)
+	}
+	allJobs, err := wstore.DBGetAllObjsByType[*waveobj.Job](ctx, waveobj.OType_Job)
+	if err != nil {
+		log.Printf("[conn:%s] error getting jobs for reconnect check: %v", connName, err)
+		return false
+	}
+	for _, job := range allJobs {
+		if job.Connection == connName && isJobManagerRunning(job) {
+			return true
+		}
+	}
+	return false
 }
 
 func GetJobConnStatus(jobId string) string {
@@ -1028,7 +1368,14 @@ func remoteTerminateJobManager(ctx context.Context, job *waveobj.Job) error {
 }
 
 func ReconnectJob(ctx context.Context, jobId string, rtOpts *waveobj.RuntimeOpts) error {
-	_, err, _ := reconnectGroup.Do(jobId, func() (any, error) {
+	_, err, _ := reconnectConnGroup.Do(jobId, func() (any, error) {
+		return nil, doReconnectJob(ctx, jobId, rtOpts)
+	})
+	return err
+}
+
+func ReconnectJobRoute(ctx context.Context, jobId string, rtOpts *waveobj.RuntimeOpts) error {
+	_, err, _ := reconnectRouteGroup.Do(jobId, func() (any, error) {
 		return nil, doReconnectJob(ctx, jobId, rtOpts)
 	})
 	return err

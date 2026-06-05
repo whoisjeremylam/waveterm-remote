@@ -65,11 +65,15 @@ const (
 	ConnHealthStatus_Stalled  = "stalled"
 )
 
-const DefaultConnectionTimeout = 60 * time.Second
-
 var globalLock = &sync.Mutex{}
 var clientControllerMap = make(map[remote.SSHOpts]*SSHConn)
 var activeConnCounter = &atomic.Int32{}
+
+// test hook for connectInternal — allows mocking SSH connection in tests
+var connectInternalTestHook func(conn *SSHConn, ctx context.Context, connFlags *wconfig.ConnKeywords) error
+
+// test hook for getConnectionConfig — allows mocking per-connection settings in tests
+var getConnectionConfigTestHook func(conn *SSHConn) (wconfig.ConnKeywords, bool)
 
 type SSHConn struct {
 	lock          *sync.Mutex // this lock protects the fields in the struct from concurrent access
@@ -90,6 +94,9 @@ type SSHConn struct {
 	LastConnectTime    int64
 	ActiveConnNum      int
 	Monitor            *ConnMonitor // will not be nil
+	ReconnectAttempt     int
+	ReconnectNextAttempt int64
+	ReconnectError       string
 }
 
 var ConnServerCmdTemplate = strings.TrimSpace(
@@ -130,6 +137,22 @@ func GetNumSSHHasConnected() int {
 	return numConnected
 }
 
+func (conn *SSHConn) SetReconnectState(attempt int, nextAttempt int64, err string) {
+	conn.WithLock(func() {
+		conn.ReconnectAttempt = attempt
+		conn.ReconnectNextAttempt = nextAttempt
+		conn.ReconnectError = err
+	})
+}
+
+func (conn *SSHConn) ClearReconnectState() {
+	conn.WithLock(func() {
+		conn.ReconnectAttempt = 0
+		conn.ReconnectNextAttempt = 0
+		conn.ReconnectError = ""
+	})
+}
+
 func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 	conn.lock.Lock()
 	defer conn.lock.Unlock()
@@ -154,6 +177,9 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 		ConnHealthStatus:              conn.ConnHealthStatus,
 		LastActivityBeforeStalledTime: lastActivityBeforeStalledTime,
 		KeepAliveSentTime:             keepAliveSentTime,
+		ReconnectAttempt:              conn.ReconnectAttempt,
+		ReconnectNextAttempt:          conn.ReconnectNextAttempt,
+		ReconnectError:                conn.ReconnectError,
 	}
 }
 
@@ -183,69 +209,85 @@ func (conn *SSHConn) Close() error {
 	conn.lifecycleLock.Lock()
 	defer conn.lifecycleLock.Unlock()
 
-	defer conn.FireConnChangeEvent()
 	conn.WithLock(func() {
 		if conn.Status == Status_Connected || conn.Status == Status_Connecting {
 			// if status is init, disconnected, or error don't change it
 			conn.Status = Status_Disconnected
 		}
+		conn.ConnHealthStatus = ConnHealthStatus_Good
 	})
-	conn.closeInternal_withlifecyclelock()
+	// Fire event BEFORE closeInternal_withlifecyclelock so the UI updates
+	// even if client.Close() blocks on a dead network connection.
+	conn.FireConnChangeEvent()
+	conn.closeInternal_withlifecyclelock(nil)
 	return nil
 }
 
-func (conn *SSHConn) closeInternal_withlifecyclelock() {
+func (conn *SSHConn) closeInternal_withlifecyclelock(expectedClient *ssh.Client) {
 	// does not set status (that should happen at another level)
+
+	// Capture old references and nil them out immediately under the lock
+	// so that Connect() sees a clean state and can proceed without waiting
+	// for the potentially-blocking Close() calls below.
+	//
+	// The expectedClient guard protects all resources (Monitor, Client,
+	// DomainSockListener, ConnController) from being stolen by a stale
+	// waitForDisconnect goroutine that raced against a new Connect().
+	var oldClient *ssh.Client
+	var oldListener net.Listener
+	var oldController *ssh.Session
+	var oldMonitor *ConnMonitor
 	conn.WithLock(func() {
-		if conn.Monitor != nil {
-			conn.Monitor.Close()
-			conn.Monitor = nil
+		// If expectedClient is provided and does not match the current Client,
+		// a new connection has been established — do not steal its resources.
+		if expectedClient != nil && conn.Client != expectedClient {
+			return
 		}
+		oldClient = conn.Client
+		conn.Client = nil
+		oldListener = conn.DomainSockListener
+		conn.DomainSockListener = nil
+		conn.DomainSockName = ""
+		oldController = conn.ConnController
+		conn.ConnController = nil
+		oldMonitor = conn.Monitor
 		conn.Monitor = nil
 	})
-	client := conn.GetClient()
-	if client != nil {
-		// this MUST go first to force close the connection.
-		// the DomainSockListener.Close() sends SSH protocol packets which can block on a dead network conn
-		startTime := time.Now()
-		client.Close()
-		duration := time.Since(startTime).Milliseconds()
-		if duration > 100 {
-			log.Printf("[conncontroller] conn:%s Client.Close() took %d ms", conn.GetName(), duration)
+
+	// Run potentially-blocking cleanup in a goroutine so lifecycleLock
+	// is freed immediately. This prevents HandleSystemResume/AttemptReconnect
+	// from deadlocking when the network is down and client.Close() blocks.
+	go func() {
+		if oldClient != nil {
+			// this MUST go first to force close the connection.
+			// the DomainSockListener.Close() sends SSH protocol packets which can block on a dead network conn
+			startTime := time.Now()
+			oldClient.Close()
+			duration := time.Since(startTime).Milliseconds()
+			if duration > 100 {
+				log.Printf("[conncontroller] conn:%s Client.Close() took %d ms", conn.GetName(), duration)
+			}
 		}
-		conn.WithLock(func() {
-			conn.Client = nil
-		})
-	}
-	listener := WithLockRtn(conn, func() net.Listener {
-		return conn.DomainSockListener
-	})
-	if listener != nil {
-		startTime := time.Now()
-		listener.Close()
-		duration := time.Since(startTime).Milliseconds()
-		if duration > 100 {
-			log.Printf("[conncontroller] conn:%s DomainSockListener.Close() took %d ms", conn.GetName(), duration)
+		if oldListener != nil {
+			startTime := time.Now()
+			oldListener.Close()
+			duration := time.Since(startTime).Milliseconds()
+			if duration > 100 {
+				log.Printf("[conncontroller] conn:%s DomainSockListener.Close() took %d ms", conn.GetName(), duration)
+			}
 		}
-		conn.WithLock(func() {
-			conn.DomainSockListener = nil
-			conn.DomainSockName = ""
-		})
-	}
-	controller := WithLockRtn(conn, func() *ssh.Session {
-		return conn.ConnController
-	})
-	if controller != nil {
-		startTime := time.Now()
-		controller.Close()
-		duration := time.Since(startTime).Milliseconds()
-		if duration > 100 {
-			log.Printf("[conncontroller] conn:%s ConnController.Close() took %d ms", conn.GetName(), duration)
+		if oldController != nil {
+			startTime := time.Now()
+			oldController.Close()
+			duration := time.Since(startTime).Milliseconds()
+			if duration > 100 {
+				log.Printf("[conncontroller] conn:%s ConnController.Close() took %d ms", conn.GetName(), duration)
+			}
 		}
-		conn.WithLock(func() {
-			conn.ConnController = nil
-		})
-	}
+		if oldMonitor != nil {
+			oldMonitor.Close()
+		}
+	}()
 }
 
 func (conn *SSHConn) GetDomainSocketName() string {
@@ -485,6 +527,10 @@ func (conn *SSHConn) StartConnServer(ctx context.Context, afterUpdate bool, useR
 		return false, "", "", fmt.Errorf("unable to start conn controller command: %w", err)
 	}
 	linesChan := utilfn.StreamToLinesChan(pipeRead)
+	if ctx.Err() != nil {
+		sshSession.Close()
+		return false, "", "", fmt.Errorf("error reading wsh version: %w", ctx.Err())
+	}
 	versionLine, err := utilfn.ReadLineWithTimeout(linesChan, utilfn.TimeoutFromContext(ctx, 30*time.Second))
 	if err != nil {
 		sshSession.Close()
@@ -753,7 +799,7 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 			conn.Status = Status_Error
 			conn.Error = err.Error()
 		})
-		conn.closeInternal_withlifecyclelock()
+		conn.closeInternal_withlifecyclelock(nil)
 	} else {
 		conn.Infof(ctx, "successfully connected (wsh:%v)\n\n", conn.WshEnabled.Load())
 		conn.WithLock(func() {
@@ -896,6 +942,9 @@ func (conn *SSHConn) tryEnableWsh(ctx context.Context, clientDisplayName string)
 }
 
 func (conn *SSHConn) getConnectionConfig() (wconfig.ConnKeywords, bool) {
+	if getConnectionConfigTestHook != nil {
+		return getConnectionConfigTestHook(conn)
+	}
 	config := wconfig.GetWatcher().GetFullConfig()
 	connSettings, ok := config.Connections[conn.GetName()]
 	if !ok {
@@ -927,6 +976,9 @@ func (conn *SSHConn) persistWshInstalled(ctx context.Context, result WshCheckRes
 
 // returns (connect-error)
 func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.ConnKeywords) error {
+	if connectInternalTestHook != nil {
+		return connectInternalTestHook(conn, ctx, connFlags)
+	}
 	conn.Infof(ctx, "connectInternal %s\n", conn.GetName())
 	client, _, err := remote.ConnectToClient(ctx, conn.Opts, nil, 0, connFlags)
 	if err != nil {
@@ -966,9 +1018,9 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 }
 
 func (conn *SSHConn) waitForDisconnect() {
-	defer conn.FireConnChangeEvent()
 	client := conn.GetClient()
 	if client == nil {
+		conn.FireConnChangeEvent()
 		return
 	}
 	err := client.Wait()
@@ -979,6 +1031,24 @@ func (conn *SSHConn) waitForDisconnect() {
 	}
 	conn.lifecycleLock.Lock()
 	defer conn.lifecycleLock.Unlock()
+
+	// Guard: if a new SSH client has been established since we started waiting
+	// on this old client, do not disrupt the new connection. This happens when
+	// Close() triggers a reconnect that completes before this stale waitForDisconnect
+	// goroutine acquires lifecycleLock. Without this guard, we would overwrite
+	// Status=Connected with Status=Disconnected and close the new connection's
+	// resources (Client, DomainSockListener, ConnController), causing a
+	// connection flap and cascading reconnect failures.
+	currentClient := conn.GetClient()
+	if currentClient != nil && currentClient != client {
+		// A new SSH connection is active; this is a stale Wait() on an old
+		// client. The new connection's own waitForDisconnect goroutine will
+		// handle the new client when it eventually disconnects.
+		log.Printf("[conn:%s] stale waitForDisconnect detected, new connection is active; skipping disconnect", conn.GetName())
+		return
+	}
+
+	statusChanged := false
 	conn.WithLock(func() {
 		// disconnects happen for a variety of reasons (like network, etc. and are typically transient)
 		// so we just set the status to "disconnected" here (not error)
@@ -987,10 +1057,18 @@ func (conn *SSHConn) waitForDisconnect() {
 			conn.Error = err.Error()
 		}
 		if conn.Status != Status_Error {
+			if conn.Status != Status_Disconnected {
+				statusChanged = true
+			}
 			conn.Status = Status_Disconnected
 		}
+		conn.ConnHealthStatus = ConnHealthStatus_Good
 	})
-	conn.closeInternal_withlifecyclelock()
+	// Only fire event if we actually changed status (avoid duplicate after explicit Close())
+	if statusChanged {
+		conn.FireConnChangeEvent()
+	}
+	conn.closeInternal_withlifecyclelock(client)
 }
 
 func (conn *SSHConn) SetWshError(err error) {
@@ -1104,6 +1182,27 @@ func EnsureConnection(ctx context.Context, connName string) error {
 	default:
 		return fmt.Errorf("unknown connection status %q", connStatus.Status)
 	}
+}
+
+// AttemptReconnect tries to reconnect a disconnected or errored connection by name.
+// Returns nil if already connected or local. Returns error if connection does not exist or connect fails.
+func AttemptReconnect(ctx context.Context, connName string) error {
+	if IsLocalConnName(connName) {
+		return nil
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return fmt.Errorf("error parsing connection name: %w", err)
+	}
+	conn := MaybeGetConn(connOpts)
+	if conn == nil {
+		return fmt.Errorf("connection %q does not exist", connName)
+	}
+	status := conn.GetStatus()
+	if status == Status_Connected {
+		return nil
+	}
+	return conn.Connect(ctx, &wconfig.ConnKeywords{})
 }
 
 func DisconnectClient(opts *remote.SSHOpts) error {
