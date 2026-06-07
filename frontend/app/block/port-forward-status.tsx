@@ -120,7 +120,7 @@ export function PortForwardStatusIndicator({
                         <div className="flex flex-col gap-1.5 max-w-[320px]">
                             <div className="font-semibold text-sm flex items-center gap-2 text-secondary">
                                 <i className="fa-sharp fa-solid fa-plug text-emerald-500" />
-                                Port Forwarding ({count} {count === 1 ? "rule" : "rules"})
+                                Port Forwarding
                             </div>
                             <div className="flex flex-col gap-1">
                                 {forwardingRules.map((rule, idx) => (

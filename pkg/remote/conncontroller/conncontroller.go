@@ -1234,21 +1234,21 @@ func (conn *SSHConn) startPortForwarding(ctx context.Context, keywords *wconfig.
 // startLocalForwardTCP starts a TCP LocalForward tunnel.
 // Listens on localAddr, dials dialAddr through the SSH client.
 func (conn *SSHConn) startLocalForwardTCP(ctx context.Context, client *ssh.Client, rule, localAddr, dialAddr string) {
-	go func() {
-		defer panichandler.PanicHandler("conncontroller:localforward", recover())
-		listener, err := net.Listen("tcp", localAddr)
-		if err != nil {
-			conn.Infof(ctx, "LocalForward %s: failed to listen on %s: %v\n", rule, localAddr, err)
-			return
-		}
-		conn.WithLock(func() {
-			conn.LocalForwardListeners = append(conn.LocalForwardListeners, ForwardingRule{
-				Listener: listener,
-				Rule:     fmt.Sprintf("%s -> %s", localAddr, dialAddr),
-			})
+	listener, err := net.Listen("tcp", localAddr)
+	if err != nil {
+		conn.Infof(ctx, "LocalForward %s: failed to listen on %s: %v\n", rule, localAddr, err)
+		return
+	}
+	conn.WithLock(func() {
+		conn.LocalForwardListeners = append(conn.LocalForwardListeners, ForwardingRule{
+			Listener: listener,
+			Rule:     fmt.Sprintf("%s -> %s", localAddr, dialAddr),
 		})
-		conn.Infof(ctx, "LocalForward started: %s -> %s\n", localAddr, dialAddr)
-		conn.Debugf(ctx, "[portforward] LocalForward listening: %s -> %s", localAddr, dialAddr)
+	})
+	conn.Infof(ctx, "LocalForward started: %s -> %s\n", localAddr, dialAddr)
+	conn.Debugf(ctx, "[portforward] LocalForward listening: %s -> %s", localAddr, dialAddr)
+	go func() {
+		defer panichandler.PanicHandler("conncontroller:localforward-accept", recover())
 		for {
 			localConn, err := listener.Accept()
 			if err != nil {
@@ -1275,21 +1275,21 @@ func (conn *SSHConn) startLocalForwardTCP(ctx context.Context, client *ssh.Clien
 // startRemoteForwardTCP starts a TCP RemoteForward tunnel.
 // Listens on remoteAddr via SSH client, dials localAddr locally.
 func (conn *SSHConn) startRemoteForwardTCP(ctx context.Context, client *ssh.Client, rule, remoteAddr, localAddr string) {
-	go func() {
-		defer panichandler.PanicHandler("conncontroller:remoteforward", recover())
-		listener, err := client.Listen("tcp", remoteAddr)
-		if err != nil {
-			conn.Infof(ctx, "RemoteForward %s: failed to listen on %s: %v\n", rule, remoteAddr, err)
-			return
-		}
-		conn.WithLock(func() {
-			conn.RemoteForwardListeners = append(conn.RemoteForwardListeners, ForwardingRule{
-				Listener: listener,
-				Rule:     fmt.Sprintf("%s -> %s", remoteAddr, localAddr),
-			})
+	listener, err := client.Listen("tcp", remoteAddr)
+	if err != nil {
+		conn.Infof(ctx, "RemoteForward %s: failed to listen on %s: %v\n", rule, remoteAddr, err)
+		return
+	}
+	conn.WithLock(func() {
+		conn.RemoteForwardListeners = append(conn.RemoteForwardListeners, ForwardingRule{
+			Listener: listener,
+			Rule:     fmt.Sprintf("%s -> %s", remoteAddr, localAddr),
 		})
-		conn.Infof(ctx, "RemoteForward started: %s -> %s\n", remoteAddr, localAddr)
-		conn.Debugf(ctx, "[portforward] RemoteForward listening: %s -> %s", remoteAddr, localAddr)
+	})
+	conn.Infof(ctx, "RemoteForward started: %s -> %s\n", remoteAddr, localAddr)
+	conn.Debugf(ctx, "[portforward] RemoteForward listening: %s -> %s", remoteAddr, localAddr)
+	go func() {
+		defer panichandler.PanicHandler("conncontroller:remoteforward-accept", recover())
 		for {
 			remoteConn, err := listener.Accept()
 			if err != nil {
