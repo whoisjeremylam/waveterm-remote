@@ -118,7 +118,6 @@
   - [x] Create `port-forward-status.tsx` component (plug icon + badge + tooltip)
   - [x] Wire into `blockframe-header.tsx` between DurableSessionFlyover and badge
   - [x] Go build passes, Go tests pass, TypeScript compiles cleanly
-
 - [ ] **Remote file paste** — image paste + drag-drop for remote sessions
   - Primary use case: pasting screenshots and dragging files when using pi or Claude Code's TUI over SSH
   - Currently pastes local file paths that don't exist on the remote server
