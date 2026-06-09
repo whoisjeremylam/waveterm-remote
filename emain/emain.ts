@@ -223,7 +223,7 @@ process.on("uncaughtException", (error) => {
         return;
     }
 
-    // Check if the error is related to QUIC protocol, if so, ignore (can happen with the updater)
+    // Check if the error is related to QUIC protocol, if so, ignore (can happen during network changes)
     if (error?.message?.includes("net::ERR_QUIC_PROTOCOL_ERROR")) {
         console.log("Ignoring QUIC protocol error:", error.message);
         console.log("Stack Trace:", error.stack);

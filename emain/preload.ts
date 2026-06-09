@@ -36,11 +36,6 @@ contextBridge.exposeInMainWorld("api", {
         ipcRenderer.on("fullscreen-change", (_event, isFullScreen) => callback(isFullScreen)),
     onZoomFactorChange: (callback) =>
         ipcRenderer.on("zoom-factor-change", (_event, zoomFactor) => callback(zoomFactor)),
-    // Updater disabled — stubs for upstream compatibility
-    onUpdaterStatusChange: (callback) => {}, // never fires
-    getUpdaterStatus: () => "up-to-date",
-    getUpdaterChannel: () => "latest",
-    installAppUpdate: () => {},
     onMenuItemAbout: (callback) => ipcRenderer.on("menu-item-about", callback),
     updateWindowControlsOverlay: (rect) => ipcRenderer.send("update-window-controls-overlay", rect),
     onReinjectKey: (callback) => ipcRenderer.on("reinject-key", (_event, waveEvent) => callback(waveEvent)),
