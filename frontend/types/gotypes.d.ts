@@ -745,6 +745,8 @@ declare global {
         "ssh:proxyjump"?: string[];
         "ssh:userknownhostsfile"?: string[];
         "ssh:globalknownhostsfile"?: string[];
+        "ssh:localforward"?: string[];
+        "ssh:remoteforward"?: string[];
     };
 
     // wshrpc.ConnRequest
@@ -772,6 +774,7 @@ declare global {
         reconnectattempt?: number;
         reconnectnextattempt?: number;
         reconnecterror?: string;
+        forwardingrules?: string[];
     };
 
     // wshrpc.CpuDataRequest

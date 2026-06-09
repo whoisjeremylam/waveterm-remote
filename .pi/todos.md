@@ -105,13 +105,19 @@
     - [x] Delete default configs: `waveai.json`, `presets/ai.json`, clean `settings.json`
     - [x] Regenerate auto-generated TS types (`gotypes.d.ts`, `waveevent.d.ts`, `wshclientapi.ts`) and Go metaconsts
   - [x] Document Claude Code shell integration analysis for future pi agent reuse (`.pi/decisions.md`)
-- [ ] **ACTIVE:** SSH port forwarding (`LocalForward` / `RemoteForward`) (spec: [[.pi/specs/portforwarding.md]])
-  - [ ] Modify `pkg/wconfig/settingsconfig.go`
-  - [ ] Modify `pkg/remote/sshclient.go` (parse + return merged keywords)
-  - [ ] Modify `pkg/remote/conncontroller/conncontroller.go` (runtime forwarding)
-  - [ ] Update call sites for new `ConnectToClient` signature
-  - [ ] Add tests
-  - [ ] Update documentation (`docs/docs/connections.mdx`)
+- [x] SSH port forwarding (`LocalForward` / `RemoteForward`) (spec: [[.pi/specs/portforwarding.md]]) — completed 2026-06-04
+  - [x] Modify `pkg/wconfig/settingsconfig.go`
+  - [x] Modify `pkg/remote/sshclient.go` (parse + return merged keywords)
+  - [x] Modify `pkg/remote/conncontroller/conncontroller.go` (runtime forwarding)
+  - [x] Update call sites for new `ConnectToClient` signature
+  - [x] Add tests
+  - [x] Update documentation (`docs/docs/connections.mdx`)
+- [x] **Port forwarding UI status indicators** (spec: [[.pi/specs/portforwarding-ui.md]]) — completed 2026-06-07
+  - [x] Add `ForwardingRules []string` to `ConnStatus` struct (no new RPC needed)
+  - [x] Populate in `DeriveConnStatus()` from `LocalForwardListeners`/`RemoteForwardListeners`
+  - [x] Create `port-forward-status.tsx` component (plug icon + badge + tooltip)
+  - [x] Wire into `blockframe-header.tsx` between DurableSessionFlyover and badge
+  - [x] Go build passes, Go tests pass, TypeScript compiles cleanly
 - [ ] **Remote file paste** — image paste + drag-drop for remote sessions
   - Primary use case: pasting screenshots and dragging files when using pi or Claude Code's TUI over SSH
   - Currently pastes local file paths that don't exist on the remote server
