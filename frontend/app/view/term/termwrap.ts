@@ -20,6 +20,7 @@ import * as services from "@/store/services";
 import { PLATFORM, PlatformMacOS } from "@/util/platformutil";
 import { base64ToArray, fireAndForget } from "@/util/util";
 import { FitAddon } from "@xterm/addon-fit";
+import { ImageAddon } from "@xterm/addon-image";
 import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -187,6 +188,14 @@ export class TermWrap {
                     },
                 }
             )
+        );
+        this.terminal.loadAddon(
+            new ImageAddon({
+                sixelSupport: true,
+                kittySupport: true,
+                iipSupport: true,
+                enableSizeReports: true,
+            })
         );
         this.setTermRenderer(WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom");
         // Register OSC handlers
