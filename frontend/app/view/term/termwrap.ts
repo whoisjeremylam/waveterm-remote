@@ -101,6 +101,7 @@ export class TermWrap {
     onSearchResultsDidChange?: (result: { resultIndex: number; resultCount: number }) => void;
     toDispose: TermTypes.IDisposable[] = [];
     webglAddon: WebglAddon | null = null;
+    imageAddon: any = null;
     webglContextLossDisposable: TermTypes.IDisposable | null = null;
     webglEnabledAtom: jotai.PrimitiveAtom<boolean>;
     pasteActive: boolean = false;
@@ -190,18 +191,19 @@ export class TermWrap {
             )
         );
         try {
-            const imageAddon = new ImageAddon({
+            this.imageAddon = new ImageAddon({
                 sixelSupport: true,
                 kittySupport: true,
                 iipSupport: true,
                 enableSizeReports: true,
             });
-            this.terminal.loadAddon(imageAddon);
+            this.terminal.loadAddon(this.imageAddon);
             console.log("[termwrap] ImageAddon loaded successfully", {
                 sixelSupport: true,
                 kittySupport: true,
                 iipSupport: true,
                 enableSizeReports: true,
+                renderer: WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom",
             });
         } catch (e) {
             console.error("[termwrap] ImageAddon failed to load", e);
@@ -571,16 +573,19 @@ export class TermWrap {
                     hasIterm2: data.includes("\x1b]1337;File="),
                     hasKitty: data.includes("\x1b_G"),
                     dataLength: data.length,
-                    preview: data.substring(0, 100),
+                    hasImageAddon: !!this.imageAddon,
+                    preview: data.substring(0, 150),
                 });
             }
         } else if (data instanceof Uint8Array) {
-            const str = new TextDecoder().decode(data.slice(0, 200));
+            const str = new TextDecoder().decode(data.slice(0, 300));
             if (str.includes("\x1b]1337;File=") || str.includes("\x1b_G")) {
                 console.log("[termwrap] IMAGE SEQUENCE DETECTED (binary)", {
                     hasIterm2: str.includes("\x1b]1337;File="),
                     hasKitty: str.includes("\x1b_G"),
                     dataLength: data.length,
+                    hasImageAddon: !!this.imageAddon,
+                    preview: str.substring(0, 150),
                 });
             }
         }
