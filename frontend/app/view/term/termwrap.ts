@@ -189,14 +189,23 @@ export class TermWrap {
                 }
             )
         );
-        this.terminal.loadAddon(
-            new ImageAddon({
+        try {
+            const imageAddon = new ImageAddon({
                 sixelSupport: true,
                 kittySupport: true,
                 iipSupport: true,
                 enableSizeReports: true,
-            })
-        );
+            });
+            this.terminal.loadAddon(imageAddon);
+            console.log("[termwrap] ImageAddon loaded successfully", {
+                sixelSupport: true,
+                kittySupport: true,
+                iipSupport: true,
+                enableSizeReports: true,
+            });
+        } catch (e) {
+            console.error("[termwrap] ImageAddon failed to load", e);
+        }
         this.setTermRenderer(WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom");
         // Register OSC handlers
         this.terminal.parser.registerOscHandler(7, (data: string) => {
