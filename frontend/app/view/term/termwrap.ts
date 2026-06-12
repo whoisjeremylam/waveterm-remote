@@ -9,16 +9,18 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import {
     fetchWaveFile,
     getApi,
+    getBlockMetaKeyAtom,
     getOverrideConfigAtom,
     getSettingsKeyAtom,
     globalStore,
     isDev,
     openLink,
+    setBlockUploadState,
     WOS,
 } from "@/store/global";
 import * as services from "@/store/services";
 import { PLATFORM, PlatformMacOS } from "@/util/platformutil";
-import { base64ToArray, fireAndForget } from "@/util/util";
+import { base64ToArray, fireAndForget, isSshConnName } from "@/util/util";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
@@ -38,6 +40,7 @@ import {
 } from "./osc-handlers";
 import {
     bufferLinesToText,
+    createRemoteTempFileFromBlob,
     createTempFileFromBlob,
     extractAllClipboardData,
     normalizeCursorStyle,
@@ -103,6 +106,7 @@ export class TermWrap {
     webglContextLossDisposable: TermTypes.IDisposable | null = null;
     webglEnabledAtom: jotai.PrimitiveAtom<boolean>;
     pasteActive: boolean = false;
+    uploadActive: boolean = false;
     lastUpdated: number;
     promptMarkers: TermTypes.IMarker[] = [];
     shellIntegrationStatusAtom: jotai.PrimitiveAtom<ShellIntegrationStatus | null>;
@@ -320,17 +324,33 @@ export class TermWrap {
                 e.dataTransfer.dropEffect = "copy";
             }
         };
-        const dropHandler = (e: DragEvent) => {
+        const dropHandler = async (e: DragEvent) => {
             e.preventDefault();
             if (!e.dataTransfer || e.dataTransfer.files.length === 0) {
                 return;
             }
+            const connName = (globalStore.get(getBlockMetaKeyAtom(this.blockId, "connection")) as string) ?? "";
+            const isRemote = isSshConnName(connName);
             const paths: string[] = [];
             for (let i = 0; i < e.dataTransfer.files.length; i++) {
                 const file = e.dataTransfer.files[i];
-                const filePath = getApi().getPathForFile(file);
-                if (filePath) {
-                    paths.push(quoteForPosixShell(filePath));
+                if (isRemote) {
+                    this.uploadActive = true;
+                    setBlockUploadState(this.blockId, { active: true, fileName: file.name, fileSize: file.size });
+                    try {
+                        const tempPath = await createRemoteTempFileFromBlob(file);
+                        paths.push(quoteForPosixShell(tempPath));
+                    } catch (err) {
+                        console.error("Failed to transfer file to remote:", err);
+                    } finally {
+                        this.uploadActive = false;
+                        setBlockUploadState(this.blockId, null);
+                    }
+                } else {
+                    const filePath = getApi().getPathForFile(file);
+                    if (filePath) {
+                        paths.push(quoteForPosixShell(filePath));
+                    }
                 }
             }
             if (paths.length > 0) {
@@ -496,6 +516,9 @@ export class TermWrap {
 
     handleTermData(data: string) {
         if (!this.loaded) {
+            return;
+        }
+        if (this.uploadActive) {
             return;
         }
 
@@ -681,13 +704,28 @@ export class TermWrap {
 
         try {
             const clipboardData = await extractAllClipboardData(e);
+            const connName = (globalStore.get(getBlockMetaKeyAtom(this.blockId, "connection")) as string) ?? "";
+            const isRemote = isSshConnName(connName);
             let firstImage = true;
             for (const data of clipboardData) {
                 if (data.image && SupportsImageInput) {
                     if (!firstImage) {
                         await new Promise((r) => setTimeout(r, 150));
                     }
-                    const tempPath = await createTempFileFromBlob(data.image);
+                    let tempPath: string;
+                    if (isRemote) {
+                        this.uploadActive = true;
+                        const fileName = `screenshot_${Date.now()}.png`;
+                        setBlockUploadState(this.blockId, { active: true, fileName, fileSize: data.image.size });
+                        try {
+                            tempPath = await createRemoteTempFileFromBlob(data.image);
+                        } finally {
+                            this.uploadActive = false;
+                            setBlockUploadState(this.blockId, null);
+                        }
+                    } else {
+                        tempPath = await createTempFileFromBlob(data.image);
+                    }
                     this.terminal.paste(tempPath + " ");
                     firstImage = false;
                 }

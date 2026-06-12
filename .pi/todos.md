@@ -123,11 +123,15 @@
   - Currently pastes local file paths that don't exist on the remote server
   - Need: upload file to remote (SSH exec with stdin, SFTP, or SCP), then paste remote path
   - Sub-tasks:
-    - [ ] Detect when terminal block is on a remote SSH connection
-    - [ ] Add RPC command to upload file bytes to remote server via existing SSH connection
-    - [ ] Wire up image paste (`termwrap.ts` `pasteHandler`) to use remote upload for SSH sessions
-    - [ ] Wire up drag-drop (`termwrap.ts` `dropHandler`) to use remote upload for SSH sessions
-    - [ ] Add tests
+    - [ ] Go backend: `RemoteWriteTempFileCommand` RPC + types + client
+    - [ ] Frontend: `createRemoteTempFileFromBlob()` utility
+    - [ ] Frontend: Wire image paste (`termwrap.ts` `pasteHandler`) to use remote upload for SSH sessions
+    - [ ] Frontend: Wire drag-drop (`termwrap.ts` `dropHandler`) to use remote upload for SSH sessions
+    - [ ] Frontend: Extract generic `BlockOverlay` component from `ConnStatusOverlay` pattern
+    - [ ] Frontend: Add `uploadState` atom to `TermViewModel` and `UploadOverlay` component
+    - [ ] Frontend: Add input suppression (`handleTermData` guard) during upload
+    - [ ] Frontend: Mount `UploadOverlay` in `blockframe.tsx`
+    - [ ] Tests
 
 - [ ] **System widgets follow terminal focus** (spec: [[.pi/specs/widget-follow-focus.md]])
   - When opening Process Viewer, File Browser, etc., inherit connection from focused terminal
