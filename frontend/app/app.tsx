@@ -228,6 +228,10 @@ const MacOSFirstClickHandler = () => {
         const handleMouseDown = (e: MouseEvent) => {
             const timeDiff = Date.now() - windowFocusTime;
             if (windowFocusTime != null && timeDiff < 50) {
+                const target = e.target as HTMLElement;
+                if (target?.closest("button, input, textarea, select, a[href]")) {
+                    return;
+                }
                 e.preventDefault();
                 e.stopPropagation();
                 e.stopImmediatePropagation();
@@ -235,11 +239,9 @@ const MacOSFirstClickHandler = () => {
                 const blockId = getBlockIdFromTarget(e.target);
                 if (blockId != null) {
                     setTimeout(() => {
-                        console.log("macos first-click, focusing block", blockId);
                         refocusNode(blockId);
                     }, 10);
                 }
-                console.log("macos first-click detected, canceled", timeDiff + "ms");
                 return;
             }
             cancelNextClick = false;
@@ -252,7 +254,6 @@ const MacOSFirstClickHandler = () => {
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
-            console.log("macos first-click (click event) canceled");
         };
         window.addEventListener("focus", handleWindowFocus);
         window.addEventListener("mousedown", handleMouseDown, true);
