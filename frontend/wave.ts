@@ -63,6 +63,9 @@ async function initBare() {
     document.body.classList.add("is-transparent");
     getApi().onWaveInit(initWaveWrap);
     getApi().onBuilderInit(initBuilderWrap);
+    getApi().onWaveResize(() => {
+        window.dispatchEvent(new CustomEvent("wave-resize"));
+    });
     setKeyUtilPlatform(platform);
     loadFonts();
     updateZoomFactor(getApi().getZoomFactor());

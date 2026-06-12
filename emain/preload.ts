@@ -66,6 +66,7 @@ contextBridge.exposeInMainWorld("api", {
     getPathForFile: (file: File): string => webUtils.getPathForFile(file),
     saveTextFile: (fileName: string, content: string) => ipcRenderer.invoke("save-text-file", fileName, content),
     setIsActive: () => ipcRenderer.invoke("set-is-active"),
+    onWaveResize: (callback) => ipcRenderer.on("wave-resize", (_event) => callback()),
 });
 
 // Custom event for "new-window"

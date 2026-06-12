@@ -126,6 +126,7 @@ declare global {
         getPathForFile: (file: File) => string; // webUtils.getPathForFile
         saveTextFile: (fileName: string, content: string) => Promise<boolean>; // save-text-file
         setIsActive: () => Promise<void>; // set-is-active
+        onWaveResize: (callback: () => void) => void; // wave-resize
     };
 
     type ElectronContextMenuItem = {

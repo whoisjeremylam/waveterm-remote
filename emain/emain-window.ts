@@ -249,6 +249,20 @@ export class WaveBrowserWindow extends BaseWindow {
             }
             this.activeTabView?.positionTabOnScreen(this.getContentBounds());
         });
+        const notifyInactiveTabsResize = debounce(200, () => {
+            if (this.isDestroyed()) {
+                return;
+            }
+            for (const tabView of this.allLoadedTabViews.values()) {
+                if (tabView === this.activeTabView) {
+                    continue;
+                }
+                if (tabView?.webContents && !tabView.webContents.isDestroyed()) {
+                    tabView.webContents.send("wave-resize");
+                }
+            }
+        });
+        this.on("resize", notifyInactiveTabsResize);
         this.on(
             // @ts-expect-error -- "move" event with debounce handler not in Electron type definitions
             "move",
@@ -496,6 +510,7 @@ export class WaveBrowserWindow extends BaseWindow {
             tabView.webContents.send("wave-init", tabView.savedInitOpts); // reinit
             this.finalizePositioning();
         }
+        tabView.webContents.send("wave-resize");
 
         // something is causing the new tab to lose focus so it requires manual refocusing
         tabView.webContents.focus();

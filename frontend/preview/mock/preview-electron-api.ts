@@ -54,6 +54,7 @@ const previewElectronApi: ElectronApi = {
     doRefresh: () => {},
     saveTextFile: (_fileName: string, _content: string) => Promise.resolve(false),
     setIsActive: async () => {},
+    onWaveResize: (_callback: () => void) => {},
 };
 
 function installPreviewElectronApi() {
