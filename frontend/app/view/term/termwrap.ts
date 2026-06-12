@@ -564,6 +564,26 @@ export class TermWrap {
             this.lastUpdated = Date.now();
             resolve();
         });
+        // Debug: detect image escape sequences in terminal data
+        if (typeof data === "string") {
+            if (data.includes("\x1b]1337;File=") || data.includes("\x1b_G")) {
+                console.log("[termwrap] IMAGE SEQUENCE DETECTED", {
+                    hasIterm2: data.includes("\x1b]1337;File="),
+                    hasKitty: data.includes("\x1b_G"),
+                    dataLength: data.length,
+                    preview: data.substring(0, 100),
+                });
+            }
+        } else if (data instanceof Uint8Array) {
+            const str = new TextDecoder().decode(data.slice(0, 200));
+            if (str.includes("\x1b]1337;File=") || str.includes("\x1b_G")) {
+                console.log("[termwrap] IMAGE SEQUENCE DETECTED (binary)", {
+                    hasIterm2: str.includes("\x1b]1337;File="),
+                    hasKitty: str.includes("\x1b_G"),
+                    dataLength: data.length,
+                });
+            }
+        }
         return prtn;
     }
 
