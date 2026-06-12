@@ -468,6 +468,12 @@ export class TermWrap {
             await this.loadInitialTerminalData();
         } finally {
             this.loaded = true;
+            if (this.heldData.length > 0) {
+                for (const data of this.heldData) {
+                    this.doTerminalWrite(data, null);
+                }
+                this.heldData = [];
+            }
         }
         this.runProcessIdleTimeout();
     }
