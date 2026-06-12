@@ -345,6 +345,16 @@ const TerminalView = ({ blockId, model }: ViewComponentProps<TermViewModel>) => 
     }, [blockId, termSettings, termFontSize, connFontFamily]);
 
     React.useEffect(() => {
+        const handleWaveResize = () => {
+            model.termRef.current?.handleResize();
+        };
+        window.addEventListener("wave-resize", handleWaveResize);
+        return () => {
+            window.removeEventListener("wave-resize", handleWaveResize);
+        };
+    }, []);
+
+    React.useEffect(() => {
         if (termModeRef.current == "vdom" && termMode == "term") {
             // focus the terminal
             model.giveFocus();
