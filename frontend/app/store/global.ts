@@ -320,6 +320,28 @@ function getBlockTermDurableAtom(blockId: string): Atom<null | boolean> {
     return durableAtom;
 }
 
+export interface BlockUploadState {
+    active: boolean;
+    fileName: string;
+    fileSize: number;
+}
+
+const uploadStateAtoms = new Map<string, PrimitiveAtom<BlockUploadState | null>>();
+
+function getBlockUploadStateAtom(blockId: string): PrimitiveAtom<BlockUploadState | null> {
+    let uploadAtom = uploadStateAtoms.get(blockId);
+    if (uploadAtom == null) {
+        uploadAtom = atom<BlockUploadState | null>(null) as PrimitiveAtom<BlockUploadState | null>;
+        uploadStateAtoms.set(blockId, uploadAtom);
+    }
+    return uploadAtom;
+}
+
+function setBlockUploadState(blockId: string, state: BlockUploadState | null) {
+    const uploadAtom = getBlockUploadStateAtom(blockId);
+    globalStore.set(uploadAtom, state);
+}
+
 function useBlockAtom<T>(blockId: string, name: string, makeFn: () => Atom<T>): Atom<T> {
     const blockCache = getSingleBlockAtomCache(blockId);
     let atom = blockCache.get(name);
@@ -665,6 +687,8 @@ export {
     getBlockComponentModel,
     getBlockMetaKeyAtom,
     getBlockTermDurableAtom,
+    getBlockUploadStateAtom,
+    setBlockUploadState,
     getTabMetaKeyAtom,
     getConfigBackgroundAtom,
     getConnConfigKeyAtom,

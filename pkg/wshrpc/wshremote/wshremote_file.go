@@ -545,6 +545,30 @@ func (*ServerImpl) RemoteWriteFileCommand(ctx context.Context, data wshrpc.FileD
 	return nil
 }
 
+func (*ServerImpl) RemoteWriteTempFileCommand(ctx context.Context, data wshrpc.CommandRemoteWriteTempFileData) (string, error) {
+	if data.FileName == "" {
+		return "", fmt.Errorf("filename is required")
+	}
+	name := filepath.Base(data.FileName)
+	if name == "" || name == "." || name == ".." {
+		return "", fmt.Errorf("invalid filename")
+	}
+	tempDir, err := os.MkdirTemp("", "waveterm-")
+	if err != nil {
+		return "", fmt.Errorf("error creating temp directory: %w", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(data.Data64)
+	if err != nil {
+		return "", fmt.Errorf("error decoding base64 data: %w", err)
+	}
+	tempPath := filepath.Join(tempDir, name)
+	err = os.WriteFile(tempPath, decoded, 0600)
+	if err != nil {
+		return "", fmt.Errorf("error writing temp file: %w", err)
+	}
+	return tempPath, nil
+}
+
 func (impl *ServerImpl) RemoteFileStreamCommand(ctx context.Context, data wshrpc.CommandRemoteFileStreamData) (*wshrpc.FileInfo, error) {
 	wshRpc := wshutil.GetWshRpcFromContext(ctx)
 	if wshRpc == nil || wshRpc.StreamBroker == nil {

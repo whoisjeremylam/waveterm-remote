@@ -750,6 +750,12 @@ func RemoteWriteFileCommand(w *wshutil.WshRpc, data wshrpc.FileData, opts *wshrp
 	return err
 }
 
+// command "remotewritetempfile", wshserver.RemoteWriteTempFileCommand
+func RemoteWriteTempFileCommand(w *wshutil.WshRpc, data wshrpc.CommandRemoteWriteTempFileData, opts *wshrpc.RpcOpts) (string, error) {
+	resp, err := sendRpcRequestCallHelper[string](w, "remotewritetempfile", data, opts)
+	return resp, err
+}
+
 // command "renameappfile", wshserver.RenameAppFileCommand
 func RenameAppFileCommand(w *wshutil.WshRpc, data wshrpc.CommandRenameAppFileData, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "renameappfile", data, opts)

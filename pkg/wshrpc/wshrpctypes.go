@@ -349,6 +349,11 @@ type CommandWriteTempFileData struct {
 	Data64   string `json:"data64"`
 }
 
+type CommandRemoteWriteTempFileData struct {
+	FileName string `json:"filename"`
+	Data64   string `json:"data64"`
+}
+
 type ConnRequest struct {
 	Host       string               `json:"host"`
 	Keywords   wconfig.ConnKeywords `json:"keywords,omitempty"`

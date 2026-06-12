@@ -37,6 +37,7 @@ type WshRpcRemoteFileInterface interface {
 	RemoteFileMoveCommand(ctx context.Context, data CommandFileCopyData) error
 	RemoteFileDeleteCommand(ctx context.Context, data CommandDeleteFileData) error
 	RemoteWriteFileCommand(ctx context.Context, data FileData) error
+	RemoteWriteTempFileCommand(ctx context.Context, data CommandRemoteWriteTempFileData) (string, error)
 	RemoteFileJoinCommand(ctx context.Context, paths []string) (*FileInfo, error)
 	RemoteMkdirCommand(ctx context.Context, path string) error
 }

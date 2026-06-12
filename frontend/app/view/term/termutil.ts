@@ -113,6 +113,35 @@ export async function createTempFileFromBlob(blob: Blob): Promise<string> {
     return tempPath;
 }
 
+export async function createRemoteTempFileFromBlob(blob: Blob, fileName?: string): Promise<string> {
+    if (blob.size > 50 * 1024 * 1024) {
+        throw new Error("File too large (>50MB)");
+    }
+
+    if (!fileName) {
+        const ext = MIME_TO_EXT[blob.type] || "bin";
+        const timestamp = Date.now();
+        const random = Math.random().toString(36).substring(2, 8);
+        fileName = `waveterm_paste_${timestamp}_${random}.${ext}`;
+    }
+
+    const arrayBuffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = reject;
+        reader.readAsArrayBuffer(blob);
+    });
+
+    const base64Data = base64.fromByteArray(new Uint8Array(arrayBuffer));
+
+    const tempPath = await RpcApi.RemoteWriteTempFileCommand(TabRpcClient, {
+        filename: fileName,
+        data64: base64Data,
+    });
+
+    return tempPath;
+}
+
 /**
  * Extracts text or image data from a ClipboardItem using prioritized extraction modes.
  *
