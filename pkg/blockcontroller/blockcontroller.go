@@ -17,6 +17,7 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/blocklogger"
 	"github.com/wavetermdev/waveterm/pkg/filestore"
 	"github.com/wavetermdev/waveterm/pkg/jobcontroller"
+	"github.com/wavetermdev/waveterm/pkg/panichandler"
 	"github.com/wavetermdev/waveterm/pkg/remote"
 	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
 	"github.com/wavetermdev/waveterm/pkg/util/ds"
@@ -135,6 +136,118 @@ func InitBlockController() {
 		Event:     wps.Event_BlockClose,
 		AllScopes: true,
 	}, nil)
+}
+
+// StartupReconnectDurableShells proactively establishes SSH connections
+// and reconnects jobs for all blocks with durable shells.
+// This is called once at startup to ensure connections for non-active
+// tabs are established before the user switches to them.
+func StartupReconnectDurableShells(ctx context.Context) {
+	log.Printf("[startup] scanning blocks for durable shell reconnection")
+	allBlocks, err := wstore.DBGetAllObjsByType[*waveobj.Block](ctx, waveobj.OType_Block)
+	if err != nil {
+		log.Printf("[startup] error getting blocks: %v", err)
+		return
+	}
+
+	type durableBlock struct {
+		BlockId  string
+		ConnName string
+		JobId    string
+	}
+	var durableBlocks []durableBlock
+	for _, block := range allBlocks {
+		if !jobcontroller.IsBlockTermDurable(block) {
+			continue
+		}
+		connName := block.Meta.GetString(waveobj.MetaKey_Connection, "")
+		if conncontroller.IsLocalConnName(connName) {
+			continue
+		}
+		durableBlocks = append(durableBlocks, durableBlock{
+			BlockId:  block.OID,
+			ConnName: connName,
+			JobId:    block.JobId,
+		})
+	}
+
+	if len(durableBlocks) == 0 {
+		log.Printf("[startup] no durable shell blocks found")
+		return
+	}
+
+	log.Printf("[startup] found %d durable shell blocks, establishing connections", len(durableBlocks))
+
+	// Collect unique connections and establish them
+	establishedConns := make(map[string]bool)
+	for _, db := range durableBlocks {
+		if establishedConns[db.ConnName] {
+			continue
+		}
+		establishedConns[db.ConnName] = true
+		go func(connName string) {
+			defer func() {
+				panichandler.PanicHandler("jobcontroller:StartupReconnectDurableShells-conn", recover())
+			}()
+			connCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			err := conncontroller.EnsureConnection(connCtx, connName)
+			if err != nil {
+				log.Printf("[startup] failed to establish connection %q: %v", connName, err)
+				return
+			}
+			log.Printf("[startup] connection %q established", connName)
+		}(db.ConnName)
+	}
+
+	// Wait for connections to be established, then reconnect jobs
+	// Use a polling approach with a timeout to wait for connections
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer waitCancel()
+	for connName := range establishedConns {
+		waitForConn(waitCtx, connName)
+	}
+
+	// Reconnect jobs for all durable blocks
+	for _, db := range durableBlocks {
+		if db.JobId == "" {
+			continue
+		}
+		go func(blockId, jobId, connName string) {
+			defer func() {
+				panichandler.PanicHandler("jobcontroller:StartupReconnectDurableShells-reconnect", recover())
+			}()
+			isConnected, err := conncontroller.IsConnected(connName)
+			if err != nil || !isConnected {
+				log.Printf("[startup] connection %q not ready for block %s job %s, skipping reconnect", connName, blockId, jobId)
+				return
+			}
+			reconnectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			err = jobcontroller.ReconnectJob(reconnectCtx, jobId, nil)
+			if err != nil {
+				log.Printf("[startup] failed to reconnect job %s for block %s: %v", jobId, blockId, err)
+			} else {
+				log.Printf("[startup] reconnected job %s for block %s", jobId, blockId)
+			}
+		}(db.BlockId, db.JobId, db.ConnName)
+	}
+}
+
+func waitForConn(ctx context.Context, connName string) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			isConnected, err := conncontroller.IsConnected(connName)
+			if err == nil && isConnected {
+				return
+			}
+		}
+	}
 }
 
 func handleBlockCloseEvent(event *wps.WaveEvent) {
