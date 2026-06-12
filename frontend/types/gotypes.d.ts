@@ -528,6 +528,12 @@ declare global {
         jobmanagerstartts: number;
     };
 
+    // wshrpc.CommandRemoteWriteTempFileData
+    type CommandRemoteWriteTempFileData = {
+        filename: string;
+        data64: string;
+    };
+
     // wshrpc.CommandRenameAppFileData
     type CommandRenameAppFileData = {
         appid: string;

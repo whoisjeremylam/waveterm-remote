@@ -756,6 +756,12 @@ export class RpcApiType {
         return client.wshRpcCall("remotewritefile", data, opts);
     }
 
+    // command "remotewritetempfile" [call]
+    RemoteWriteTempFileCommand(client: WshClient, data: CommandRemoteWriteTempFileData, opts?: RpcOpts): Promise<string> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "remotewritetempfile", data, opts);
+        return client.wshRpcCall("remotewritetempfile", data, opts);
+    }
+
     // command "renameappfile" [call]
     RenameAppFileCommand(client: WshClient, data: CommandRenameAppFileData, opts?: RpcOpts): Promise<void> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "renameappfile", data, opts);
