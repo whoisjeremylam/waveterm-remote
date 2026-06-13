@@ -18,11 +18,18 @@ const ModalsRenderer = () => {
     const [newInstallOnboardingOpen, setNewInstallOnboardingOpen] = jotai.useAtom(modalsModel.newInstallOnboardingOpen);
     const [upgradeOnboardingOpen, setUpgradeOnboardingOpen] = jotai.useAtom(modalsModel.upgradeOnboardingOpen);
     const [modals] = jotai.useAtom(modalsModel.modalsAtom);
+    const activeUserInputModals = jotai.useAtomValue(modalsModel.activeUserInputModalsAtom);
     const rtn: React.ReactElement[] = [];
     for (const modal of modals) {
         const ModalComponent = getModalComponent(modal.displayName);
         if (ModalComponent) {
             rtn.push(<ModalComponent key={modal.displayName} {...modal.props} />);
+        }
+    }
+    for (const [connName, modalEntry] of Object.entries(activeUserInputModals)) {
+        const ModalComponent = getModalComponent(modalEntry.displayName);
+        if (ModalComponent) {
+            rtn.push(<ModalComponent key={`userinput-${connName}`} {...modalEntry.props} />);
         }
     }
     if (newInstallOnboardingOpen) {
