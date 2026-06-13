@@ -38,6 +38,7 @@ type UserInputRequest struct {
 	PublicText   bool   `json:"publictext"`
 	OkLabel      string `json:"oklabel,omitempty"`
 	CancelLabel  string `json:"cancellabel,omitempty"`
+	ConnName     string `json:"connname,omitempty"`
 }
 
 type UserInputResponse struct {
@@ -109,6 +110,11 @@ func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputR
 	defer MainUserInputHandler.unregisterChannel(id)
 	request.RequestId = id
 	request.TimeoutMs = int(utilfn.TimeoutFromContext(ctx, 30*time.Second).Milliseconds())
+
+	connData := genconn.GetConnData(ctx)
+	if connData != nil && request.ConnName == "" {
+		request.ConnName = connData.GetConnName()
+	}
 
 	scopes, scopesErr := determineScopes(ctx)
 	if scopesErr != nil {

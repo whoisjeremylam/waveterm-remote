@@ -583,7 +583,7 @@ func termCtxWithLogBlockId(ctx context.Context, logBlockId string) context.Conte
 }
 
 func (ws *WshServer) ConnEnsureCommand(ctx context.Context, data wshrpc.ConnExtData) error {
-	ctx = genconn.ContextWithConnData(ctx, data.LogBlockId)
+	ctx = genconn.ContextWithConnDataAndName(ctx, data.LogBlockId, data.ConnName)
 	ctx = termCtxWithLogBlockId(ctx, data.LogBlockId)
 	if strings.HasPrefix(data.ConnName, "wsl://") {
 		distroName := strings.TrimPrefix(data.ConnName, "wsl://")
@@ -619,7 +619,7 @@ func (ws *WshServer) ConnConnectCommand(ctx context.Context, connRequest wshrpc.
 	if conncontroller.IsLocalConnName(connRequest.Host) {
 		return nil
 	}
-	ctx = genconn.ContextWithConnData(ctx, connRequest.LogBlockId)
+	ctx = genconn.ContextWithConnDataAndName(ctx, connRequest.LogBlockId, connRequest.Host)
 	ctx = termCtxWithLogBlockId(ctx, connRequest.LogBlockId)
 	connName := connRequest.Host
 	if strings.HasPrefix(connName, "wsl://") {
@@ -645,7 +645,7 @@ func (ws *WshServer) ConnReinstallWshCommand(ctx context.Context, data wshrpc.Co
 	if conncontroller.IsLocalConnName(data.ConnName) {
 		return nil
 	}
-	ctx = genconn.ContextWithConnData(ctx, data.LogBlockId)
+	ctx = genconn.ContextWithConnDataAndName(ctx, data.LogBlockId, data.ConnName)
 	ctx = termCtxWithLogBlockId(ctx, data.LogBlockId)
 	connName := data.ConnName
 	if strings.HasPrefix(connName, "wsl://") {

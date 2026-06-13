@@ -1451,6 +1451,7 @@ declare global {
         publictext: boolean;
         oklabel?: string;
         cancellabel?: string;
+        connname?: string;
     };
 
     // userinput.UserInputResponse
