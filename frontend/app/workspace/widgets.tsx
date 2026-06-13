@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Tooltip } from "@/app/element/tooltip";
+import { getFocusedTerminalConnection } from "@/app/store/global";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv, WaveEnv, WaveEnvSubset } from "@/app/waveenv/waveenv";
 import { shouldIncludeWidgetForWorkspace } from "@/app/workspace/widgetfilter";
@@ -55,7 +56,13 @@ type WidgetPropsType = {
 };
 
 async function handleWidgetSelect(widget: WidgetConfigType, env: WidgetsEnv) {
-    const blockDef = widget.blockdef;
+    const blockDef = { ...widget.blockdef };
+    if (!blockDef.meta?.connection) {
+        const focusedConn = getFocusedTerminalConnection();
+        if (focusedConn) {
+            blockDef.meta = { ...blockDef.meta, connection: focusedConn };
+        }
+    }
     env.createBlock(blockDef, widget.magnified);
 }
 
