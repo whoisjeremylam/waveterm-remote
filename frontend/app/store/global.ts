@@ -604,6 +604,9 @@ function subscribeToConnEvents() {
                 if (connStatus == null || isBlank(connStatus.connection)) {
                     return;
                 }
+                if (connStatus.connected) {
+                    modalsModel.dismissUserInputModal(connStatus.connection);
+                }
                 console.log("connstatus update", connStatus);
                 const curAtom = getConnStatusAtom(connStatus.connection);
                 globalStore.set(curAtom, connStatus);
