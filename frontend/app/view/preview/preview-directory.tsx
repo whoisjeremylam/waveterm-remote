@@ -573,6 +573,8 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const finfo = useAtomValue(model.statFile);
     const dirPath = finfo?.path;
     const setErrorMsg = useSetAtom(model.errorMsgAtom);
+    const [isDragOver, setIsDragOver] = useState(false);
+    const dragCounterRef = useRef(0);
 
     useEffect(() => {
         model.refreshCallback = () => {
@@ -834,6 +836,45 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         });
     }, [dirPath]);
 
+    const handleNativeDragOver = useCallback((e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+    }, []);
+
+    const handleNativeDragEnter = useCallback((e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounterRef.current++;
+        if (e.dataTransfer.types.includes("Files")) {
+            setIsDragOver(true);
+        }
+    }, []);
+
+    const handleNativeDragLeave = useCallback((e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounterRef.current--;
+        if (dragCounterRef.current === 0) {
+            setIsDragOver(false);
+        }
+    }, []);
+
+    const handleNativeDrop = useCallback(
+        async (e: React.DragEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounterRef.current = 0;
+            setIsDragOver(false);
+
+            const files = Array.from(e.dataTransfer.files);
+            if (files.length === 0 || !dirPath) {
+                return;
+            }
+            await model.uploadFiles(files, dirPath);
+        },
+        [dirPath, model]
+    );
+
     const handleFileContextMenu = useCallback(
         (e: any) => {
             e.preventDefault();
@@ -866,7 +907,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         <Fragment>
             <div
                 ref={refs.setReference}
-                className="dir-table-container"
+                className={clsx("dir-table-container", { "drag-over": isDragOver })}
                 onChangeCapture={(e) => {
                     const event = e as React.ChangeEvent<HTMLInputElement>;
                     if (!entryManagerProps) {
@@ -876,7 +917,12 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 {...getReferenceProps()}
                 onContextMenu={(e) => handleFileContextMenu(e)}
                 onClick={() => setEntryManagerProps(undefined)}
+                onDragOver={handleNativeDragOver}
+                onDragEnter={handleNativeDragEnter}
+                onDragLeave={handleNativeDragLeave}
+                onDrop={handleNativeDrop}
             >
+                {isDragOver && <div className="dir-drop-overlay">Drop files here to upload</div>}
                 <DirectoryTable
                     model={model}
                     data={filteredData}

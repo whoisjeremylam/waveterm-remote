@@ -11,7 +11,7 @@ import * as WOS from "@/store/wos";
 import { goHistory, goHistoryBack, goHistoryForward } from "@/util/historyutil";
 import { checkKeyPressed } from "@/util/keyutil";
 import { addOpenMenuItems } from "@/util/previewutil";
-import { base64ToString, fireAndForget, isBlank, jotaiLoadableValue, stringToBase64 } from "@/util/util";
+import { arrayToBase64, base64ToString, fireAndForget, isBlank, jotaiLoadableValue, stringToBase64 } from "@/util/util";
 import { formatRemoteUri } from "@/util/waveutil";
 import clsx from "clsx";
 import { Atom, atom, Getter, PrimitiveAtom, WritableAtom } from "jotai";
@@ -857,6 +857,30 @@ export class PreviewModel implements ViewModel {
             }
         }
         return false;
+    }
+
+    async uploadFiles(files: File[], targetDir: string) {
+        const remoteDir = await this.formatRemoteUri(targetDir, globalStore.get);
+        for (const file of files) {
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const bytes = new Uint8Array(arrayBuffer);
+                const data64 = arrayToBase64(bytes);
+                await this.env.rpc.FileWriteCommand(TabRpcClient, {
+                    info: {
+                        path: `${remoteDir}/${file.name}`,
+                    },
+                    data64,
+                });
+            } catch (e) {
+                const errorStatus: ErrorMsg = {
+                    status: "Upload Failed",
+                    text: `Failed to upload "${file.name}": ${e}`,
+                };
+                globalStore.set(this.errorMsgAtom, errorStatus);
+            }
+        }
+        this.refreshCallback?.();
     }
 
     async formatRemoteUri(path: string, get: Getter): Promise<string> {
