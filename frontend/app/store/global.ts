@@ -70,8 +70,12 @@ function initGlobalWaveEventSubs(initOpts: WaveInitOpts) {
     waveEventSubscribeSingle({
         eventType: "userinput",
         handler: (event) => {
-            // console.log("userinput event handler", event);
-            modalsModel.pushModal("UserInputModal", { ...event.data });
+            const connName = event.data?.connname;
+            if (connName) {
+                modalsModel.upsertUserInputModal(connName, "UserInputModal", { ...event.data });
+            } else {
+                modalsModel.pushModal("UserInputModal", { ...event.data });
+            }
         },
         scope: initOpts.windowId,
     });
