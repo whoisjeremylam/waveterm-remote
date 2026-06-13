@@ -562,6 +562,37 @@ function getFocusedBlockId(): string {
     return focusedLayoutNode?.data?.blockId;
 }
 
+function getFocusedTerminalConnection(): string | null {
+    const layoutModel = getLayoutModelForStaticTab();
+    if (layoutModel == null) {
+        return null;
+    }
+    const focusedNode = globalStore.get(layoutModel.focusedNode);
+    if (focusedNode != null) {
+        const blockId = focusedNode.data?.blockId;
+        if (blockId) {
+            const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+            if (blockData?.meta?.connection) {
+                return blockData.meta.connection;
+            }
+        }
+    }
+    // Fallback: find most recently focused terminal on this tab
+    const leafs = globalStore.get(layoutModel.leafs);
+    if (leafs) {
+        for (const leaf of leafs) {
+            const blockId = leaf.data?.blockId;
+            if (blockId) {
+                const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+                if (blockData?.meta?.view === "term" && blockData?.meta?.connection) {
+                    return blockData.meta.connection;
+                }
+            }
+        }
+    }
+    return null;
+}
+
 // pass null to refocus the currently focused block
 function refocusNode(blockId: string) {
     if (blockId == null) {
@@ -677,6 +708,7 @@ export {
     getConnConfigKeyAtom,
     getConnStatusAtom,
     getFocusedBlockId,
+    getFocusedTerminalConnection,
     getHostName,
     getLocalHostDisplayNameAtom,
     getObjectId,
