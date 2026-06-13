@@ -48,6 +48,7 @@ type UserInputResponse struct {
 	Confirm      bool   `json:"confirm,omitempty"`
 	ErrorMsg     string `json:"errormsg,omitempty"`
 	CheckboxStat bool   `json:"checkboxstat,omitempty"`
+	ConnName     string `json:"connname,omitempty"`
 }
 
 type UserInputHandler struct {

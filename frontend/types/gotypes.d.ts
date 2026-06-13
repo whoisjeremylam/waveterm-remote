@@ -1462,6 +1462,7 @@ declare global {
         confirm?: boolean;
         errormsg?: string;
         checkboxstat?: boolean;
+        connname?: string;
     };
 
     // vdom.VDomAsyncInitiationRequest
