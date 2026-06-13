@@ -12,6 +12,7 @@ import { useAtomValue } from "jotai";
 import { OverlayScrollbars } from "overlayscrollbars";
 import { createRef, memo, useCallback, useEffect, useRef, useState } from "react";
 import { debounce } from "throttle-debounce";
+import { ConnectionDropdown } from "./connectiondropdown";
 import { Tab } from "./tab";
 import "./tabbar.scss";
 import { TabBarEnv } from "./tabbarenv";
@@ -70,6 +71,7 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
     const [draggingTab, setDraggingTab] = useState<string>();
     const [tabsLoaded, setTabsLoaded] = useState({});
     const [newTabId, setNewTabId] = useState<string | null>(null);
+    const [showConnectionDropdown, setShowConnectionDropdown] = useState(false);
 
     const tabbarWrapperRef = useRef<HTMLDivElement>(null);
     const tabBarRef = useRef<HTMLDivElement>(null);
@@ -491,11 +493,14 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
     );
 
     const handleAddTab = () => {
+        setShowConnectionDropdown(!showConnectionDropdown);
+    };
+
+    const handleSelectConnection = async (connName: string) => {
+        setShowConnectionDropdown(false);
         env.electron.createTab();
         tabsWrapperRef.current.style.setProperty("--tabs-wrapper-transition", "width 0.1s ease");
-
         updateScrollDebounced();
-
         setNewTabIdDebounced(null);
     };
 
@@ -614,15 +619,23 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
                         })}
                 </div>
             </div>
-            <button
-                ref={addBtnRef}
-                title="Add Tab"
-                className={`flex h-[22px] px-2 mb-1 mx-1 items-center rounded-md box-border cursor-pointer hover:bg-hoverbg transition-colors text-[12px] text-secondary hover:text-primary${noTabs ? " invisible" : ""}`}
-                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-                onClick={handleAddTab}
-            >
-                <i className="fa fa-solid fa-plus" />
-            </button>
+            <div className="relative">
+                <button
+                    ref={addBtnRef}
+                    title="Add Tab"
+                    className={`flex h-[22px] px-2 mb-1 mx-1 items-center rounded-md box-border cursor-pointer hover:bg-hoverbg transition-colors text-[12px] text-secondary hover:text-primary${noTabs ? " invisible" : ""}`}
+                    style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                    onClick={handleAddTab}
+                >
+                    <i className="fa fa-solid fa-plus" />
+                </button>
+                {showConnectionDropdown && (
+                    <ConnectionDropdown
+                        onSelect={handleSelectConnection}
+                        onClose={() => setShowConnectionDropdown(false)}
+                    />
+                )}
+            </div>
             <div className="flex-1" />
             <div ref={rightContainerRef} className="flex flex-row gap-1 items-end">
                 <div

@@ -1,0 +1,36 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+.connection-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    background: var(--background-color);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    min-width: 200px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.connection-dropdown-header {
+    padding: 4px 8px;
+    font-size: 11px;
+    color: var(--text-color-secondary);
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.connection-dropdown-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.connection-dropdown-item:hover {
+    background: var(--background-color-hover);
+}

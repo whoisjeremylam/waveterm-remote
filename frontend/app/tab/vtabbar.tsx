@@ -13,6 +13,7 @@ import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { buildTabBarContextMenu, buildTabContextMenu } from "./tabcontextmenu";
+import { ConnectionDropdown } from "./connectiondropdown";
 import { VTab, VTabItem } from "./vtab";
 import { VTabBarEnv } from "./vtabbarenv";
 import { WorkspaceSwitcher } from "./workspaceswitcher";
@@ -166,6 +167,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
     const [hoverResetVersion, setHoverResetVersion] = useState(0);
     const [hoveredTabId, setHoveredTabId] = useState<string | null>(null);
     const [isNewTabHovered, setIsNewTabHovered] = useState(false);
+    const [showConnectionDropdown, setShowConnectionDropdown] = useState(false);
     const dragSourceRef = useRef<string | null>(null);
     const didResetHoverForDragRef = useRef(false);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -387,18 +389,29 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                     />
                 )}
             </div>
-            <button
-                type="button"
-                className="group relative flex h-9 w-full shrink-0 cursor-pointer items-center gap-1.5 pl-3 pr-3 text-xs text-secondary/60 transition-colors hover:text-primary select-none whitespace-nowrap"
-                onClick={() => env.electron.createTab()}
-                onMouseEnter={() => setIsNewTabHovered(true)}
-                onMouseLeave={() => setIsNewTabHovered(false)}
-                aria-label="New Tab"
-            >
-                <div className="pointer-events-none absolute inset-x-1 inset-y-[4px] rounded-sm bg-transparent transition-colors group-hover:bg-hover" />
-                <i className="fa fa-solid fa-plus" style={{ fontSize: "10px" }} />
-                <span>New Tab</span>
-            </button>
+            <div className="relative">
+                <button
+                    type="button"
+                    className="group relative flex h-9 w-full shrink-0 cursor-pointer items-center gap-1.5 pl-3 pr-3 text-xs text-secondary/60 transition-colors hover:text-primary select-none whitespace-nowrap"
+                    onClick={() => setShowConnectionDropdown(!showConnectionDropdown)}
+                    onMouseEnter={() => setIsNewTabHovered(true)}
+                    onMouseLeave={() => setIsNewTabHovered(false)}
+                    aria-label="New Tab"
+                >
+                    <div className="pointer-events-none absolute inset-x-1 inset-y-[4px] rounded-sm bg-transparent transition-colors group-hover:bg-hover" />
+                    <i className="fa fa-solid fa-plus" style={{ fontSize: "10px" }} />
+                    <span>New Tab</span>
+                </button>
+                {showConnectionDropdown && (
+                    <ConnectionDropdown
+                        onSelect={(connName) => {
+                            setShowConnectionDropdown(false);
+                            env.electron.createTab();
+                        }}
+                        onClose={() => setShowConnectionDropdown(false)}
+                    />
+                )}
+            </div>
         </div>
     );
 }
