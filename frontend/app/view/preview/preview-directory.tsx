@@ -517,6 +517,15 @@ function TableRow({ model, row, focusIndex, setFocusIndex, setSearch, idx, handl
         [dragItem]
     );
 
+    const handleNativeDragEnd = useCallback(
+        (e: React.DragEvent) => {
+            if (e.dataTransfer.dropEffect === "none" && !dragItem.isDir) {
+                fireAndForget(() => model.downloadFile(dragItem.uri));
+            }
+        },
+        [dragItem, model]
+    );
+
     const dragRef = useCallback(
         (node: HTMLDivElement | null) => {
             drag(node);
@@ -536,6 +545,7 @@ function TableRow({ model, row, focusIndex, setFocusIndex, setSearch, idx, handl
             }}
             onClick={() => setFocusIndex(idx)}
             onContextMenu={(e) => handleFileContextMenu(e, row.original)}
+            onDragEnd={handleNativeDragEnd}
             ref={dragRef}
         >
             {row.getVisibleCells().map((cell) => (

@@ -6,7 +6,7 @@ import { ContextMenuModel } from "@/app/store/contextmenu";
 import { globalStore } from "@/app/store/jotaiStore";
 import type { TabModel } from "@/app/store/tab-model";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
-import { getOverrideConfigAtom, refocusNode } from "@/store/global";
+import { getOverrideConfigAtom, refocusNode, getApi } from "@/store/global";
 import * as WOS from "@/store/wos";
 import { goHistory, goHistoryBack, goHistoryForward } from "@/util/historyutil";
 import { checkKeyPressed } from "@/util/keyutil";
@@ -881,6 +881,18 @@ export class PreviewModel implements ViewModel {
             }
         }
         this.refreshCallback?.();
+    }
+
+    async downloadFile(remoteUri: string) {
+        try {
+            getApi().downloadFile(remoteUri);
+        } catch (e) {
+            const errorStatus: ErrorMsg = {
+                status: "Download Failed",
+                text: `Failed to download: ${e}`,
+            };
+            globalStore.set(this.errorMsgAtom, errorStatus);
+        }
     }
 
     async formatRemoteUri(path: string, get: Getter): Promise<string> {
