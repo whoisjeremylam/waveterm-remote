@@ -577,7 +577,7 @@ function getFocusedTerminalConnection(): string | null {
             }
         }
     }
-    // Fallback: find most recently focused terminal on this tab
+    // Fallback: find first terminal in layout order
     const leafs = globalStore.get(layoutModel.leafs);
     if (leafs) {
         for (const leaf of leafs) {
@@ -636,7 +636,16 @@ function subscribeToConnEvents() {
                     return;
                 }
                 if (connStatus.connected) {
-                    modalsModel.dismissUserInputModal(connStatus.connection);
+                    const userInputModals = globalStore.get(modalsModel.activeUserInputModalsAtom);
+                    const modalEntry = userInputModals[connStatus.connection];
+                    if (modalEntry) {
+                        const title = (modalEntry.props?.title ?? "").toLowerCase();
+                        const isPasswordPrompt =
+                            title.includes("password") || title.includes("passphrase") || title.includes("authentication");
+                        if (isPasswordPrompt) {
+                            modalsModel.dismissUserInputModal(connStatus.connection);
+                        }
+                    }
                 }
                 console.log("connstatus update", connStatus);
                 const curAtom = getConnStatusAtom(connStatus.connection);

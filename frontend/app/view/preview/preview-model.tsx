@@ -860,8 +860,19 @@ export class PreviewModel implements ViewModel {
     }
 
     async uploadFiles(files: File[], targetDir: string) {
-        const remoteDir = await this.formatRemoteUri(targetDir, globalStore.get);
+        const MaxUploadSize = 50 * 1024 * 1024; // 50MB
+        const cleanTargetDir = targetDir.replace(/\/+$/, "");
+        const remoteDir = await this.formatRemoteUri(cleanTargetDir, globalStore.get);
+        let successCount = 0;
         for (const file of files) {
+            if (file.size > MaxUploadSize) {
+                const errorStatus: ErrorMsg = {
+                    status: "Upload Failed",
+                    text: `File "${file.name}" exceeds 50MB size limit`,
+                };
+                globalStore.set(this.errorMsgAtom, errorStatus);
+                continue;
+            }
             try {
                 const arrayBuffer = await file.arrayBuffer();
                 const bytes = new Uint8Array(arrayBuffer);
@@ -872,6 +883,7 @@ export class PreviewModel implements ViewModel {
                     },
                     data64,
                 });
+                successCount++;
             } catch (e) {
                 const errorStatus: ErrorMsg = {
                     status: "Upload Failed",
@@ -880,10 +892,12 @@ export class PreviewModel implements ViewModel {
                 globalStore.set(this.errorMsgAtom, errorStatus);
             }
         }
-        this.refreshCallback?.();
+        if (successCount > 0) {
+            this.refreshCallback?.();
+        }
     }
 
-    async downloadFile(remoteUri: string) {
+    downloadFile(remoteUri: string) {
         try {
             getApi().downloadFile(remoteUri);
         } catch (e) {

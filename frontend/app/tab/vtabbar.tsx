@@ -3,8 +3,10 @@
 
 import { Tooltip } from "@/app/element/tooltip";
 import { getTabBadgeAtom } from "@/app/store/badge";
+import { globalStore } from "@/app/store/jotaiStore";
 import { getTabModelByTabId } from "@/app/store/tab-model";
-import { makeORef } from "@/app/store/wos";
+import { RpcApi } from "@/app/store/wshclientapi";
+import * as WOS from "@/app/store/wos";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
@@ -88,7 +90,7 @@ function VTabWrapper({
     onHoverChanged,
 }: VTabWrapperProps) {
     const env = useWaveEnv<VTabBarEnv>();
-    const [tabData] = env.wos.useWaveObjectValue<Tab>(makeORef("tab", tabId));
+    const [tabData] = env.wos.useWaveObjectValue<Tab>(WOS.makeORef("tab", tabId));
     const badges = useAtomValue(getTabBadgeAtom(tabId, env));
     const renameRef = useRef<(() => void) | null>(null);
     const tabModel = getTabModelByTabId(tabId, env);
@@ -174,6 +176,8 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
     const scrollAnimFrameRef = useRef<number | null>(null);
     const scrollDirectionRef = useRef<number>(0);
     const scrollSpeedRef = useRef<number>(0);
+    const pendingConnectionRef = useRef<string | null>(null);
+    const prevTabIdsRef = useRef<string[]>(tabIds);
 
     useEffect(() => {
         setOrderedTabIds(tabIds);
@@ -184,6 +188,32 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
             setOrderedTabIds(workspace?.tabids ?? []);
         }
     }, [reinitVersion]);
+
+    useEffect(() => {
+        const pendingConn = pendingConnectionRef.current;
+        if (!pendingConn || !workspace?.tabids?.length) {
+            prevTabIdsRef.current = tabIds;
+            return;
+        }
+        const prevTabIds = prevTabIdsRef.current;
+        const newTabId = tabIds.find((id) => !prevTabIds.includes(id));
+        prevTabIdsRef.current = tabIds;
+        if (!newTabId) {
+            return;
+        }
+        pendingConnectionRef.current = null;
+        fireAndForget(async () => {
+            const tabOref = WOS.makeORef("tab", newTabId);
+            const tabData = globalStore.get(WOS.getWaveObjectAtom<Tab>(tabOref));
+            const blockId = tabData?.blockids?.[0];
+            if (blockId) {
+                await RpcApi.SetMetaCommand(TabRpcClient, {
+                    oref: WOS.makeORef("block", blockId),
+                    meta: { connection: pendingConn },
+                });
+            }
+        });
+    }, [tabIds, workspace]);
 
     useEffect(() => {
         if (activeTabId == null || scrollContainerRef.current == null) {
@@ -393,7 +423,13 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                 <button
                     type="button"
                     className="group relative flex h-9 w-full shrink-0 cursor-pointer items-center gap-1.5 pl-3 pr-3 text-xs text-secondary/60 transition-colors hover:text-primary select-none whitespace-nowrap"
-                    onClick={() => setShowConnectionDropdown(!showConnectionDropdown)}
+                    onClick={() => {
+                        if (showConnectionDropdown) {
+                            setShowConnectionDropdown(false);
+                            return;
+                        }
+                        setShowConnectionDropdown(true);
+                    }}
                     onMouseEnter={() => setIsNewTabHovered(true)}
                     onMouseLeave={() => setIsNewTabHovered(false)}
                     aria-label="New Tab"
@@ -406,6 +442,9 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                     <ConnectionDropdown
                         onSelect={(connName) => {
                             setShowConnectionDropdown(false);
+                            if (connName) {
+                                pendingConnectionRef.current = connName;
+                            }
                             env.electron.createTab();
                         }}
                         onClose={() => setShowConnectionDropdown(false)}

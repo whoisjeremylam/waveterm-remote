@@ -33,7 +33,8 @@ class ModalsModel {
 
     hasOpenModals(): boolean {
         const modals = globalStore.get(this.modalsAtom);
-        return modals.length > 0;
+        const userInputModals = globalStore.get(this.activeUserInputModalsAtom);
+        return modals.length > 0 || Object.keys(userInputModals).length > 0;
     }
 
     isModalOpen(displayName: string): boolean {

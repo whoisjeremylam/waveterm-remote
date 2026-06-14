@@ -28,11 +28,10 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
                 type: "userinputresp",
                 requestid: userInputRequest.requestid,
                 errormsg: "Canceled by the user",
-                connname: connName,
             })
         );
         handleDismiss();
-    }, [userInputRequest, connName, handleDismiss]);
+    }, [userInputRequest, handleDismiss]);
 
     const handleSendText = useCallback(() => {
         fireAndForget(() =>
@@ -41,11 +40,10 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
                 requestid: userInputRequest.requestid,
                 text: responseText,
                 checkboxstat: checkboxRef?.current?.checked ?? false,
-                connname: connName,
             })
         );
         handleDismiss();
-    }, [responseText, userInputRequest, connName, handleDismiss]);
+    }, [responseText, userInputRequest, handleDismiss]);
 
     const handleSendConfirm = useCallback(
         (response: boolean) => {
@@ -55,12 +53,11 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
                     requestid: userInputRequest.requestid,
                     confirm: response,
                     checkboxstat: checkboxRef?.current?.checked ?? false,
-                    connname: connName,
                 })
             );
             handleDismiss();
         },
-        [userInputRequest, connName, handleDismiss]
+        [userInputRequest, handleDismiss]
     );
 
     const handleSubmit = useCallback(() => {
