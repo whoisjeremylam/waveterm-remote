@@ -574,18 +574,23 @@ export class TermWrap {
                     hasKitty: data.includes("\x1b_G"),
                     dataLength: data.length,
                     hasImageAddon: !!this.imageAddon,
+                    hasBel: data.includes("\x07"),
+                    hasSt: data.includes("\x1b\\"),
                     preview: data.substring(0, 150),
                 });
             }
         } else if (data instanceof Uint8Array) {
-            const str = new TextDecoder().decode(data.slice(0, 300));
+            const str = new TextDecoder().decode(data);
             if (str.includes("\x1b]1337;File=") || str.includes("\x1b_G")) {
-                console.log("[termwrap] IMAGE SEQUENCE DETECTED (binary)", {
+                console.log("[termwrap] IMAGE CHUNK (binary)", {
                     hasIterm2: str.includes("\x1b]1337;File="),
                     hasKitty: str.includes("\x1b_G"),
                     dataLength: data.length,
                     hasImageAddon: !!this.imageAddon,
-                    preview: str.substring(0, 150),
+                    hasBel: str.includes("\x07"),
+                    hasSt: str.includes("\x1b\\"),
+                    preview: str.substring(0, 200),
+                    tail: str.substring(str.length - 50),
                 });
             }
         }
