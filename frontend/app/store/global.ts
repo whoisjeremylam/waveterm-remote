@@ -577,16 +577,16 @@ function getFocusedTerminalConnection(): string | null {
             }
         }
     }
-    // Fallback: find first terminal in layout order
-    const leafs = globalStore.get(layoutModel.leafs);
-    if (leafs) {
-        for (const leaf of leafs) {
-            const blockId = leaf.data?.blockId;
-            if (blockId) {
-                const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
-                if (blockData?.meta?.view === "term" && blockData?.meta?.connection) {
-                    return blockData.meta.connection;
-                }
+    // Fallback: find most recently focused terminal using focus history
+    const focusHistory = layoutModel.focusHistory;
+    for (const nodeId of focusHistory) {
+        const node = layoutModel.getNodeById(nodeId);
+        if (node == null) continue;
+        const blockId = node.data?.blockId;
+        if (blockId) {
+            const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+            if (blockData?.meta?.view === "term" && blockData?.meta?.connection) {
+                return blockData.meta.connection;
             }
         }
     }
