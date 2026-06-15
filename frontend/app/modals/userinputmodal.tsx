@@ -6,13 +6,21 @@ import { Markdown } from "@/element/markdown";
 import { modalsModel } from "@/store/modalmodel";
 import * as keyutil from "@/util/keyutil";
 import { fireAndForget } from "@/util/util";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { UserInputService } from "../store/services";
 
 const UserInputModal = (userInputRequest: UserInputRequest) => {
     const [responseText, setResponseText] = useState("");
-    const [countdown, setCountdown] = useState(Math.floor(userInputRequest.timeoutms / 1000));
     const checkboxRef = useRef<HTMLInputElement>(null);
+    const connName = userInputRequest.connname;
+
+    const handleDismiss = useCallback(() => {
+        if (connName) {
+            modalsModel.dismissUserInputModal(connName);
+        } else {
+            modalsModel.popModal();
+        }
+    }, [connName]);
 
     const handleSendErrResponse = useCallback(() => {
         fireAndForget(() =>
@@ -22,8 +30,8 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
                 errormsg: "Canceled by the user",
             })
         );
-        modalsModel.popModal();
-    }, [responseText, userInputRequest]);
+        handleDismiss();
+    }, [userInputRequest, handleDismiss]);
 
     const handleSendText = useCallback(() => {
         fireAndForget(() =>
@@ -34,8 +42,8 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
                 checkboxstat: checkboxRef?.current?.checked ?? false,
             })
         );
-        modalsModel.popModal();
-    }, [responseText, userInputRequest]);
+        handleDismiss();
+    }, [responseText, userInputRequest, handleDismiss]);
 
     const handleSendConfirm = useCallback(
         (response: boolean) => {
@@ -47,9 +55,9 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
                     checkboxstat: checkboxRef?.current?.checked ?? false,
                 })
             );
-            modalsModel.popModal();
+            handleDismiss();
         },
-        [userInputRequest]
+        [userInputRequest, handleDismiss]
     );
 
     const handleSubmit = useCallback(() => {
@@ -121,20 +129,6 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
         );
     }, []);
 
-    useEffect(() => {
-        let timeout: ReturnType<typeof setTimeout>;
-        if (countdown <= 0) {
-            timeout = setTimeout(() => {
-                handleSendErrResponse();
-            }, 300);
-        } else {
-            timeout = setTimeout(() => {
-                setCountdown(countdown - 1);
-            }, 1000);
-        }
-        return () => clearTimeout(timeout);
-    }, [countdown]);
-
     const handleNegativeResponse = useCallback(() => {
         switch (userInputRequest.responsetype) {
             case "text":
@@ -155,7 +149,7 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
             okLabel={userInputRequest.oklabel}
             cancelLabel={userInputRequest.cancellabel}
         >
-            <div className="font-bold text-primary mx-4 pb-2.5">{userInputRequest.title + ` (${countdown}s)`}</div>
+            <div className="font-bold text-primary mx-4 pb-2.5">{userInputRequest.title}</div>
             <div className="flex flex-col justify-between gap-4 mx-4 mb-4 max-w-[500px] font-mono text-primary">
                 {queryText}
                 {inputBox}

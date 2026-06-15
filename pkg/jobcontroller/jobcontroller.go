@@ -614,6 +614,11 @@ func HandleSystemResume(ctx context.Context) {
 // keyboard-interactive authentication. When true, automatic reconnect
 // cannot succeed without user involvement, so the scheduler should skip it.
 func needsInteractiveAuth(connName string) bool {
+	// If a password is cached from a previous session, no interactive prompt is needed
+	if conncontroller.HasCachedPassword(connName) {
+		return false
+	}
+
 	config := wconfig.GetWatcher().GetFullConfig()
 	connConfig, ok := config.Connections[connName]
 	if !ok {

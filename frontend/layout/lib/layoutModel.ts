@@ -894,6 +894,14 @@ export class LayoutModel {
     }
 
     /**
+     * Returns the focus history stack (most recent first).
+     * Used to find the most recently focused terminal when no block is focused.
+     */
+    get focusHistory(): readonly string[] {
+        return this.focusedNodeIdStack;
+    }
+
+    /**
      * Checks whether the focused node id has changed and, if so, whether to update the focused node stack. If the focused node was deleted, will pop the latest value from the stack.
      * @param leafOrder The new leaf order array to use when searching for stale nodes in the stack.
      */
@@ -1471,6 +1479,15 @@ export class LayoutModel {
             }
         }
         return null;
+    }
+
+    /**
+     * Get the layout node matching the specified node ID.
+     * @param nodeId The ID of the node to retrieve.
+     * @returns The node with the specified ID, null if not found.
+     */
+    getNodeById(nodeId: string): LayoutNode | null {
+        return findNode(this.treeState.rootNode, nodeId) ?? null;
     }
 
     /**

@@ -22,6 +22,7 @@ var connContextKey connContextKeyType
 
 type connData struct {
 	BlockId string
+	ConnName string
 }
 
 func ContextWithConnData(ctx context.Context, blockId string) context.Context {
@@ -29,6 +30,13 @@ func ContextWithConnData(ctx context.Context, blockId string) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, connContextKey, &connData{BlockId: blockId})
+}
+
+func ContextWithConnDataAndName(ctx context.Context, blockId string, connName string) context.Context {
+	if blockId == "" && connName == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, connContextKey, &connData{BlockId: blockId, ConnName: connName})
 }
 
 func GetConnData(ctx context.Context) *connData {
@@ -40,6 +48,13 @@ func GetConnData(ctx context.Context) *connData {
 		return nil
 	}
 	return dataPtr.(*connData)
+}
+
+func (cd *connData) GetConnName() string {
+	if cd == nil {
+		return ""
+	}
+	return cd.ConnName
 }
 
 type CommandSpec struct {

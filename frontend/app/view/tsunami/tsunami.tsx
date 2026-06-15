@@ -104,9 +104,12 @@ class TsunamiViewModel extends WebViewModel {
             }
             this.triggerRestartAtom();
         }
+        const blockData = globalStore.get(this.blockAtom);
+        const connName = blockData?.meta?.connection;
         const prtn = RpcApi.ControllerResyncCommand(TabRpcClient, {
             tabid: this.tabModel.tabId,
             blockid: this.blockId,
+            connname: connName,
             forcerestart: forceRestart,
         });
         prtn.catch((e) => console.log(`error controller resync (${logContext})`, e));
@@ -132,9 +135,12 @@ class TsunamiViewModel extends WebViewModel {
             // Wait a bit for the controller to fully stop
             await new Promise((resolve) => setTimeout(resolve, 300));
             // Then resync to restart it
+            const blockData = globalStore.get(this.blockAtom);
+            const connName = blockData?.meta?.connection;
             await RpcApi.ControllerResyncCommand(TabRpcClient, {
                 tabid: this.tabModel.tabId,
                 blockid: this.blockId,
+                connname: connName,
                 forcerestart: false,
             });
         } catch (e) {

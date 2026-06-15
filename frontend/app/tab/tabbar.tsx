@@ -1,8 +1,11 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Tooltip } from "@/app/element/tooltip";
+import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { globalStore } from "@/app/store/jotaiStore";
+import * as WOS from "@/app/store/wos";
+import { Tooltip } from "@/app/element/tooltip";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { deleteLayoutModelForTab } from "@/layout/index";
@@ -12,6 +15,7 @@ import { useAtomValue } from "jotai";
 import { OverlayScrollbars } from "overlayscrollbars";
 import { createRef, memo, useCallback, useEffect, useRef, useState } from "react";
 import { debounce } from "throttle-debounce";
+import { ConnectionDropdown } from "./connectiondropdown";
 import { Tab } from "./tab";
 import "./tabbar.scss";
 import { TabBarEnv } from "./tabbarenv";
@@ -70,6 +74,7 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
     const [draggingTab, setDraggingTab] = useState<string>();
     const [tabsLoaded, setTabsLoaded] = useState({});
     const [newTabId, setNewTabId] = useState<string | null>(null);
+    const [showConnectionDropdown, setShowConnectionDropdown] = useState(false);
 
     const tabbarWrapperRef = useRef<HTMLDivElement>(null);
     const tabBarRef = useRef<HTMLDivElement>(null);
@@ -121,6 +126,32 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
             setTabIds(newTabIdsArr);
         }
     }, [workspace, tabIds]);
+
+    useEffect(() => {
+        const pendingConn = pendingConnectionRef.current;
+        if (!pendingConn || !workspace?.tabids?.length) {
+            prevTabIdsRef.current = tabIds;
+            return;
+        }
+        const prevTabIds = prevTabIdsRef.current;
+        const newTabId = tabIds.find((id) => !prevTabIds.includes(id));
+        prevTabIdsRef.current = tabIds;
+        if (!newTabId) {
+            return;
+        }
+        pendingConnectionRef.current = null;
+        fireAndForget(async () => {
+            const tabOref = WOS.makeORef("tab", newTabId);
+            const tabData = globalStore.get(WOS.getWaveObjectAtom<Tab>(tabOref));
+            const blockId = tabData?.blockids?.[0];
+            if (blockId) {
+                await RpcApi.SetMetaCommand(TabRpcClient, {
+                    oref: WOS.makeORef("block", blockId),
+                    meta: { connection: pendingConn },
+                });
+            }
+        });
+    }, [tabIds, workspace]);
 
     const saveTabsPosition = useCallback(() => {
         const tabs = tabRefs.current;
@@ -490,12 +521,25 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
         []
     );
 
+    const pendingConnectionRef = useRef<string | null>(null);
+    const prevTabIdsRef = useRef<string[]>([]);
+
     const handleAddTab = () => {
+        if (showConnectionDropdown) {
+            setShowConnectionDropdown(false);
+            return;
+        }
+        setShowConnectionDropdown(true);
+    };
+
+    const handleSelectConnection = async (connName: string) => {
+        setShowConnectionDropdown(false);
+        if (connName) {
+            pendingConnectionRef.current = connName;
+        }
         env.electron.createTab();
         tabsWrapperRef.current.style.setProperty("--tabs-wrapper-transition", "width 0.1s ease");
-
         updateScrollDebounced();
-
         setNewTabIdDebounced(null);
     };
 
@@ -614,15 +658,23 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
                         })}
                 </div>
             </div>
-            <button
-                ref={addBtnRef}
-                title="Add Tab"
-                className={`flex h-[22px] px-2 mb-1 mx-1 items-center rounded-md box-border cursor-pointer hover:bg-hoverbg transition-colors text-[12px] text-secondary hover:text-primary${noTabs ? " invisible" : ""}`}
-                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-                onClick={handleAddTab}
-            >
-                <i className="fa fa-solid fa-plus" />
-            </button>
+            <div className="relative">
+                <button
+                    ref={addBtnRef}
+                    title="Add Tab"
+                    className={`flex h-[22px] px-2 mb-1 mx-1 items-center rounded-md box-border cursor-pointer hover:bg-hoverbg transition-colors text-[12px] text-secondary hover:text-primary${noTabs ? " invisible" : ""}`}
+                    style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                    onClick={handleAddTab}
+                >
+                    <i className="fa fa-solid fa-plus" />
+                </button>
+                {showConnectionDropdown && (
+                    <ConnectionDropdown
+                        onSelect={handleSelectConnection}
+                        onClose={() => setShowConnectionDropdown(false)}
+                    />
+                )}
+            </div>
             <div className="flex-1" />
             <div ref={rightContainerRef} className="flex flex-row gap-1 items-end">
                 <div

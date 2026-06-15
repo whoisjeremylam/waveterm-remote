@@ -70,8 +70,12 @@ function initGlobalWaveEventSubs(initOpts: WaveInitOpts) {
     waveEventSubscribeSingle({
         eventType: "userinput",
         handler: (event) => {
-            // console.log("userinput event handler", event);
-            modalsModel.pushModal("UserInputModal", { ...event.data });
+            const connName = event.data?.connname;
+            if (connName) {
+                modalsModel.upsertUserInputModal(connName, "UserInputModal", { ...event.data });
+            } else {
+                modalsModel.pushModal("UserInputModal", { ...event.data });
+            }
         },
         scope: initOpts.windowId,
     });
@@ -558,6 +562,37 @@ function getFocusedBlockId(): string {
     return focusedLayoutNode?.data?.blockId;
 }
 
+function getFocusedTerminalConnection(): string | null {
+    const layoutModel = getLayoutModelForStaticTab();
+    if (layoutModel == null) {
+        return null;
+    }
+    const focusedNode = globalStore.get(layoutModel.focusedNode);
+    if (focusedNode != null) {
+        const blockId = focusedNode.data?.blockId;
+        if (blockId) {
+            const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+            if (blockData?.meta?.connection) {
+                return blockData.meta.connection;
+            }
+        }
+    }
+    // Fallback: find most recently focused terminal using focus history
+    const focusHistory = layoutModel.focusHistory;
+    for (const nodeId of focusHistory) {
+        const node = layoutModel.getNodeById(nodeId);
+        if (node == null) continue;
+        const blockId = node.data?.blockId;
+        if (blockId) {
+            const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+            if (blockData?.meta?.view === "term" && blockData?.meta?.connection) {
+                return blockData.meta.connection;
+            }
+        }
+    }
+    return null;
+}
+
 // pass null to refocus the currently focused block
 function refocusNode(blockId: string) {
     if (blockId == null) {
@@ -599,6 +634,26 @@ function subscribeToConnEvents() {
                 const connStatus = event.data;
                 if (connStatus == null || isBlank(connStatus.connection)) {
                     return;
+                }
+                if (connStatus.connected) {
+                    // Auto-dismiss password prompts for this connection on successful connect
+                    const userInputModals = globalStore.get(modalsModel.activeUserInputModalsAtom);
+                    const modalEntry = userInputModals[connStatus.connection];
+                    if (modalEntry) {
+                        const promptType = modalEntry.props?.prompttype;
+                        const title = (modalEntry.props?.title ?? "").toLowerCase();
+                        // Use PromptType field if available, fall back to title string matching
+                        const isPasswordPrompt =
+                            promptType === "password" ||
+                            promptType === "passphrase" ||
+                            promptType === "keyboard-interactive" ||
+                            title.includes("password") ||
+                            title.includes("passphrase") ||
+                            title.includes("authentication");
+                        if (isPasswordPrompt) {
+                            modalsModel.dismissUserInputModal(connStatus.connection);
+                        }
+                    }
                 }
                 console.log("connstatus update", connStatus);
                 const curAtom = getConnStatusAtom(connStatus.connection);
@@ -670,6 +725,7 @@ export {
     getConnConfigKeyAtom,
     getConnStatusAtom,
     getFocusedBlockId,
+    getFocusedTerminalConnection,
     getHostName,
     getLocalHostDisplayNameAtom,
     getObjectId,

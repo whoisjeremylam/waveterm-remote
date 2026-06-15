@@ -285,6 +285,7 @@ type CommandControllerResyncData struct {
 	ForceRestart bool                 `json:"forcerestart,omitempty"`
 	TabId        string               `json:"tabid"`
 	BlockId      string               `json:"blockid"`
+	ConnName     string               `json:"connname,omitempty"`
 	RtOpts       *waveobj.RuntimeOpts `json:"rtopts,omitempty"`
 }
 

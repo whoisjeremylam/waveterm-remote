@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Tooltip } from "@/app/element/tooltip";
+import { getFocusedTerminalConnection } from "@/app/store/global";
+import { globalStore } from "@/app/store/jotaiStore";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import * as WOS from "@/app/store/wos";
 import { useWaveEnv, WaveEnv, WaveEnvSubset } from "@/app/waveenv/waveenv";
 import { shouldIncludeWidgetForWorkspace } from "@/app/workspace/widgetfilter";
+import { getLayoutModelForStaticTab } from "@/layout/index";
 import { modalsModel } from "@/store/modalmodel";
 import { fireAndForget, isBlank, makeIconClass } from "@/util/util";
 import {
@@ -54,8 +58,39 @@ type WidgetPropsType = {
     env: WidgetsEnv;
 };
 
+const TOGGLE_WIDGETS = ["preview", "processviewer"];
+
+function toggleWidgetVisibility(viewType: string): boolean {
+    const layoutModel = getLayoutModelForStaticTab();
+    if (!layoutModel) return false;
+    const leafs = globalStore.get(layoutModel.leafs);
+    if (!leafs) return false;
+    for (const leaf of leafs) {
+        const blockId = leaf.data?.blockId;
+        if (!blockId) continue;
+        const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+        if (blockData?.meta?.view === viewType) {
+            layoutModel.focusNode(leaf.id);
+            return true;
+        }
+    }
+    return false;
+}
+
 async function handleWidgetSelect(widget: WidgetConfigType, env: WidgetsEnv) {
-    const blockDef = widget.blockdef;
+    const viewType = widget.blockdef?.meta?.view;
+    if (TOGGLE_WIDGETS.includes(viewType)) {
+        if (toggleWidgetVisibility(viewType)) {
+            return;
+        }
+    }
+    const blockDef = { ...widget.blockdef };
+    if (!blockDef.meta?.connection) {
+        const focusedConn = getFocusedTerminalConnection();
+        if (focusedConn) {
+            blockDef.meta = { ...blockDef.meta, connection: focusedConn };
+        }
+    }
     env.createBlock(blockDef, widget.magnified);
 }
 
