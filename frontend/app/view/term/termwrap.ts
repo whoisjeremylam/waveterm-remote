@@ -193,6 +193,7 @@ export class TermWrap {
                 }
             )
         );
+        this.setTermRenderer(WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom");
         try {
             this.imageAddon = new ImageAddon({
                 sixelSupport: true,
@@ -201,12 +202,10 @@ export class TermWrap {
                 enableSizeReports: true,
             });
             this.terminal.loadAddon(this.imageAddon);
-            console.log("[termwrap] ImageAddon loaded successfully", {
-                sixelSupport: true,
-                kittySupport: true,
-                iipSupport: true,
-                enableSizeReports: true,
+            (window as any).__imageAddon = this.imageAddon;
+            console.log("[termwrap] ImageAddon loaded after renderer", {
                 renderer: WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom",
+                storageUsage: this.imageAddon.storageUsage,
             });
             // Debug: log ImageAddon state periodically
             this.imageAddonCheckInterval = setInterval(() => {
@@ -219,7 +218,6 @@ export class TermWrap {
         } catch (e) {
             console.error("[termwrap] ImageAddon failed to load", e);
         }
-        this.setTermRenderer(WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom");
         // Register OSC handlers
         this.terminal.parser.registerOscHandler(7, (data: string) => {
             try {
