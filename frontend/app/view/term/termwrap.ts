@@ -202,9 +202,15 @@ export class TermWrap {
                 const internalParser = terminal._core?._inputHandler?._parser;
                 console.log("[termwrap] ImageAddon.activate", {
                     sameParser: publicParser === internalParser,
-                    publicParserType: publicParser?.constructor?.name,
-                    internalParserType: internalParser?.constructor?.name,
                 });
+                // Fix parser mismatch: re-register IIP handler on public parser
+                if (publicParser !== internalParser) {
+                    const iipHandler = this._handlers?.get("iip");
+                    if (iipHandler) {
+                        publicParser.registerOscHandler(1337, iipHandler);
+                        console.log("[termwrap] Re-registered IIP handler on public parser");
+                    }
+                }
                 return result;
             };
             this.imageAddon = new ImageAddon({
