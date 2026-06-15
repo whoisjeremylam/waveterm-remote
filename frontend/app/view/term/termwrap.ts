@@ -103,6 +103,8 @@ export class TermWrap {
     webglAddon: WebglAddon | null = null;
     imageAddon: any = null;
     imageAddonCheckInterval: any = null;
+    imageWriteCount: number | undefined = undefined;
+    imageBytesTotal: number = 0;
     webglContextLossDisposable: TermTypes.IDisposable | null = null;
     webglEnabledAtom: jotai.PrimitiveAtom<boolean>;
     pasteActive: boolean = false;
@@ -575,32 +577,65 @@ export class TermWrap {
             this.lastUpdated = Date.now();
             resolve();
         });
-        // Debug: detect image escape sequences in terminal data
+        // Debug: track image data flow
         if (typeof data === "string") {
             if (data.includes("\x1b]1337;File=") || data.includes("\x1b_G")) {
-                console.log("[termwrap] IMAGE SEQUENCE DETECTED", {
-                    hasIterm2: data.includes("\x1b]1337;File="),
-                    hasKitty: data.includes("\x1b_G"),
+                this.imageWriteCount = 0;
+                this.imageBytesTotal = 0;
+                console.log("[termwrap] IMAGE START (string)", {
                     dataLength: data.length,
-                    hasImageAddon: !!this.imageAddon,
                     hasBel: data.includes("\x07"),
-                    hasSt: data.includes("\x1b\\"),
-                    preview: data.substring(0, 150),
                 });
+            }
+            if (this.imageWriteCount !== undefined) {
+                this.imageWriteCount++;
+                this.imageBytesTotal += data.length;
+                if (this.imageWriteCount <= 3 || data.includes("\x07") || data.includes("\x1b\\")) {
+                    console.log("[termwrap] IMAGE WRITE #" + this.imageWriteCount, {
+                        dataLength: data.length,
+                        totalBytes: this.imageBytesTotal,
+                        hasBel: data.includes("\x07"),
+                        hasSt: data.includes("\x1b\\"),
+                    });
+                }
+                if (data.includes("\x07") || data.includes("\x1b\\")) {
+                    console.log("[termwrap] IMAGE END", {
+                        totalWrites: this.imageWriteCount,
+                        totalBytes: this.imageBytesTotal,
+                    });
+                    this.imageWriteCount = undefined;
+                    this.imageBytesTotal = 0;
+                }
             }
         } else if (data instanceof Uint8Array) {
             const str = new TextDecoder().decode(data);
             if (str.includes("\x1b]1337;File=") || str.includes("\x1b_G")) {
-                console.log("[termwrap] IMAGE CHUNK (binary)", {
-                    hasIterm2: str.includes("\x1b]1337;File="),
-                    hasKitty: str.includes("\x1b_G"),
+                this.imageWriteCount = 0;
+                this.imageBytesTotal = 0;
+                console.log("[termwrap] IMAGE START (binary)", {
                     dataLength: data.length,
-                    hasImageAddon: !!this.imageAddon,
                     hasBel: str.includes("\x07"),
-                    hasSt: str.includes("\x1b\\"),
-                    preview: str.substring(0, 200),
-                    tail: str.substring(str.length - 50),
                 });
+            }
+            if (this.imageWriteCount !== undefined) {
+                this.imageWriteCount++;
+                this.imageBytesTotal += data.length;
+                if (this.imageWriteCount <= 3 || str.includes("\x07") || str.includes("\x1b\\")) {
+                    console.log("[termwrap] IMAGE WRITE #" + this.imageWriteCount, {
+                        dataLength: data.length,
+                        totalBytes: this.imageBytesTotal,
+                        hasBel: str.includes("\x07"),
+                        hasSt: str.includes("\x1b\\"),
+                    });
+                }
+                if (str.includes("\x07") || str.includes("\x1b\\")) {
+                    console.log("[termwrap] IMAGE END", {
+                        totalWrites: this.imageWriteCount,
+                        totalBytes: this.imageBytesTotal,
+                    });
+                    this.imageWriteCount = undefined;
+                    this.imageBytesTotal = 0;
+                }
             }
         }
         return prtn;
