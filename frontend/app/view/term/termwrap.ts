@@ -102,6 +102,7 @@ export class TermWrap {
     toDispose: TermTypes.IDisposable[] = [];
     webglAddon: WebglAddon | null = null;
     imageAddon: any = null;
+    imageAddonCheckInterval: any = null;
     webglContextLossDisposable: TermTypes.IDisposable | null = null;
     webglEnabledAtom: jotai.PrimitiveAtom<boolean>;
     pasteActive: boolean = false;
@@ -205,6 +206,14 @@ export class TermWrap {
                 enableSizeReports: true,
                 renderer: WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom",
             });
+            // Debug: log ImageAddon state periodically
+            this.imageAddonCheckInterval = setInterval(() => {
+                if (this.imageAddon && typeof this.imageAddon.storageUsage === "number") {
+                    if (this.imageAddon.storageUsage > 0) {
+                        console.log("[termwrap] ImageAddon storage usage:", this.imageAddon.storageUsage);
+                    }
+                }
+            }, 1000);
         } catch (e) {
             console.error("[termwrap] ImageAddon failed to load", e);
         }
