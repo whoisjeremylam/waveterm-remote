@@ -591,10 +591,13 @@ export class TermWrap {
     async resyncController(reason: string) {
         dlog("resync controller", this.blockId, reason);
         const rtOpts: RuntimeOpts = { termsize: { rows: this.terminal.rows, cols: this.terminal.cols } };
+        const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", this.blockId)));
+        const connName = blockData?.meta?.connection;
         try {
             await RpcApi.ControllerResyncCommand(TabRpcClient, {
                 tabid: this.tabId,
                 blockid: this.blockId,
+                connname: connName,
                 rtopts: rtOpts,
             });
         } catch (e) {

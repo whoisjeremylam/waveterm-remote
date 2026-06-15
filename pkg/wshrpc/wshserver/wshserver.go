@@ -305,7 +305,7 @@ func (ws *WshServer) ControllerDestroyCommand(ctx context.Context, blockId strin
 }
 
 func (ws *WshServer) ControllerResyncCommand(ctx context.Context, data wshrpc.CommandControllerResyncData) error {
-	ctx = genconn.ContextWithConnData(ctx, data.BlockId)
+	ctx = genconn.ContextWithConnDataAndName(ctx, data.BlockId, data.ConnName)
 	ctx = termCtxWithLogBlockId(ctx, data.BlockId)
 	return blockcontroller.ResyncController(ctx, data.TabId, data.BlockId, data.RtOpts, data.ForceRestart)
 }

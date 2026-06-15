@@ -39,6 +39,7 @@ type UserInputRequest struct {
 	OkLabel      string `json:"oklabel,omitempty"`
 	CancelLabel  string `json:"cancellabel,omitempty"`
 	ConnName     string `json:"connname,omitempty"`
+	PromptType   string `json:"prompttype,omitempty"` // "password", "confirm", etc.
 }
 
 type UserInputResponse struct {

@@ -940,3 +940,390 @@ func TestNormalizeTcpListenAddr(t *testing.T) {
 		})
 	}
 }
+
+// --- Password Caching Tests ---
+
+func TestCachePassword(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	// Initially no cached password
+	if pw := conn.getCachedPassword(); pw != nil {
+		t.Fatalf("expected nil cached password, got %q", *pw)
+	}
+
+	// Cache a password
+	conn.cachePassword("secret123")
+	pw := conn.getCachedPassword()
+	if pw == nil {
+		t.Fatal("expected cached password to be set")
+	}
+	if *pw != "secret123" {
+		t.Fatalf("expected 'secret123', got %q", *pw)
+	}
+}
+
+func TestClearCachedPassword(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("secret123")
+	conn.clearCachedPassword()
+
+	if pw := conn.getCachedPassword(); pw != nil {
+		t.Fatalf("expected nil after clear, got %q", *pw)
+	}
+}
+
+func TestCachedPasswordClearedOnDisconnect(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("secret123")
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected password to be cached before disconnect")
+	}
+
+	conn.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	if pw := conn.getCachedPassword(); pw != nil {
+		t.Fatalf("expected nil after disconnect, got %q", *pw)
+	}
+}
+
+func TestCachedPasswordClearedOnAuthFailure(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("wrong-password")
+
+	// Mock connectInternal to return auth failure
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		return fmt.Errorf("unable to authenticate")
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	ctx := context.Background()
+	conn.Connect(ctx, &wconfig.ConnKeywords{})
+
+	// After auth failure, cached password should be cleared
+	if pw := conn.getCachedPassword(); pw != nil {
+		t.Fatalf("expected nil after auth failure, got %q", *pw)
+	}
+}
+
+// --- PendingAuth Tests ---
+
+func TestSetPendingAuth(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	// First call should set the flag
+	if !conn.setPendingAuth() {
+		t.Fatal("expected setPendingAuth to return true on first call")
+	}
+
+	// Second call should return false (already pending)
+	if conn.setPendingAuth() {
+		t.Fatal("expected setPendingAuth to return false when already pending")
+	}
+
+	// Clear and try again
+	conn.clearPendingAuth()
+	if !conn.setPendingAuth() {
+		t.Fatal("expected setPendingAuth to return true after clear")
+	}
+}
+
+func TestWaitForPendingAuth(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	conn.setPendingAuth()
+
+	// Start waiting in a goroutine
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done <- conn.waitForPendingAuth(ctx)
+	}()
+
+	// Give time for the goroutine to start waiting
+	time.Sleep(50 * time.Millisecond)
+
+	// Clear pending auth
+	conn.clearPendingAuth()
+
+	// Waiter should complete
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pending auth waiter")
+	}
+}
+
+func TestWaitForPendingAuthTimeout(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	conn.setPendingAuth()
+	defer conn.clearPendingAuth()
+
+	// Wait with a short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := conn.waitForPendingAuth(ctx)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+}
+
+func TestWaitForPendingAuthNoPending(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	// No pending auth, should return immediately
+	ctx := context.Background()
+	err := conn.waitForPendingAuth(ctx)
+	if err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+// --- Cooldown Tests ---
+
+func TestIsWithinConnectCooldown(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	// Initially not in cooldown
+	if conn.isWithinConnectCooldown() {
+		t.Fatal("expected false when no previous connect attempt")
+	}
+
+	// Set a recent connect time
+	conn.WithLock(func() {
+		conn.LastConnectTryAt = time.Now().UnixMilli()
+	})
+
+	// Should be in cooldown
+	if !conn.isWithinConnectCooldown() {
+		t.Fatal("expected true when connect was recent")
+	}
+
+	// Set an old connect time
+	conn.WithLock(func() {
+		conn.LastConnectTryAt = time.Now().UnixMilli() - 6000 // 6 seconds ago
+	})
+
+	// Should not be in cooldown
+	if conn.isWithinConnectCooldown() {
+		t.Fatal("expected false when connect was >5s ago")
+	}
+}
+
+// --- HasCachedPassword Tests ---
+
+func TestHasCachedPassword_LocalConn(t *testing.T) {
+	t.Parallel()
+	if HasCachedPassword("local") {
+		t.Fatal("expected false for local connection")
+	}
+}
+
+func TestHasCachedPassword_InvalidName(t *testing.T) {
+	t.Parallel()
+	if HasCachedPassword("not-a-valid-ssh-name") {
+		t.Fatal("expected false for invalid name")
+	}
+}
+
+func TestHasCachedPassword_UnknownConn(t *testing.T) {
+	t.Parallel()
+	if HasCachedPassword("user@unknownhost:22") {
+		t.Fatal("expected false for unknown connection")
+	}
+}
+
+func TestHasCachedPassword_WithCache(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("secret123")
+	if !HasCachedPassword(conn.GetName()) {
+		t.Fatal("expected true when password is cached")
+	}
+
+	conn.clearCachedPassword()
+	if HasCachedPassword(conn.GetName()) {
+		t.Fatal("expected false after clearing cache")
+	}
+}
+
+// --- EnsureConnection Tests ---
+
+func TestEnsureConnection_LocalConn(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	err := EnsureConnection(ctx, "local")
+	if err != nil {
+		t.Fatalf("expected nil for local conn, got %v", err)
+	}
+}
+
+func TestEnsureConnection_AlreadyConnected(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	ctx := context.Background()
+	err := EnsureConnection(ctx, conn.GetName())
+	if err != nil {
+		t.Fatalf("expected nil for already-connected, got %v", err)
+	}
+}
+
+func TestEnsureConnection_Connecting(t *testing.T) {
+	conn := makeTestConn(Status_Connecting)
+	defer cleanupTestConn(conn)
+
+	// WaitForConnect should return quickly since status changes
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// Set status to connected after a short delay
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		conn.WithLock(func() {
+			conn.Status = Status_Connected
+		})
+	}()
+
+	err := EnsureConnection(ctx, conn.GetName())
+	if err != nil {
+		t.Fatalf("expected nil after connecting, got %v", err)
+	}
+}
+
+func TestEnsureConnection_ErrorWithCachedPassword(t *testing.T) {
+	conn := makeTestConn(Status_Error)
+	conn.Error = "auth failed"
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("cached-secret")
+
+	// Mock connectInternal to succeed this time (simulating cached password working)
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		c.WithLock(func() {
+			c.Status = Status_Connected
+		})
+		return nil
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	ctx := context.Background()
+	err := EnsureConnection(ctx, conn.GetName())
+	if err != nil {
+		t.Fatalf("expected nil with cached password retry, got %v", err)
+	}
+	if conn.GetStatus() != Status_Connected {
+		t.Fatalf("expected Status=Connected, got %s", conn.GetStatus())
+	}
+}
+
+func TestEnsureConnection_ErrorWithoutCachedPassword(t *testing.T) {
+	conn := makeTestConn(Status_Error)
+	conn.Error = "auth failed"
+	defer cleanupTestConn(conn)
+
+	ctx := context.Background()
+	err := EnsureConnection(ctx, conn.GetName())
+	if err == nil {
+		t.Fatal("expected error when no cached password")
+	}
+}
+
+// --- Connect Tests ---
+
+func TestConnect_CachesPasswordOnSuccess(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	// Mock connectInternal to simulate password being used
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		// Simulate: password was used during handshake
+		c.cachePassword("used-password")
+		c.WithLock(func() {
+			c.Status = Status_Connected
+		})
+		return nil
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	ctx := context.Background()
+	err := conn.Connect(ctx, &wconfig.ConnKeywords{})
+	if err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+
+	pw := conn.getCachedPassword()
+	if pw == nil || *pw != "used-password" {
+		t.Fatal("expected password to be cached after successful connect")
+	}
+}
+
+func TestConnect_SetsCooldown(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		c.WithLock(func() {
+			c.Status = Status_Connected
+		})
+		return nil
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	ctx := context.Background()
+	conn.Connect(ctx, &wconfig.ConnKeywords{})
+
+	if !conn.isWithinConnectCooldown() {
+		t.Fatal("expected cooldown to be set after Connect()")
+	}
+}
+
+func TestConnect_ConnectingBlocked(t *testing.T) {
+	conn := makeTestConn(Status_Connecting)
+	defer cleanupTestConn(conn)
+
+	ctx := context.Background()
+	err := conn.Connect(ctx, &wconfig.ConnKeywords{})
+	if err == nil {
+		t.Fatal("expected error when already connecting")
+	}
+}
+
+func TestConnect_ConnectedBlocked(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	ctx := context.Background()
+	err := conn.Connect(ctx, &wconfig.ConnKeywords{})
+	if err == nil {
+		t.Fatal("expected error when already connected")
+	}
+}

@@ -1452,6 +1452,7 @@ declare global {
         oklabel?: string;
         cancellabel?: string;
         connname?: string;
+        prompttype?: string;
     };
 
     // userinput.UserInputResponse

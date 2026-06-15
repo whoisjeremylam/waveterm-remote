@@ -100,6 +100,11 @@ type SSHConn struct {
 
 	LocalForwardListeners  []ForwardingRule
 	RemoteForwardListeners []ForwardingRule
+
+	PendingAuth      bool        // true while waiting for user auth input
+	pendingAuthDone  chan struct{} // closed when PendingAuth transitions to false
+	CachedPassword   *string     // cached password for reconnect (in-memory only)
+	LastConnectTryAt int64       // UnixMilli of last Connect() attempt (cooldown guard)
 }
 
 type ForwardingRule struct {
@@ -232,6 +237,8 @@ func (conn *SSHConn) Close() error {
 		}
 		conn.ConnHealthStatus = ConnHealthStatus_Good
 	})
+	// Clear cached password on explicit disconnect
+	conn.clearCachedPassword()
 	// Fire event BEFORE closeInternal_withlifecyclelock so the UI updates
 	// even if client.Close() blocks on a dead network connection.
 	conn.FireConnChangeEvent()
@@ -844,6 +851,21 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 	}
 	conn.Infof(ctx, "trying to connect to %q...\n", conn.GetName())
 	conn.FireConnChangeEvent()
+
+	// Inject cached password into connFlags so sshclient uses it without prompting
+	cachedPw := conn.getCachedPassword()
+	if cachedPw != nil && connFlags.SshPasswordSecretName == nil {
+		// We have a cached password but no secret store configured.
+		// We cannot directly inject it into connFlags (SshPasswordSecretName is for the secret store).
+		// Instead, we rely on the password callback to check conn.CachedPassword.
+		// This is handled by passing the password through the connection context.
+		conn.Infof(ctx, "using cached password for reconnection\n")
+	}
+
+	conn.WithLock(func() {
+		conn.LastConnectTryAt = time.Now().UnixMilli()
+	})
+
 	err := conn.connectInternal(ctx, connFlags)
 	if err != nil {
 		errorCode, _ := remote.ClassifyConnError(err)
@@ -852,6 +874,11 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 			conn.Status = Status_Error
 			conn.Error = err.Error()
 		})
+		// Clear cached password on auth failure so user is re-prompted
+		errorCode2, _ := remote.ClassifyConnError(err)
+		if errorCode2 == "auth-failed" {
+			conn.clearCachedPassword()
+		}
 		conn.closeInternal_withlifecyclelock(nil)
 	} else {
 		conn.Infof(ctx, "successfully connected (wsh:%v)\n\n", conn.WshEnabled.Load())
@@ -896,6 +923,80 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 		log.Printf("config write error: unable to save connection %s: %v", conn.GetName(), err)
 	}
 	return nil
+}
+
+// setPendingAuth marks the connection as waiting for user auth input.
+// Returns true if this call set the flag (caller should proceed with auth).
+// Returns false if another goroutine already set it (caller should wait).
+func (conn *SSHConn) setPendingAuth() bool {
+	set := false
+	conn.WithLock(func() {
+		if !conn.PendingAuth {
+			conn.PendingAuth = true
+			conn.pendingAuthDone = make(chan struct{})
+			set = true
+		}
+	})
+	return set
+}
+
+// clearPendingAuth clears the PendingAuth flag and wakes any waiters.
+func (conn *SSHConn) clearPendingAuth() {
+	conn.WithLock(func() {
+		conn.PendingAuth = false
+		if conn.pendingAuthDone != nil {
+			close(conn.pendingAuthDone)
+			conn.pendingAuthDone = nil
+		}
+	})
+}
+
+// waitForPendingAuth blocks until PendingAuth is cleared or ctx expires.
+func (conn *SSHConn) waitForPendingAuth(ctx context.Context) error {
+	conn.lock.Lock()
+	ch := conn.pendingAuthDone
+	conn.lock.Unlock()
+	if ch == nil {
+		return nil
+	}
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// isWithinConnectCooldown returns true if a Connect() was attempted within the last N seconds.
+func (conn *SSHConn) isWithinConnectCooldown() bool {
+	conn.lock.Lock()
+	last := conn.LastConnectTryAt
+	conn.lock.Unlock()
+	if last == 0 {
+		return false
+	}
+	return time.Now().UnixMilli()-last < 5000
+}
+
+// cachePassword stores the password for future reconnect attempts.
+func (conn *SSHConn) cachePassword(password string) {
+	conn.WithLock(func() {
+		conn.CachedPassword = &password
+	})
+}
+
+// clearCachedPassword removes the cached password (on auth failure or explicit disconnect).
+func (conn *SSHConn) clearCachedPassword() {
+	conn.WithLock(func() {
+		conn.CachedPassword = nil
+	})
+}
+
+// getCachedPassword returns the cached password, or nil if none.
+func (conn *SSHConn) getCachedPassword() *string {
+	conn.lock.Lock()
+	defer conn.lock.Unlock()
+	return conn.CachedPassword
 }
 
 func (conn *SSHConn) WithLock(fn func()) {
@@ -1347,11 +1448,21 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 		return connectInternalTestHook(conn, ctx, connFlags)
 	}
 	conn.Infof(ctx, "connectInternal %s\n", conn.GetName())
-	client, _, sshKeywords, err := remote.ConnectToClient(ctx, conn.Opts, nil, 0, connFlags)
+	// Inject cached password into context so the password callback uses it
+	cachedPw := conn.getCachedPassword()
+	if cachedPw != nil {
+		ctx = remote.ContextWithCachedPassword(ctx, cachedPw)
+	}
+	client, _, sshKeywords, pwTracker, err := remote.ConnectToClient(ctx, conn.Opts, nil, 0, connFlags)
 	if err != nil {
 		conn.Infof(ctx, "ERROR ConnectToClient: %s\n", remote.SimpleMessageFromPossibleConnectionError(err))
 		log.Printf("error: failed to connect to client %s: %s\n", conn.GetName(), err)
 		return err
+	}
+	// Cache the password that was used during the handshake (if user entered one)
+	if pwTracker != nil && pwTracker.Used && pwTracker.Password != "" {
+		conn.cachePassword(pwTracker.Password)
+		conn.Infof(ctx, "cached password for future reconnection\n")
 	}
 	conn.WithLock(func() {
 		if conn.Monitor != nil {
@@ -1536,6 +1647,22 @@ func IsConnected(connName string) (bool, error) {
 }
 
 // Convenience function for ensuring a connection is established
+// HasCachedPassword returns true if the connection has a cached password for reconnection.
+func HasCachedPassword(connName string) bool {
+	if IsLocalConnName(connName) {
+		return false
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return false
+	}
+	conn := MaybeGetConn(connOpts)
+	if conn == nil {
+		return false
+	}
+	return conn.getCachedPassword() != nil
+}
+
 func EnsureConnection(ctx context.Context, connName string) error {
 	if IsLocalConnName(connName) {
 		return nil
@@ -1555,8 +1682,21 @@ func EnsureConnection(ctx context.Context, connName string) error {
 	case Status_Connecting:
 		return conn.WaitForConnect(ctx)
 	case Status_Init, Status_Disconnected:
+		// Cooldown guard: don't re-enter Connect() within 5 seconds of last attempt
+		if conn.isWithinConnectCooldown() {
+			// If another goroutine is already connecting, wait for it
+			if conn.PendingAuth {
+				return conn.waitForPendingAuth(ctx)
+			}
+			return conn.WaitForConnect(ctx)
+		}
 		return conn.Connect(ctx, &wconfig.ConnKeywords{})
 	case Status_Error:
+		// If a password is cached, retry automatically (scheduler path)
+		// Otherwise, return the error so the UI can show a manual reconnect option
+		if conn.getCachedPassword() != nil {
+			return conn.Connect(ctx, &wconfig.ConnKeywords{})
+		}
 		return fmt.Errorf("connection error: %s", connStatus.Error)
 	default:
 		return fmt.Errorf("unknown connection status %q", connStatus.Status)
