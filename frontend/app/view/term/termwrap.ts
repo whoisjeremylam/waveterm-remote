@@ -20,6 +20,7 @@ import * as services from "@/store/services";
 import { PLATFORM, PlatformMacOS } from "@/util/platformutil";
 import { base64ToArray, fireAndForget } from "@/util/util";
 import { FitAddon } from "@xterm/addon-fit";
+import { ImageAddon } from "@xterm/addon-image";
 import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -100,6 +101,10 @@ export class TermWrap {
     onSearchResultsDidChange?: (result: { resultIndex: number; resultCount: number }) => void;
     toDispose: TermTypes.IDisposable[] = [];
     webglAddon: WebglAddon | null = null;
+    imageAddon: any = null;
+    imageAddonCheckInterval: any = null;
+    imageWriteCount: number | undefined = undefined;
+    imageBytesTotal: number = 0;
     webglContextLossDisposable: TermTypes.IDisposable | null = null;
     webglEnabledAtom: jotai.PrimitiveAtom<boolean>;
     pasteActive: boolean = false;
@@ -189,6 +194,30 @@ export class TermWrap {
             )
         );
         this.setTermRenderer(WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom");
+        try {
+            this.imageAddon = new ImageAddon({
+                sixelSupport: true,
+                kittySupport: true,
+                iipSupport: true,
+                enableSizeReports: true,
+            });
+            this.terminal.loadAddon(this.imageAddon);
+            (window as any).__imageAddon = this.imageAddon;
+            console.log("[termwrap] ImageAddon loaded after renderer", {
+                renderer: WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom",
+                storageUsage: this.imageAddon.storageUsage,
+            });
+            // Debug: log ImageAddon state periodically
+            this.imageAddonCheckInterval = setInterval(() => {
+                if (this.imageAddon && typeof this.imageAddon.storageUsage === "number") {
+                    if (this.imageAddon.storageUsage > 0) {
+                        console.log("[termwrap] ImageAddon storage usage:", this.imageAddon.storageUsage);
+                    }
+                }
+            }, 1000);
+        } catch (e) {
+            console.error("[termwrap] ImageAddon failed to load", e);
+        }
         // Register OSC handlers
         this.terminal.parser.registerOscHandler(7, (data: string) => {
             try {
@@ -546,6 +575,67 @@ export class TermWrap {
             this.lastUpdated = Date.now();
             resolve();
         });
+        // Debug: track image data flow
+        if (typeof data === "string") {
+            if (data.includes("\x1b]1337;File=") || data.includes("\x1b_G")) {
+                this.imageWriteCount = 0;
+                this.imageBytesTotal = 0;
+                console.log("[termwrap] IMAGE START (string)", {
+                    dataLength: data.length,
+                    hasBel: data.includes("\x07"),
+                });
+            }
+            if (this.imageWriteCount !== undefined) {
+                this.imageWriteCount++;
+                this.imageBytesTotal += data.length;
+                if (this.imageWriteCount <= 3 || data.includes("\x07") || data.includes("\x1b\\")) {
+                    console.log("[termwrap] IMAGE WRITE #" + this.imageWriteCount, {
+                        dataLength: data.length,
+                        totalBytes: this.imageBytesTotal,
+                        hasBel: data.includes("\x07"),
+                        hasSt: data.includes("\x1b\\"),
+                    });
+                }
+                if (data.includes("\x07") || data.includes("\x1b\\")) {
+                    console.log("[termwrap] IMAGE END", {
+                        totalWrites: this.imageWriteCount,
+                        totalBytes: this.imageBytesTotal,
+                    });
+                    this.imageWriteCount = undefined;
+                    this.imageBytesTotal = 0;
+                }
+            }
+        } else if (data instanceof Uint8Array) {
+            const str = new TextDecoder().decode(data);
+            if (str.includes("\x1b]1337;File=") || str.includes("\x1b_G")) {
+                this.imageWriteCount = 0;
+                this.imageBytesTotal = 0;
+                console.log("[termwrap] IMAGE START (binary)", {
+                    dataLength: data.length,
+                    hasBel: str.includes("\x07"),
+                });
+            }
+            if (this.imageWriteCount !== undefined) {
+                this.imageWriteCount++;
+                this.imageBytesTotal += data.length;
+                if (this.imageWriteCount <= 3 || str.includes("\x07") || str.includes("\x1b\\")) {
+                    console.log("[termwrap] IMAGE WRITE #" + this.imageWriteCount, {
+                        dataLength: data.length,
+                        totalBytes: this.imageBytesTotal,
+                        hasBel: str.includes("\x07"),
+                        hasSt: str.includes("\x1b\\"),
+                    });
+                }
+                if (str.includes("\x07") || str.includes("\x1b\\")) {
+                    console.log("[termwrap] IMAGE END", {
+                        totalWrites: this.imageWriteCount,
+                        totalBytes: this.imageBytesTotal,
+                    });
+                    this.imageWriteCount = undefined;
+                    this.imageBytesTotal = 0;
+                }
+            }
+        }
         return prtn;
     }
 

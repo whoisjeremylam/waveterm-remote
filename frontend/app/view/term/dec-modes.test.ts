@@ -39,6 +39,7 @@ vi.mock("@xterm/xterm", () => ({
 }));
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class MockFitAddon { fit = vi.fn(); } }));
+vi.mock("@xterm/addon-image", () => ({ ImageAddon: class MockImageAddon {} }));
 vi.mock("@xterm/addon-search", () => ({ SearchAddon: class MockSearchAddon {} }));
 vi.mock("@xterm/addon-serialize", () => ({ SerializeAddon: class MockSerializeAddon {} }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class MockWebLinksAddon {} }));
