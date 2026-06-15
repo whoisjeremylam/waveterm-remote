@@ -195,6 +195,15 @@ export class TermWrap {
         );
         this.setTermRenderer(WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom");
         try {
+            const origActivate = ImageAddon.prototype.activate;
+            ImageAddon.prototype.activate = function(terminal: any) {
+                console.log("[termwrap] ImageAddon.activate called", {
+                    hasCore: !!terminal._core,
+                    hasInputHandler: !!terminal._core?._inputHandler,
+                    hasParser: !!terminal._core?._inputHandler?._parser,
+                });
+                return origActivate.call(this, terminal);
+            };
             this.imageAddon = new ImageAddon({
                 sixelSupport: true,
                 kittySupport: true,
