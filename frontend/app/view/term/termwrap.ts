@@ -197,19 +197,17 @@ export class TermWrap {
         try {
             const origActivate = ImageAddon.prototype.activate;
             ImageAddon.prototype.activate = function(terminal: any) {
-                const result = origActivate.call(this, terminal);
                 const publicParser = terminal.parser;
                 const internalParser = terminal._core?._inputHandler?._parser;
-                console.log("[termwrap] ImageAddon.activate", {
-                    sameParser: publicParser === internalParser,
-                });
-                // Fix parser mismatch: re-register IIP handler on public parser
+                // Fix parser mismatch: swap internal parser with public parser
+                // so the addon registers handlers on the same parser terminal.write() uses
                 if (publicParser !== internalParser) {
-                    const iipHandler = this._handlers?.get("iip");
-                    if (iipHandler) {
-                        publicParser.registerOscHandler(1337, iipHandler);
-                        console.log("[termwrap] Re-registered IIP handler on public parser");
-                    }
+                    terminal._core._inputHandler._parser = publicParser;
+                }
+                const result = origActivate.call(this, terminal);
+                // Restore internal parser to avoid breaking other internals
+                if (publicParser !== internalParser) {
+                    terminal._core._inputHandler._parser = internalParser;
                 }
                 return result;
             };
