@@ -197,12 +197,15 @@ export class TermWrap {
         try {
             const origActivate = ImageAddon.prototype.activate;
             ImageAddon.prototype.activate = function(terminal: any) {
-                console.log("[termwrap] ImageAddon.activate called", {
-                    hasCore: !!terminal._core,
-                    hasInputHandler: !!terminal._core?._inputHandler,
-                    hasParser: !!terminal._core?._inputHandler?._parser,
+                const result = origActivate.call(this, terminal);
+                const publicParser = terminal.parser;
+                const internalParser = terminal._core?._inputHandler?._parser;
+                console.log("[termwrap] ImageAddon.activate", {
+                    sameParser: publicParser === internalParser,
+                    publicParserType: publicParser?.constructor?.name,
+                    internalParserType: internalParser?.constructor?.name,
                 });
-                return origActivate.call(this, terminal);
+                return result;
             };
             this.imageAddon = new ImageAddon({
                 sixelSupport: true,
