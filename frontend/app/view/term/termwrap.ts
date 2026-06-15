@@ -203,6 +203,7 @@ export class TermWrap {
             });
             this.terminal.loadAddon(this.imageAddon);
             (window as any).__imageAddon = this.imageAddon;
+            (window as any).__term = this.terminal;
             console.log("[termwrap] ImageAddon loaded after renderer", {
                 renderer: WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom",
                 storageUsage: this.imageAddon.storageUsage,
