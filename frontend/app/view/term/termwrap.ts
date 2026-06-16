@@ -197,17 +197,15 @@ export class TermWrap {
         try {
             const origActivate = ImageAddon.prototype.activate;
             ImageAddon.prototype.activate = function(terminal: any) {
+                const result = origActivate.call(this, terminal);
                 const publicParser = terminal.parser;
                 const internalParser = terminal._core?._inputHandler?._parser;
-                // Fix parser mismatch: swap internal parser with public parser
-                // so the addon registers handlers on the same parser terminal.write() uses
                 if (publicParser !== internalParser) {
-                    terminal._core._inputHandler._parser = publicParser;
-                }
-                const result = origActivate.call(this, terminal);
-                // Restore internal parser to avoid breaking other internals
-                if (publicParser !== internalParser) {
-                    terminal._core._inputHandler._parser = internalParser;
+                    // Debug: test if public parser receives OSC 1337 at all
+                    publicParser.registerOscHandler(1337, (data: string) => {
+                        console.log("[termwrap] PUBLIC PARSER received OSC 1337, data length:", data.length);
+                        return false; // don't consume, let internal parser handle it
+                    });
                 }
                 return result;
             };
