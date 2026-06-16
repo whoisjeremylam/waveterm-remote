@@ -200,12 +200,28 @@ export class TermWrap {
                 const result = origActivate.call(this, terminal);
                 const publicParser = terminal.parser;
                 const internalParser = terminal._core?._inputHandler?._parser;
+                // Fix parser mismatch: addon registered IIP on internal parser,
+                // but terminal.write() uses public parser. Bridge by feeding
+                // OSC 1337 data from public parser into the IIP handler's lifecycle.
                 if (publicParser !== internalParser) {
-                    // Debug: test if public parser receives OSC 1337 at all
-                    publicParser.registerOscHandler(1337, (data: string) => {
-                        console.log("[termwrap] PUBLIC PARSER received OSC 1337, data length:", data.length);
-                        return false; // don't consume, let internal parser handle it
-                    });
+                    const iipHandler = this._handlers?.get("iip");
+                    if (iipHandler) {
+                        publicParser.registerOscHandler(1337, (data: string) => {
+                            try {
+                                iipHandler.start?.();
+                                // Convert string data to Uint8Array for the handler
+                                const bytes = new Uint8Array(data.length);
+                                for (let i = 0; i < data.length; i++) {
+                                    bytes[i] = data.charCodeAt(i) & 0xff;
+                                }
+                                iipHandler.put?.(bytes, 0, bytes.length);
+                                iipHandler.end?.(true);
+                            } catch (e) {
+                                console.error("[termwrap] IIP bridge error:", e);
+                            }
+                            return true; // consume
+                        });
+                    }
                 }
                 return result;
             };
