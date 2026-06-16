@@ -196,13 +196,7 @@ export class TermWrap {
         this.setTermRenderer(WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom");
         try {
             console.log("[termwrap] Loading ImageAddon for block", this.blockId);
-            this.imageAddon = new ImageAddon({
-                sixelSupport: true,
-                kittySupport: true,
-                iipSupport: true,
-                enableSizeReports: true,
-            });
-            this.terminal.loadAddon(this.imageAddon);
+            // Patch BEFORE loadAddon so the first activate registers the bridge
             const origActivate = ImageAddon.prototype.activate;
             ImageAddon.prototype.activate = function(terminal: any) {
                 const result = origActivate.call(this, terminal);
@@ -229,6 +223,13 @@ export class TermWrap {
                 }
                 return result;
             };
+            this.imageAddon = new ImageAddon({
+                sixelSupport: true,
+                kittySupport: true,
+                iipSupport: true,
+                enableSizeReports: true,
+            });
+            this.terminal.loadAddon(this.imageAddon);
             (window as any).__imageAddon = this.imageAddon;
             (window as any).__term = this.terminal;
             console.log("[termwrap] ImageAddon loaded after renderer", {
