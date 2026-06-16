@@ -280,44 +280,91 @@ export class TermWrap {
             this.terminal.loadAddon(this.imageAddon);
             (window as any).__imageAddon = this.imageAddon;
             (window as any).__term = this.terminal;
-            // Manual IIP test helper: call window.__testIIP() from browser console
+            // ── Manual IIP test helpers (call from browser console) ──
+            const tinyPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
+            const tinyPngSize = Math.ceil(tinyPng.length * 3 / 4);
+
+            // Quick test: write IIP with tiny PNG
             (window as any).__testIIP = () => {
                 const term = (window as any).__term;
-                if (!term) {
-                    console.error("[IIP-DEBUG] No terminal available");
-                    return;
-                }
-                // Create a tiny valid PNG (1x1 red pixel) encoded in base64
-                // PNG header + IHDR + IDAT + IEND
-                const tinyPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
-                const size = Math.ceil(tinyPng.length * 3 / 4);
-                const iipSeq = `\x1b]1337;File=inline=1;size=${size}:${tinyPng}\x07`;
-                console.log("[IIP-DEBUG] Writing test IIP sequence, length:", iipSeq.length);
-                term.write(iipSeq);
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const seq = `\x1b]1337;File=inline=1;size=${tinyPngSize}:${tinyPng}\x07`;
+                console.log("[IIP-DEBUG] Writing IIP with PNG, length:", seq.length);
+                term.write(seq);
             };
-            // Manual test for header parsing
+            // Test header parsing with minimal payload
             (window as any).__testIIPHeader = () => {
                 const term = (window as any).__term;
-                if (!term) {
-                    console.error("[IIP-DEBUG] No terminal available");
-                    return;
-                }
-                const iipSeq = `\x1b]1337;File=inline=1;size=8:dGVzdGRhdGE=\x07`;
-                console.log("[IIP-DEBUG] Writing IIP header test, length:", iipSeq.length);
-                term.write(iipSeq);
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const seq = `\x1b]1337;File=inline=1;size=8:dGVzdGRhdGE=\x07`;
+                console.log("[IIP-DEBUG] Writing IIP header test, length:", seq.length);
+                term.write(seq);
             };
-            // Manual test: write raw OSC 1337 without IIP payload
+            // Test empty OSC 1337
             (window as any).__testOsc1337 = () => {
                 const term = (window as any).__term;
-                if (!term) {
-                    console.error("[IIP-DEBUG] No terminal available");
-                    return;
-                }
-                const oscSeq = `\x1b]1337;File=inline=1;size=0:\x07`;
-                console.log("[IIP-DEBUG] Writing empty OSC 1337, length:", oscSeq.length);
-                term.write(oscSeq);
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const seq = `\x1b]1337;File=inline=1;size=0:\x07`;
+                console.log("[IIP-DEBUG] Writing empty OSC 1337, length:", seq.length);
+                term.write(seq);
             };
-            console.log("[IIP-DEBUG] Test helpers available: __testIIP(), __testIIPHeader(), __testOsc1337()");
+            // Write IIP as Uint8Array (like WaveTerm's base64ToArray path)
+            (window as any).__testIIPUint8 = () => {
+                const term = (window as any).__term;
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const str = `\x1b]1337;File=inline=1;size=${tinyPngSize}:${tinyPng}\x07`;
+                const bytes = new Uint8Array(str.length);
+                for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
+                console.log("[IIP-DEBUG] Writing IIP as Uint8Array, length:", bytes.length);
+                term.write(bytes);
+            };
+            // Write IIP in chunks (simulating PTY delivery)
+            (window as any).__testIIPChunked = () => {
+                const term = (window as any).__term;
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const header = `\x1b]1337;File=inline=1;size=${tinyPngSize}:`;
+                console.log("[IIP-DEBUG] Writing chunked IIP: header(", header.length, ") + payload(", tinyPng.length, ") + BEL");
+                term.write(header);
+                setTimeout(() => term.write(tinyPng), 10);
+                setTimeout(() => term.write("\x07"), 20);
+            };
+            // Check parser state
+            (window as any).__testIIPParserState = () => {
+                const term = (window as any).__term;
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const parser = (term as any)._core?._inputHandler?._parser;
+                console.log("[IIP-DEBUG] Parser state:", {
+                    currentState: parser?.currentState,
+                    initialState: parser?.initialState,
+                    stuck: parser?.currentState !== parser?.initialState,
+                });
+                const oscParser = parser?._oscParser;
+                if (oscParser) {
+                    const ids = Object.keys(oscParser._handlers || {}).filter(k => !isNaN(Number(k))).map(Number);
+                    console.log("[IIP-DEBUG] Registered OSC IDs:", ids);
+                    const h = oscParser._handlers[1337];
+                    console.log("[IIP-DEBUG] OSC 1337 handlers:", h?.length ?? 0, h?.map((x: any) => x?.constructor?.name));
+                }
+            };
+            // Run all tests in sequence
+            (window as any).__testIIPAll = async () => {
+                console.log("[IIP-DEBUG] === Running all IIP tests ===");
+                (window as any).__testIIPParserState();
+                console.log("[IIP-DEBUG] --- Test: minimal OSC 1337 ---");
+                (window as any).__testOsc1337();
+                await new Promise(r => setTimeout(r, 300));
+                (window as any).__testIIPParserState();
+                console.log("[IIP-DEBUG] --- Test: IIP with PNG ---");
+                (window as any).__testIIP();
+                await new Promise(r => setTimeout(r, 300));
+                (window as any).__testIIPParserState();
+                console.log("[IIP-DEBUG] --- Test: Uint8Array ---");
+                (window as any).__testIIPUint8();
+                await new Promise(r => setTimeout(r, 300));
+                (window as any).__testIIPParserState();
+                console.log("[IIP-DEBUG] === All tests done. Check [IIP-DEBUG] logs above ===");
+            };
+            console.log("[IIP-DEBUG] Test helpers: __testIIP() __testIIPHeader() __testOsc1337() __testIIPUint8() __testIIPChunked() __testIIPParserState() __testIIPAll()");
 
             // HYPOTHESIS 7: Patch InputHandler.parse to log OSC 1337 data flow
             const inputHandler = (this.terminal as any)._core?._inputHandler;
