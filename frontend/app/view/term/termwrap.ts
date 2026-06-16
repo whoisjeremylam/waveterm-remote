@@ -203,26 +203,32 @@ export class TermWrap {
                 enableSizeReports: true,
             });
             this.terminal.loadAddon(this.imageAddon);
-            // Bridge: register IIP handler on public parser for this terminal instance
-            // The addon registers on internal parser (_core._inputHandler._parser) but
-            // terminal.write() uses the public parser (terminal.parser). They differ.
-            const iipHandler = (this.imageAddon as any)._handlers?.get("iip");
-            if (iipHandler) {
-                this.terminal.parser.registerOscHandler(1337, (data: string) => {
-                    try {
-                        iipHandler.start?.();
-                        const bytes = new Uint8Array(data.length);
-                        for (let i = 0; i < data.length; i++) {
-                            bytes[i] = data.charCodeAt(i) & 0xff;
-                        }
-                        iipHandler.put?.(bytes, 0, bytes.length);
-                        iipHandler.end?.(true);
-                    } catch (e) {
-                        console.error("[termwrap] IIP bridge error:", e);
+            const origActivate = ImageAddon.prototype.activate;
+            ImageAddon.prototype.activate = function(terminal: any) {
+                const result = origActivate.call(this, terminal);
+                const publicParser = terminal.parser;
+                const internalParser = terminal._core?._inputHandler?._parser;
+                if (publicParser !== internalParser) {
+                    const iipHandler = this._handlers?.get("iip");
+                    if (iipHandler) {
+                        publicParser.registerOscHandler(1337, (data: string) => {
+                            try {
+                                iipHandler.start?.();
+                                const bytes = new Uint8Array(data.length);
+                                for (let i = 0; i < data.length; i++) {
+                                    bytes[i] = data.charCodeAt(i) & 0xff;
+                                }
+                                iipHandler.put?.(bytes, 0, bytes.length);
+                                iipHandler.end?.(true);
+                            } catch (e) {
+                                console.error("[termwrap] IIP bridge error:", e);
+                            }
+                            return true;
+                        });
                     }
-                    return true;
-                });
-            }
+                }
+                return result;
+            };
             (window as any).__imageAddon = this.imageAddon;
             (window as any).__term = this.terminal;
             console.log("[termwrap] ImageAddon loaded after renderer", {
