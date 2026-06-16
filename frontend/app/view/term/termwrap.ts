@@ -241,12 +241,20 @@ export class TermWrap {
                     const origStart = iipHandler.start?.bind(iipHandler);
                     const origPut = iipHandler.put?.bind(iipHandler);
                     const origEnd = iipHandler.end?.bind(iipHandler);
+                    let putCount = 0;
+                    let totalBytes = 0;
                     iipHandler.start = function() {
+                        putCount = 0;
+                        totalBytes = 0;
                         console.log("[IIP-DEBUG] IIPHandler.start() called");
                         return origStart?.();
                     };
                     iipHandler.put = function(data: any, start: number, end: number) {
-                        console.log("[IIP-DEBUG] IIPHandler.put() called, data type:", data?.constructor?.name, "length:", end - start);
+                        putCount++;
+                        totalBytes += end - start;
+                        if (putCount <= 3 || putCount % 50 === 0) {
+                            console.log(`[IIP-DEBUG] IIPHandler.put() #${putCount}, totalBytes: ${totalBytes}, chunk: ${end - start}`);
+                        }
                         try {
                             return origPut?.(data, start, end);
                         } catch (e) {
@@ -255,10 +263,26 @@ export class TermWrap {
                         }
                     };
                     iipHandler.end = function(success: boolean) {
-                        console.log("[IIP-DEBUG] IIPHandler.end() called, success:", success);
+                        console.log(`[IIP-DEBUG] IIPHandler.end() called, success: ${success}, putCount: ${putCount}, totalBytes: ${totalBytes}`);
                         try {
+                            const h = (iipHandler as any)._header;
+                            const ab = (iipHandler as any)._aborted;
+                            const dec = (iipHandler as any)._dec;
+                            const storage = (iipHandler as any)._storage;
+                            console.log("[IIP-DEBUG] Before end() - _aborted:", ab, "_header:", h ? {width: h.width, height: h.height, type: h.type, name: h.name, size: h.size} : null);
+                            if (dec) {
+                                console.log("[IIP-DEBUG] Before end() - decoder:", {hasData: !!dec.data8, dataLen: dec.data8?.length, state: dec._state});
+                            }
                             const result = origEnd?.(success);
-                            console.log("[IIP-DEBUG] IIPHandler.end() result:", result instanceof Promise ? "Promise" : result);
+                            const isPromise = result instanceof Promise;
+                            console.log("[IIP-DEBUG] IIPHandler.end() result:", isPromise ? "Promise" : result);
+                            if (isPromise) {
+                                result.then((r: any) => console.log("[IIP-DEBUG] Promise resolved:", r))
+                                      .catch((e: any) => console.error("[IIP-DEBUG] Promise REJECTED:", e));
+                            }
+                            if (storage) {
+                                console.log("[IIP-DEBUG] After end() - storage._images.size:", storage._images?.size, "storageUsage:", storage._terminal?.element ? "has element" : "no element");
+                            }
                             return result;
                         } catch (e) {
                             console.error("[IIP-DEBUG] IIPHandler.end() ERROR:", e);
