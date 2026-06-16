@@ -195,6 +195,7 @@ export class TermWrap {
         );
         this.setTermRenderer(WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom");
         try {
+            console.log("[termwrap] Loading ImageAddon for block", this.blockId);
             this.imageAddon = new ImageAddon({
                 sixelSupport: true,
                 kittySupport: true,
