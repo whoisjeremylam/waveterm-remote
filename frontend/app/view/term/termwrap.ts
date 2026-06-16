@@ -195,32 +195,80 @@ export class TermWrap {
         );
         this.setTermRenderer(WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom");
         try {
-            console.log("[termwrap] Loading ImageAddon for block", this.blockId);
-            // Patch BEFORE loadAddon so the first activate registers the bridge
+            console.log("[IIP-DEBUG] Loading ImageAddon for block", this.blockId);
+            // HYPOTHESIS TEST: Patch activate to intercept IIPHandler registration
             const origActivate = ImageAddon.prototype.activate;
             ImageAddon.prototype.activate = function(terminal: any) {
+                console.log("[IIP-DEBUG] activate() called on terminal");
                 const result = origActivate.call(this, terminal);
+
+                // HYPOTHESIS 1: Check if IIPHandler exists in addon's _handlers
+                const iipHandler = this._handlers?.get("iip");
+                console.log("[IIP-DEBUG] IIPHandler in addon._handlers:", !!iipHandler);
+
+                // HYPOTHESIS 2: Check parser identity
                 const publicParser = terminal.parser;
                 const internalParser = terminal._core?._inputHandler?._parser;
-                if (publicParser !== internalParser) {
-                    const iipHandler = this._handlers?.get("iip");
-                    if (iipHandler) {
-                        publicParser.registerOscHandler(1337, (data: string) => {
-                            try {
-                                iipHandler.start?.();
-                                const bytes = new Uint8Array(data.length);
-                                for (let i = 0; i < data.length; i++) {
-                                    bytes[i] = data.charCodeAt(i) & 0xff;
-                                }
-                                iipHandler.put?.(bytes, 0, bytes.length);
-                                iipHandler.end?.(true);
-                            } catch (e) {
-                                console.error("[termwrap] IIP bridge error:", e);
-                            }
-                            return true;
-                        });
-                    }
+                const sameParser = publicParser === internalParser;
+                console.log("[IIP-DEBUG] publicParser === internalParser:", sameParser);
+                console.log("[IIP-DEBUG] publicParser type:", publicParser?.constructor?.name);
+                console.log("[IIP-DEBUG] internalParser type:", internalParser?.constructor?.name);
+
+                // HYPOTHESIS 3: Check the _oscParser on the internal parser
+                const oscParser = internalParser?._oscParser;
+                console.log("[IIP-DEBUG] _oscParser exists:", !!oscParser);
+                if (oscParser) {
+                    const handlers1337 = oscParser._handlers?.[1337];
+                    console.log("[IIP-DEBUG] _oscParser._handlers[1337] count:", handlers1337?.length ?? 0);
+                    console.log("[IIP-DEBUG] _oscParser._handlers[1337] types:", handlers1337?.map((h: any) => h?.constructor?.name));
                 }
+
+                // HYPOTHESIS 4: Patch OscParser._start to log handler lookup
+                if (oscParser && !oscParser.__patched) {
+                    const origStart = oscParser._start.bind(oscParser);
+                    oscParser._start = function() {
+                        const id = this._id;
+                        const handlers = this._handlers[id] || [];
+                        console.log(`[IIP-DEBUG] OscParser._start() id=${id}, handlers=${handlers.length}, types=${handlers.map((h: any) => h?.constructor?.name)}`);
+                        return origStart();
+                    };
+                    oscParser.__patched = true;
+                    console.log("[IIP-DEBUG] OscParser._start patched for logging");
+                }
+
+                // HYPOTHESIS 5: Patch IIPHandler methods if found
+                if (iipHandler && !iipHandler.__patched) {
+                    const origStart = iipHandler.start?.bind(iipHandler);
+                    const origPut = iipHandler.put?.bind(iipHandler);
+                    const origEnd = iipHandler.end?.bind(iipHandler);
+                    iipHandler.start = function() {
+                        console.log("[IIP-DEBUG] IIPHandler.start() called");
+                        return origStart?.();
+                    };
+                    iipHandler.put = function(data: any, start: number, end: number) {
+                        console.log("[IIP-DEBUG] IIPHandler.put() called, data type:", data?.constructor?.name, "length:", end - start);
+                        try {
+                            return origPut?.(data, start, end);
+                        } catch (e) {
+                            console.error("[IIP-DEBUG] IIPHandler.put() ERROR:", e);
+                            throw e;
+                        }
+                    };
+                    iipHandler.end = function(success: boolean) {
+                        console.log("[IIP-DEBUG] IIPHandler.end() called, success:", success);
+                        try {
+                            const result = origEnd?.(success);
+                            console.log("[IIP-DEBUG] IIPHandler.end() result:", result instanceof Promise ? "Promise" : result);
+                            return result;
+                        } catch (e) {
+                            console.error("[IIP-DEBUG] IIPHandler.end() ERROR:", e);
+                            throw e;
+                        }
+                    };
+                    iipHandler.__patched = true;
+                    console.log("[IIP-DEBUG] IIPHandler methods patched for logging");
+                }
+
                 return result;
             };
             this.imageAddon = new ImageAddon({
@@ -232,7 +280,90 @@ export class TermWrap {
             this.terminal.loadAddon(this.imageAddon);
             (window as any).__imageAddon = this.imageAddon;
             (window as any).__term = this.terminal;
-            console.log("[termwrap] ImageAddon loaded after renderer", {
+            // Manual IIP test helper: call window.__testIIP() from browser console
+            (window as any).__testIIP = () => {
+                const term = (window as any).__term;
+                if (!term) {
+                    console.error("[IIP-DEBUG] No terminal available");
+                    return;
+                }
+                // Create a tiny valid PNG (1x1 red pixel) encoded in base64
+                // PNG header + IHDR + IDAT + IEND
+                const tinyPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
+                const size = Math.ceil(tinyPng.length * 3 / 4);
+                const iipSeq = `\x1b]1337;File=inline=1;size=${size}:${tinyPng}\x07`;
+                console.log("[IIP-DEBUG] Writing test IIP sequence, length:", iipSeq.length);
+                term.write(iipSeq);
+            };
+            // Manual test for header parsing
+            (window as any).__testIIPHeader = () => {
+                const term = (window as any).__term;
+                if (!term) {
+                    console.error("[IIP-DEBUG] No terminal available");
+                    return;
+                }
+                const iipSeq = `\x1b]1337;File=inline=1;size=8:dGVzdGRhdGE=\x07`;
+                console.log("[IIP-DEBUG] Writing IIP header test, length:", iipSeq.length);
+                term.write(iipSeq);
+            };
+            // Manual test: write raw OSC 1337 without IIP payload
+            (window as any).__testOsc1337 = () => {
+                const term = (window as any).__term;
+                if (!term) {
+                    console.error("[IIP-DEBUG] No terminal available");
+                    return;
+                }
+                const oscSeq = `\x1b]1337;File=inline=1;size=0:\x07`;
+                console.log("[IIP-DEBUG] Writing empty OSC 1337, length:", oscSeq.length);
+                term.write(oscSeq);
+            };
+            console.log("[IIP-DEBUG] Test helpers available: __testIIP(), __testIIPHeader(), __testOsc1337()");
+
+            // HYPOTHESIS 7: Patch InputHandler.parse to log OSC 1337 data flow
+            const inputHandler = (this.terminal as any)._core?._inputHandler;
+            if (inputHandler && !inputHandler.__parsePatched) {
+                const origParse = inputHandler.parse.bind(inputHandler);
+                inputHandler.parse = function(data: string | Uint8Array, promiseResult?: boolean) {
+                    // Check if data contains IIP sequence
+                    const hasIIP = (typeof data === 'string')
+                        ? data.includes('\x1b]1337')
+                        : (data instanceof Uint8Array && (() => {
+                            for (let i = 0; i < data.length - 4; i++) {
+                                if (data[i] === 0x1b && data[i+1] === 0x5d && data[i+2] === 0x31 && data[i+3] === 0x33 && data[i+4] === 0x33 && data[i+5] === 0x37) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        })());
+                    if (hasIIP) {
+                        const preview = (typeof data === 'string')
+                            ? data.substring(0, 80)
+                            : new TextDecoder().decode(data.subarray(0, 80));
+                        console.log("[IIP-DEBUG] InputHandler.parse() received IIP data, length:", data.length, "preview:", preview);
+                    }
+                    return origParse(data, promiseResult);
+                };
+                inputHandler.__parsePatched = true;
+                console.log("[IIP-DEBUG] InputHandler.parse patched for logging");
+            }
+
+            // HYPOTHESIS 6: Verify handler registration after loadAddon
+            const internalParser = (this.terminal as any)._core?._inputHandler?._parser;
+            const oscParser = internalParser?._oscParser;
+            if (oscParser) {
+                const handlers1337 = oscParser._handlers?.[1337];
+                console.log("[IIP-DEBUG] After loadAddon - _oscParser._handlers[1337] count:", handlers1337?.length ?? 0);
+                console.log("[IIP-DEBUG] After loadAddon - handler types:", handlers1337?.map((h: any) => h?.constructor?.name));
+                // Log ALL registered OSC handler IDs
+                const allIds = Object.keys(oscParser._handlers || {}).filter(k => !isNaN(Number(k)));
+                console.log("[IIP-DEBUG] All registered OSC handler IDs:", allIds.map(Number));
+            }
+
+            // HYPOTHESIS 7: Check WASM availability
+            console.log("[IIP-DEBUG] WebAssembly available:", typeof WebAssembly !== 'undefined');
+            console.log("[IIP-DEBUG] WebAssembly.instantiate:", typeof WebAssembly?.instantiate);
+
+            console.log("[IIP-DEBUG] ImageAddon loaded", {
                 renderer: WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom",
                 storageUsage: this.imageAddon.storageUsage,
             });
@@ -240,12 +371,12 @@ export class TermWrap {
             this.imageAddonCheckInterval = setInterval(() => {
                 if (this.imageAddon && typeof this.imageAddon.storageUsage === "number") {
                     if (this.imageAddon.storageUsage > 0) {
-                        console.log("[termwrap] ImageAddon storage usage:", this.imageAddon.storageUsage);
+                        console.log("[IIP-DEBUG] ImageAddon storage usage:", this.imageAddon.storageUsage);
                     }
                 }
             }, 1000);
         } catch (e) {
-            console.error("[termwrap] ImageAddon failed to load", e);
+            console.error("[IIP-DEBUG] ImageAddon failed to load", e);
         }
         // Register OSC handlers
         this.terminal.parser.registerOscHandler(7, (data: string) => {
