@@ -115,9 +115,16 @@ function decodeTiff(d: Uint8Array): TiffResult | null {
             const c = rc();
             if (c === eoi) break;
             if (c === cc) { cs = 9; nc = 258; tbl.length = 256; prev = null; continue; }
-            if (c >= tbl.length) return null;
-            const ent = c < tbl.length ? tbl[c] : (prev ? concatArr(prev, prev[0]) : null);
-            if (!ent) return null;
+            if (c >= tbl.length) {
+                if (!prev) return null;
+                const ent = concatArr(prev, prev[0]);
+                tbl.push(ent);
+                if (nc === (1 << cs) && cs < 12) cs++; nc++;
+                out.set(ent, op); op += ent.length; prev = ent;
+                if (op >= expectedLen) break;
+                continue;
+            }
+            const ent = tbl[c];
             if (prev) { tbl.push(concatArr(prev, ent[0])); if (nc === (1 << cs) && cs < 12) cs++; nc++; }
             out.set(ent, op); op += ent.length; prev = ent;
             if (op >= expectedLen) break;
@@ -375,14 +382,11 @@ export class TermWrap {
 
                         if (success && headerType === 1 && rawChunks.length > 0) {
                             try {
-                                const raw = new Uint32Array(rawTotalBytes);
+                                const rawBytes = new Uint8Array(rawTotalBytes);
                                 let offset = 0;
                                 for (const chunk of rawChunks) {
-                                    raw.set(chunk, offset);
-                                    offset += chunk.length;
+                                    for (let i = 0; i < chunk.length; i++) rawBytes[offset++] = chunk[i] & 0xFF;
                                 }
-                                const rawBytes = new Uint8Array(raw.length);
-                                for (let i = 0; i < raw.length; i++) rawBytes[i] = raw[i] & 0xFF;
 
                                 const colonIdx = rawBytes.indexOf(0x3A);
                                 if (colonIdx >= 0 && colonIdx < rawBytes.length - 1) {
@@ -395,16 +399,21 @@ export class TermWrap {
                                     const decodedBytes = new Uint8Array(decoded.length);
                                     for (let i = 0; i < decoded.length; i++) decodedBytes[i] = decoded.charCodeAt(i);
 
-                                    const isTiff = decodedBytes.length >= 4 && decodedBytes[0] === 0x49 && decodedBytes[1] === 0x49 && decodedBytes[2] === 0x2A && decodedBytes[3] === 0x00;
-                                    if (isTiff && typeof decodeTiff !== "undefined") {
+                                    const isTiff = decodedBytes.length >= 4 &&
+                                        ((decodedBytes[0] === 0x49 && decodedBytes[1] === 0x49 && decodedBytes[2] === 0x2A && decodedBytes[3] === 0x00) ||
+                                         (decodedBytes[0] === 0x4D && decodedBytes[1] === 0x4D && decodedBytes[2] === 0x00 && decodedBytes[3] === 0x2A));
+                                    if (isTiff) {
                                         const tiffResult = decodeTiff(decodedBytes);
                                         if (tiffResult && storage) {
                                             const canvas = document.createElement("canvas");
                                             canvas.width = tiffResult.width;
                                             canvas.height = tiffResult.height;
-                                            canvas.getContext("2d")?.putImageData(new ImageData(tiffResult.pixels, tiffResult.width, tiffResult.height), 0, 0);
+                                            const imgData = new ImageData(tiffResult.width, tiffResult.height);
+                                            imgData.data.set(tiffResult.pixels);
+                                            canvas.getContext("2d")?.putImageData(imgData, 0, 0);
                                             storage.addImage(canvas);
                                             console.log(`[IIP-DEBUG] TIFF decoded: ${tiffResult.width}x${tiffResult.height}, rendered`);
+                                            dec?.release();
                                             return true;
                                         }
                                     }
