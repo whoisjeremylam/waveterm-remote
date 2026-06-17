@@ -271,7 +271,11 @@ export class TermWrap {
                             const storage = (iipHandler as any)._storage;
                             console.log("[IIP-DEBUG] Before end() - _aborted:", ab, "_header:", h ? {width: h.width, height: h.height, type: h.type, name: h.name, size: h.size} : null);
                             if (dec) {
-                                console.log("[IIP-DEBUG] Before end() - decoder:", {hasData: !!dec.data8, dataLen: dec.data8?.length, state: dec._state});
+                                const d8 = dec.data8;
+                                const firstBytes = d8 ? Array.from(d8.slice(0, 24)) : [];
+                                console.log("[IIP-DEBUG] Before end() - decoder:", {hasData: !!d8, dataLen: d8?.length, firstBytes, state: dec._state});
+                                const allKeys = Object.keys(dec);
+                                console.log("[IIP-DEBUG] Decoder keys:", allKeys);
                             }
                             const result = origEnd?.(success);
                             const isPromise = result instanceof Promise;
@@ -280,8 +284,14 @@ export class TermWrap {
                                 result.then((r: any) => console.log("[IIP-DEBUG] Promise resolved:", r))
                                       .catch((e: any) => console.error("[IIP-DEBUG] Promise REJECTED:", e));
                             }
+                            if (dec) {
+                                const d8 = dec.data8;
+                                console.log("[IIP-DEBUG] After end() - decoder dataLen:", d8?.length, "state:", dec._state);
+                            }
                             if (storage) {
-                                console.log("[IIP-DEBUG] After end() - storage._images.size:", storage._images?.size, "storageUsage:", storage._terminal?.element ? "has element" : "no element");
+                                console.log("[IIP-DEBUG] After end() - storage keys:", Object.keys(storage));
+                                console.log("[IIP-DEBUG] After end() - storage._images:", storage._images, "size:", storage._images?.size);
+                                console.log("[IIP-DEBUG] After end() - terminal element:", !!storage._terminal?.element);
                             }
                             return result;
                         } catch (e) {
