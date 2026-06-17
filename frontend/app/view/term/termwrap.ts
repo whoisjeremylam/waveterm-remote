@@ -54,6 +54,113 @@ const MinDataProcessedForCache = 100 * 1024;
 export const SupportsImageInput = true;
 const MaxRepaintTransactionMs = 2000;
 
+interface TiffResult { width: number; height: number; pixels: Uint8ClampedArray }
+function decodeTiff(d: Uint8Array): TiffResult | null {
+    if (d.length < 8) return null;
+    const le = d[0] === 0x49;
+    const u16 = (o: number) => le ? (d[o] | (d[o + 1] << 8)) : ((d[o] << 8) | d[o + 1]);
+    const u32 = (o: number) => le
+        ? (d[o] | (d[o + 1] << 8) | (d[o + 2] << 16) | (d[o + 3] << 24)) >>> 0
+        : ((d[o] << 24) | (d[o + 1] << 16) | (d[o + 2] << 8) | d[o + 3]) >>> 0;
+    if (u16(2) !== 42) return null;
+    const ifo = u32(4);
+    if (ifo + 2 > d.length) return null;
+    const n = u16(ifo);
+    let w = 0, h = 0, comp = 1, bps = 8, spp = 3, photo = 2;
+    const so: number[] = [], sl: number[] = [];
+    let rps = 0;
+    for (let i = 0; i < n; i++) {
+        const eo = ifo + 2 + i * 12;
+        if (eo + 12 > d.length) break;
+        const tag = u16(eo), typ = u16(eo + 2), cnt = u32(eo + 4);
+        const vs = typ === 3 ? 2 : typ === 4 ? 4 : 0;
+        let vo = eo + 8;
+        if (cnt * vs > 4) vo = u32(eo + 8);
+        const rv = typ === 3 ? u16(vo) : u32(vo);
+        switch (tag) {
+            case 256: w = rv; break; case 257: h = rv; break;
+            case 258: bps = rv; break; case 259: comp = rv; break;
+            case 262: photo = rv; break; case 277: spp = rv; break;
+            case 278: rps = rv; break;
+            case 273:
+                so.length = 0;
+                if (cnt === 1) so.push(rv);
+                else for (let j = 0; j < cnt && vo + j * 4 + 4 <= d.length; j++) so.push(u32(vo + j * 4));
+                break;
+            case 279:
+                sl.length = 0;
+                if (cnt === 1) sl.push(rv);
+                else for (let j = 0; j < cnt && vo + j * 4 + 4 <= d.length; j++) sl.push(u32(vo + j * 4));
+                break;
+        }
+    }
+    if (!w || !h || !so.length) return null;
+    const px = new Uint8ClampedArray(w * h * 4);
+    const bpp = (bps / 8) * spp;
+    const rb = w * bpp;
+    function lzwDecode(input: Uint8Array, expectedLen: number): Uint8Array | null {
+        if (input.length < 2) return null;
+        const cc = 256, eoi = 257;
+        let cs = 9, nc = 258;
+        const tbl: Uint8Array[] = [];
+        for (let i = 0; i < 256; i++) tbl.push(new Uint8Array([i]));
+        const out = new Uint8Array(expectedLen);
+        let op = 0, bits = 0, bb = 0, ip = 0;
+        const rc = (): number => {
+            while (bb < cs) { if (ip >= input.length) return eoi; bb |= input[ip++] << bits; bits += 8; }
+            const c = bb & ((1 << cs) - 1); bb >>= cs; bits -= cs; return c;
+        };
+        let prev: Uint8Array | null = null;
+        while (true) {
+            const c = rc();
+            if (c === eoi) break;
+            if (c === cc) { cs = 9; nc = 258; tbl.length = 256; prev = null; continue; }
+            if (c >= tbl.length) return null;
+            const ent = c < tbl.length ? tbl[c] : (prev ? concatArr(prev, prev[0]) : null);
+            if (!ent) return null;
+            if (prev) { tbl.push(concatArr(prev, ent[0])); if (nc === (1 << cs) && cs < 12) cs++; nc++; }
+            out.set(ent, op); op += ent.length; prev = ent;
+            if (op >= expectedLen) break;
+        }
+        return out;
+    }
+    function concatArr(a: Uint8Array, b: number): Uint8Array { const r = new Uint8Array(a.length + 1); r.set(a); r[a.length] = b; return r; }
+    if (comp === 1) {
+        let y = 0;
+        for (let s = 0; s < so.length && y < h; s++) {
+            const off = so[s], rows = Math.min(rps || h, h - y);
+            for (let r = 0; r < rows; r++) {
+                const sr = off + r * rb, dy = (y + r) * w * 4;
+                for (let x = 0; x < w; x++) {
+                    const si = sr + x * bpp, di = dy + x * 4;
+                    if (spp === 3) { px[di] = d[si]; px[di + 1] = d[si + 1]; px[di + 2] = d[si + 2]; px[di + 3] = 255; }
+                    else if (spp === 4) { px[di] = d[si]; px[di + 1] = d[si + 1]; px[di + 2] = d[si + 2]; px[di + 3] = d[si + 3]; }
+                    else if (spp === 1) { const v = photo === 0 ? 255 - d[si] : d[si]; px[di] = px[di + 1] = px[di + 2] = v; px[di + 3] = 255; }
+                }
+            }
+            y += rows;
+        }
+    } else if (comp === 5) {
+        let y = 0;
+        for (let s = 0; s < so.length && y < h; s++) {
+            const off = so[s], slen = sl[s] || 0, rows = Math.min(rps || h, h - y);
+            const dec = lzwDecode(d.subarray(off, off + slen), rows * rb);
+            if (!dec) return null;
+            for (let r = 0; r < rows; r++) {
+                const sr = r * rb, dy = (y + r) * w * 4;
+                for (let x = 0; x < w; x++) {
+                    const si = sr + x * bpp, di = dy + x * 4;
+                    if (spp === 3) { px[di] = dec[si]; px[di + 1] = dec[si + 1]; px[di + 2] = dec[si + 2]; px[di + 3] = 255; }
+                    else if (spp === 4) { px[di] = dec[si]; px[di + 1] = dec[si + 1]; px[di + 2] = dec[si + 2]; px[di + 3] = dec[si + 3]; }
+                    else if (spp === 1) { const v = photo === 0 ? 255 - dec[si] : dec[si]; px[di] = px[di + 1] = px[di + 2] = v; px[di + 3] = 255; }
+                }
+            }
+            y += rows;
+        }
+    } else return null;
+    return { width: w, height: h, pixels: px };
+}
+
 // detect webgl support
 function detectWebGLSupport(): boolean {
     try {
@@ -243,62 +350,73 @@ export class TermWrap {
                     const origEnd = iipHandler.end?.bind(iipHandler);
                     let putCount = 0;
                     let totalBytes = 0;
+                    let rawChunks: Uint32Array[] = [];
+                    let rawTotalBytes = 0;
                     iipHandler.start = function() {
                         putCount = 0;
                         totalBytes = 0;
-                        console.log("[IIP-DEBUG] IIPHandler.start() called");
+                        rawChunks = [];
+                        rawTotalBytes = 0;
                         return origStart?.();
                     };
                     iipHandler.put = function(data: any, start: number, end: number) {
                         putCount++;
                         totalBytes += end - start;
-                        if (putCount <= 3 || putCount % 50 === 0) {
-                            console.log(`[IIP-DEBUG] IIPHandler.put() #${putCount}, totalBytes: ${totalBytes}, chunk: ${end - start}`);
-                        }
-                        try {
-                            return origPut?.(data, start, end);
-                        } catch (e) {
-                            console.error("[IIP-DEBUG] IIPHandler.put() ERROR:", e);
-                            throw e;
-                        }
+                        const copy = data.slice(start, end);
+                        rawChunks.push(copy);
+                        rawTotalBytes += copy.length;
+                        return origPut?.(data, start, end);
                     };
                     iipHandler.end = function(success: boolean) {
-                        console.log(`[IIP-DEBUG] IIPHandler.end() called, success: ${success}, putCount: ${putCount}, totalBytes: ${totalBytes}`);
-                        try {
-                            const h = (iipHandler as any)._header;
-                            const ab = (iipHandler as any)._aborted;
-                            const dec = (iipHandler as any)._dec;
-                            const storage = (iipHandler as any)._storage;
-                            console.log("[IIP-DEBUG] Before end() - _aborted:", ab, "_header:", h ? JSON.stringify({width: h.width, height: h.height, type: h.type, name: h.name, size: h.size}) : null);
-                            if (dec) {
-                                const d8 = dec.data8;
-                                const firstBytes = d8 ? Array.from(d8.slice(0, 16)) : [];
-                                console.log("[IIP-DEBUG] Before end() - decoder dataLen:", d8?.length, "firstBytes:", firstBytes, "keys:", Object.keys(dec));
+                        const h = (iipHandler as any)._header;
+                        const dec = (iipHandler as any)._dec;
+                        const storage = (iipHandler as any)._storage;
+                        const headerType = h?.type;
+
+                        if (success && headerType === 1 && rawChunks.length > 0) {
+                            try {
+                                const raw = new Uint32Array(rawTotalBytes);
+                                let offset = 0;
+                                for (const chunk of rawChunks) {
+                                    raw.set(chunk, offset);
+                                    offset += chunk.length;
+                                }
+                                const rawBytes = new Uint8Array(raw.length);
+                                for (let i = 0; i < raw.length; i++) rawBytes[i] = raw[i] & 0xFF;
+
+                                const colonIdx = rawBytes.indexOf(0x3A);
+                                if (colonIdx >= 0 && colonIdx < rawBytes.length - 1) {
+                                    let endIdx = rawBytes.indexOf(0x07, colonIdx + 1);
+                                    if (endIdx < 0) endIdx = rawBytes.length;
+                                    const b64Slice = rawBytes.subarray(colonIdx + 1, endIdx);
+                                    let b64Str = "";
+                                    for (let i = 0; i < b64Slice.length; i++) b64Str += String.fromCharCode(b64Slice[i]);
+                                    const decoded = atob(b64Str);
+                                    const decodedBytes = new Uint8Array(decoded.length);
+                                    for (let i = 0; i < decoded.length; i++) decodedBytes[i] = decoded.charCodeAt(i);
+
+                                    const isTiff = decodedBytes.length >= 4 && decodedBytes[0] === 0x49 && decodedBytes[1] === 0x49 && decodedBytes[2] === 0x2A && decodedBytes[3] === 0x00;
+                                    if (isTiff && typeof decodeTiff !== "undefined") {
+                                        const tiffResult = decodeTiff(decodedBytes);
+                                        if (tiffResult && storage) {
+                                            const canvas = document.createElement("canvas");
+                                            canvas.width = tiffResult.width;
+                                            canvas.height = tiffResult.height;
+                                            canvas.getContext("2d")?.putImageData(new ImageData(tiffResult.pixels, tiffResult.width, tiffResult.height), 0, 0);
+                                            storage.addImage(canvas);
+                                            console.log(`[IIP-DEBUG] TIFF decoded: ${tiffResult.width}x${tiffResult.height}, rendered`);
+                                            return true;
+                                        }
+                                    }
+                                }
+                            } catch (e) {
+                                console.error("[IIP-DEBUG] TIFF decode attempt failed:", e);
                             }
-                            const result = origEnd?.(success);
-                            const isPromise = result instanceof Promise;
-                            console.log("[IIP-DEBUG] IIPHandler.end() result:", isPromise ? "Promise" : result);
-                            if (isPromise) {
-                                result.then((r: any) => console.log("[IIP-DEBUG] Promise resolved:", r))
-                                      .catch((e: any) => console.error("[IIP-DEBUG] Promise REJECTED:", e));
-                            }
-                            if (dec) {
-                                const d8 = dec.data8;
-                                console.log("[IIP-DEBUG] After end() - decoder dataLen:", d8?.length, "state:", dec._state);
-                            }
-                            if (storage) {
-                                console.log("[IIP-DEBUG] After end() - storage keys:", Object.keys(storage));
-                                console.log("[IIP-DEBUG] After end() - terminal element:", !!storage._terminal?.element, "terminal:", !!storage._terminal);
-                                console.log("[IIP-DEBUG] After end() - storageUsage:", (storage as any).usage ?? (storage as any)._usage ?? "unknown");
-                            }
-                            return result;
-                        } catch (e) {
-                            console.error("[IIP-DEBUG] IIPHandler.end() ERROR:", e);
-                            throw e;
                         }
+
+                        return origEnd?.(success);
                     };
                     iipHandler.__patched = true;
-                    console.log("[IIP-DEBUG] IIPHandler methods patched for logging");
                 }
 
                 return result;
