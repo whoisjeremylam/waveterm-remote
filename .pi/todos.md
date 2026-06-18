@@ -124,6 +124,7 @@
   - [x] Fix IIP detection: upgrade to `@xterm/addon-image@0.10.0-beta.287` + `@xterm/xterm@6.1.0-beta.287`
   - [x] Fix TIFF rendering: chafa outputs TIFF for IIP, Chromium `createImageBitmap()` doesn't support TIFF — decode TIFF in termwrap.ts using JS base64 decoder + self-contained TIFF decoder (uncompressed + LZW)
   - [x] patch-package infrastructure for addon-image (TIFF detection in `IIPMetrics.ts`)
+  - [x] Fix Sixel bottom-edge overlap: pre-scale Sixel images to cell-aligned dimensions in `SixelHandler.unhook()` before calling `addImage()` (same approach as IIP's `_resize()` + `Math.floor`)
   - [x] Pi extension published: `@whoisjeremylam/pi-waveterm-images@1.0.1` (enables kitty protocol via `setCapabilities()`)
   - [ ] Clean up: strip debug logging, remove `iip-debug-tests.js`, squash debug commits
   - [ ] Kitty image sizing: Kitty handler doesn't resize bitmaps to cell grid (unlike IIP's `_resize`), causing overflow past allocated cells
