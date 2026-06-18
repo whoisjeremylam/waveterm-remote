@@ -127,6 +127,7 @@
   - [x] Pi extension published: `@whoisjeremylam/pi-waveterm-images@1.0.1` (enables kitty protocol via `setCapabilities()`)
   - [ ] Clean up: strip debug logging, remove `iip-debug-tests.js`, squash debug commits
   - [ ] Kitty image sizing: Kitty handler doesn't resize bitmaps to cell grid (unlike IIP's `_resize`), causing overflow past allocated cells
+  - [ ] Kitty protocol not rendering: APC data flows (hundreds of chunks) but nothing renders — likely WaveTerm's binary data handler intercepts APC sequences before parser dispatches to Kitty handler
   - [ ] Durable session image restore: `SerializeAddon.serialize()` drops image cell markers (`imageId`/`tileId`/`extendedAttrs`), images lost on restore
 - [ ] **Remote file paste** — image paste + drag-drop for remote sessions
   - Primary use case: pasting screenshots and dragging files when using pi or Claude Code's TUI over SSH
