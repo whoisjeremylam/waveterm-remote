@@ -316,10 +316,25 @@ export class TermWrap {
 
                     if (success && headerType === 1 && rawChunks.length > 0) {
                         try {
-                            let b64Str = '';
-                            for (const chunk of rawChunks) {
-                                for (let i = 0; i < chunk.length; i++) b64Str += String.fromCharCode(chunk[i]);
+                            // Reassemble raw bytes — includes header text before colon
+                            const rawBytes = new Uint8Array(rawTotal);
+                            let offset = 0;
+                            for (const chunk of rawChunks) { rawBytes.set(chunk, offset); offset += chunk.length; }
+
+                            // Find colon (0x3A) — separates header from base64 payload
+                            const colonIdx = rawBytes.indexOf(0x3A);
+                            if (colonIdx < 0 || colonIdx >= rawBytes.length - 1) {
+                                console.log("[IIP-FIX] No colon found in payload, falling through");
+                                rawChunks = []; rawTotal = 0;
+                                return origEnd?.(success);
                             }
+
+                            // Find BEL (0x07) — terminates the IIP sequence
+                            let endIdx = rawBytes.indexOf(0x07, colonIdx + 1);
+                            if (endIdx < 0) endIdx = rawBytes.length;
+
+                            let b64Str = '';
+                            for (let i = colonIdx + 1; i < endIdx; i++) b64Str += String.fromCharCode(rawBytes[i]);
                             const decoded = atob(b64Str);
                             const decodedBytes = new Uint8Array(decoded.length);
                             for (let i = 0; i < decoded.length; i++) decodedBytes[i] = decoded.charCodeAt(i);
