@@ -54,6 +54,97 @@ const MinDataProcessedForCache = 100 * 1024;
 export const SupportsImageInput = true;
 const MaxRepaintTransactionMs = 2000;
 
+// Minimal TIFF decoder for IIP rendering (chafa sends TIFF for --format=iterm2)
+function decodeTiffFallback(d: Uint8Array): { width: number; height: number; pixels: Uint8ClampedArray } | null {
+    if (d.length < 8) return null;
+    const le = d[0] === 0x49;
+    const u16 = (o: number) => le ? (d[o] | (d[o + 1] << 8)) : ((d[o] << 8) | d[o + 1]);
+    const u32 = (o: number) => le
+        ? (d[o] | (d[o + 1] << 8) | (d[o + 2] << 16) | (d[o + 3] << 24)) >>> 0
+        : ((d[o] << 24) | (d[o + 1] << 16) | (d[o + 2] << 8) | d[o + 3]) >>> 0;
+    if (u16(2) !== 42) return null;
+    const ifo = u32(4);
+    if (ifo + 2 > d.length) return null;
+    const n = u16(ifo);
+    let w = 0, h = 0, comp = 1, bps = 8, spp = 3, photo = 2;
+    const so: number[] = [], sl: number[] = [];
+    let rps = 0;
+    for (let i = 0; i < n; i++) {
+        const eo = ifo + 2 + i * 12;
+        if (eo + 12 > d.length) break;
+        const tag = u16(eo), typ = u16(eo + 2), cnt = u32(eo + 4);
+        const vs = typ === 3 ? 2 : typ === 4 ? 4 : 0;
+        let vo = eo + 8;
+        if (cnt * vs > 4) vo = u32(eo + 8);
+        const rv = typ === 3 ? u16(vo) : u32(vo);
+        switch (tag) {
+            case 256: w = rv; break; case 257: h = rv; break;
+            case 258: bps = rv; break; case 259: comp = rv; break;
+            case 262: photo = rv; break; case 277: spp = rv; break;
+            case 278: rps = rv; break;
+            case 273: so.length = 0; if (cnt === 1) so.push(rv); else for (let j = 0; j < cnt && vo + j * 4 + 4 <= d.length; j++) so.push(u32(vo + j * 4)); break;
+            case 279: sl.length = 0; if (cnt === 1) sl.push(rv); else for (let j = 0; j < cnt && vo + j * 4 + 4 <= d.length; j++) sl.push(u32(vo + j * 4)); break;
+        }
+    }
+    if (!w || !h || !so.length) return null;
+    const px = new Uint8ClampedArray(w * h * 4);
+    const bpp = (bps / 8) * spp;
+    const rb = w * bpp;
+    function lzwDecode(input: Uint8Array, expectedLen: number): Uint8Array | null {
+        if (input.length < 2) return null;
+        const cc = 256, eoi = 257;
+        let cs = 9, nc = 258;
+        const tbl: Uint8Array[] = [];
+        for (let i = 0; i < 256; i++) tbl.push(new Uint8Array([i]));
+        const out = new Uint8Array(expectedLen);
+        let op = 0, bits = 0, bb = 0, ip = 0;
+        const rc = (): number => { while (bb < cs) { if (ip >= input.length) return eoi; bb |= input[ip++] << bits; bits += 8; } const c = bb & ((1 << cs) - 1); bb >>= cs; bits -= cs; return c; };
+        let prev: Uint8Array | null = null;
+        while (true) {
+            const c = rc();
+            if (c === eoi) break;
+            if (c === cc) { cs = 9; nc = 258; tbl.length = 256; prev = null; continue; }
+            if (c >= tbl.length) { if (!prev) return null; const ent = new Uint8Array(prev.length + 1); ent.set(prev); ent[prev.length] = prev[0]; tbl.push(ent); if (nc === (1 << cs) && cs < 12) cs++; nc++; out.set(ent, op); op += ent.length; prev = ent; if (op >= expectedLen) break; continue; }
+            const ent = tbl[c]; if (prev) { const merged = new Uint8Array(prev.length + 1); merged.set(prev); merged[prev.length] = ent[0]; tbl.push(merged); if (nc === (1 << cs) && cs < 12) cs++; nc++; } out.set(ent, op); op += ent.length; prev = ent; if (op >= expectedLen) break;
+        }
+        return out;
+    }
+    if (comp === 1) {
+        let y = 0;
+        for (let s = 0; s < so.length && y < h; s++) {
+            const off = so[s], rows = Math.min(rps || h, h - y);
+            for (let r = 0; r < rows; r++) {
+                const sr = off + r * rb, dy = (y + r) * w * 4;
+                for (let x = 0; x < w; x++) {
+                    const si = sr + x * bpp, di = dy + x * 4;
+                    if (spp === 3) { px[di] = d[si]; px[di + 1] = d[si + 1]; px[di + 2] = d[si + 2]; px[di + 3] = 255; }
+                    else if (spp === 4) { px[di] = d[si]; px[di + 1] = d[si + 1]; px[di + 2] = d[si + 2]; px[di + 3] = d[si + 3]; }
+                    else if (spp === 1) { const v = photo === 0 ? 255 - d[si] : d[si]; px[di] = px[di + 1] = px[di + 2] = v; px[di + 3] = 255; }
+                }
+            }
+            y += rows;
+        }
+    } else if (comp === 5) {
+        let y = 0;
+        for (let s = 0; s < so.length && y < h; s++) {
+            const off = so[s], slen = sl[s] || 0, rows = Math.min(rps || h, h - y);
+            const dec = lzwDecode(d.subarray(off, off + slen), rows * rb);
+            if (!dec) return null;
+            for (let r = 0; r < rows; r++) {
+                const sr = r * rb, dy = (y + r) * w * 4;
+                for (let x = 0; x < w; x++) {
+                    const si = sr + x * bpp, di = dy + x * 4;
+                    if (spp === 3) { px[di] = dec[si]; px[di + 1] = dec[si + 1]; px[di + 2] = dec[si + 2]; px[di + 3] = 255; }
+                    else if (spp === 4) { px[di] = dec[si]; px[di + 1] = dec[si + 1]; px[di + 2] = dec[si + 2]; px[di + 3] = dec[si + 3]; }
+                    else if (spp === 1) { const v = photo === 0 ? 255 - dec[si] : dec[si]; px[di] = px[di + 1] = px[di + 2] = v; px[di + 3] = 255; }
+                }
+            }
+            y += rows;
+        }
+    } else return null;
+    return { width: w, height: h, pixels: px };
+}
+
 // detect webgl support
 function detectWebGLSupport(): boolean {
     try {
@@ -199,6 +290,86 @@ export class TermWrap {
                 enableSizeReports: true,
             });
             this.terminal.loadAddon(this.imageAddon);
+
+            // IIP TIFF intercept: the compiled addon doesn't have our TIFF
+            // patches. This intercept handles TIFF rendering directly.
+            const iipH = (this.imageAddon as any)._handlers?.get("iip");
+            if (iipH && !iipH.__iipFixed) {
+                const origEnd = iipH.end?.bind(iipH);
+                iipH.end = function(success: boolean) {
+                    const h = (iipH as any)._header;
+                    const headerType = h?.type;
+
+                    if (success && headerType === 1) {
+                        try {
+                            const chunks = (iipH as any)._rawPayloadChunks;
+                            const total = (iipH as any)._rawPayloadTotal;
+                            if (chunks && chunks.length > 0 && total > 0) {
+                                let b64Str = '';
+                                for (const chunk of chunks) {
+                                    for (let i = 0; i < chunk.length; i++) b64Str += String.fromCharCode(chunk[i]);
+                                }
+                                const decoded = atob(b64Str);
+                                const decodedBytes = new Uint8Array(decoded.length);
+                                for (let i = 0; i < decoded.length; i++) decodedBytes[i] = decoded.charCodeAt(i);
+
+                                const isTiff = decodedBytes.length >= 4 &&
+                                    ((decodedBytes[0] === 0x49 && decodedBytes[1] === 0x49 && decodedBytes[2] === 0x2A && decodedBytes[3] === 0x00) ||
+                                     (decodedBytes[0] === 0x4D && decodedBytes[1] === 0x4D && decodedBytes[2] === 0x00 && decodedBytes[3] === 0x2A));
+                                if (isTiff) {
+                                    const tiffResult = decodeTiffFallback(decodedBytes);
+                                    if (tiffResult) {
+                                        const storage = (iipH as any)._storage;
+                                        const terminal = (iipH as any)._coreTerminal;
+                                        const renderer = (iipH as any)._renderer;
+                                        const dims = renderer?.dimensions;
+                                        const cw = dims?.css?.cell?.width || 7;
+                                        const ch = dims?.css?.cell?.height || 14;
+
+                                        // Compute target size from header cell counts
+                                        let tw = tiffResult.width;
+                                        let th = tiffResult.height;
+                                        if (h.width && h.width !== 'auto' && h.height && h.height !== 'auto') {
+                                            const cellW = parseInt(String(h.width), 10);
+                                            const cellH = parseInt(String(h.height), 10);
+                                            if (cellW > 0 && cellH > 0) {
+                                                tw = cellW * cw;
+                                                th = cellH * ch;
+                                            }
+                                        }
+
+                                        const canvas = document.createElement("canvas");
+                                        if (tw === tiffResult.width && th === tiffResult.height) {
+                                            canvas.width = tiffResult.width;
+                                            canvas.height = tiffResult.height;
+                                            const imgData = new ImageData(tiffResult.width, tiffResult.height);
+                                            imgData.data.set(tiffResult.pixels);
+                                            canvas.getContext("2d")?.putImageData(imgData, 0, 0);
+                                        } else {
+                                            const tmp = document.createElement("canvas");
+                                            tmp.width = tiffResult.width;
+                                            tmp.height = tiffResult.height;
+                                            const tmpData = new ImageData(tiffResult.width, tiffResult.height);
+                                            tmpData.data.set(tiffResult.pixels);
+                                            tmp.getContext("2d")?.putImageData(tmpData, 0, 0);
+                                            canvas.width = tw;
+                                            canvas.height = th;
+                                            const ctx = canvas.getContext("2d");
+                                            if (ctx) { ctx.imageSmoothingEnabled = true; ctx.drawImage(tmp, 0, 0, tw, th); }
+                                        }
+                                        storage.addImage(canvas);
+                                        return true;
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            console.error("[IIP-FIX] TIFF intercept failed:", e);
+                        }
+                    }
+                    return origEnd?.(success);
+                };
+                iipH.__iipFixed = true;
+            }
 
             (window as any).__imageAddon = this.imageAddon;
             (window as any).__term = this.terminal;
