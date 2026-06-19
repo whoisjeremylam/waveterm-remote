@@ -295,6 +295,7 @@ export class TermWrap {
             // patches. This intercept handles TIFF rendering directly.
             const iipH = (this.imageAddon as any)._handlers?.get("iip");
             if (iipH && !iipH.__iipFixed) {
+                console.log("[IIP-FIX] Intercept installed on IIP handler");
                 const origPut = iipH.put?.bind(iipH);
                 const origEnd = iipH.end?.bind(iipH);
                 let rawChunks: Uint8Array[] = [];
@@ -345,6 +346,7 @@ export class TermWrap {
                                             th = cellH * ch;
                                         }
                                     }
+                                    console.log(`[IIP-FIX] TIFF decoded: ${tiffResult.width}x${tiffResult.height} → canvas ${tw}x${th} (${cw}x${ch} cells)`);
 
                                     const canvas = document.createElement("canvas");
                                     if (tw === tiffResult.width && th === tiffResult.height) {
@@ -377,6 +379,7 @@ export class TermWrap {
                     }
                     rawChunks = [];
                     rawTotal = 0;
+                    console.log("[IIP-FIX] Not TIFF, falling through to addon");
                     return origEnd?.(success);
                 };
                 iipH.__iipFixed = true;
