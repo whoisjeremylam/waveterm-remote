@@ -353,30 +353,22 @@ export class TermWrap {
 
                                     let tw = tiffResult.width;
                                     let th = tiffResult.height;
-                                    const preserveAR = h.preserveAspectRatio !== 0;
                                     if (h.width && h.width !== 'auto') {
                                         const rw = parseInt(String(h.width), 10) * cw;
                                         if (rw > 0) {
-                                            if (preserveAR) {
-                                                tw = rw;
-                                                th = Math.floor(tiffResult.height * rw / tiffResult.width);
-                                            } else if (h.height && h.height !== 'auto') {
-                                                const rh = parseInt(String(h.height), 10) * ch;
-                                                if (rh > 0) { tw = rw; th = rh; }
-                                                else { tw = rw; th = Math.floor(tiffResult.height * rw / tiffResult.width); }
-                                            } else {
-                                                tw = rw;
-                                                th = Math.floor(tiffResult.height * rw / tiffResult.width);
-                                            }
+                                            tw = rw;
+                                            th = Math.round(tiffResult.height * rw / tiffResult.width);
                                         }
                                     } else if (h.height && h.height !== 'auto') {
                                         const rh = parseInt(String(h.height), 10) * ch;
                                         if (rh > 0) {
                                             th = rh;
-                                            tw = Math.floor(tiffResult.width * rh / tiffResult.height);
+                                            tw = Math.round(tiffResult.width * rh / tiffResult.height);
                                         }
                                     }
-                                    console.log(`[IIP-FIX] TIFF ${tiffResult.width}x${tiffResult.height} → canvas ${tw}x${th} (preserveAR=${preserveAR}, cw=${cw} ch=${ch})`);
+                                    const cols = Math.ceil(tw / cw);
+                                    const rows = Math.ceil(th / ch);
+                                    console.log(`[IIP-FIX] TIFF ${tiffResult.width}x${tiffResult.height} → canvas ${tw}x${th} (${cols}x${rows} cells, cw=${cw} ch=${ch})`);
 
                                     const canvas = document.createElement("canvas");
                                     if (tw === tiffResult.width && th === tiffResult.height) {
