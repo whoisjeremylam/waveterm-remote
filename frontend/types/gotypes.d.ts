@@ -1874,6 +1874,42 @@ declare global {
         commandtype: string;
     };
 
+    // wshrpc.CommandGitStatusData
+    type CommandGitStatusData = {
+        dir?: string;
+    };
+
+    // wshrpc.GitFileChange
+    type GitFileChange = {
+        path: string;
+        status: string;
+        oldpath?: string;
+        icon: string;
+        color: string;
+    };
+
+    // wshrpc.GitStatusResponse
+    type GitStatusResponse = {
+        branch: string;
+        staged: GitFileChange[];
+        unstaged: GitFileChange[];
+        untracked: GitFileChange[];
+    };
+
+    // wshrpc.CommandGitDiffData
+    type CommandGitDiffData = {
+        dir?: string;
+        path: string;
+        staged?: boolean;
+    };
+
+    // wshrpc.GitDiffResponse
+    type GitDiffResponse = {
+        original: string;
+        modified: string;
+        language: string;
+    };
+
 }
 
 export {}

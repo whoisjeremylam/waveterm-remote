@@ -123,6 +123,10 @@ type WshRpcInterface interface {
 	RemoteProcessListCommand(ctx context.Context, data CommandRemoteProcessListData) (*ProcessListResponse, error)
 	RemoteProcessSignalCommand(ctx context.Context, data CommandRemoteProcessSignalData) error
 
+	// git/source control
+	GitStatusCommand(ctx context.Context, data CommandGitStatusData) (*GitStatusResponse, error)
+	GitDiffCommand(ctx context.Context, data CommandGitDiffData) (*GitDiffResponse, error)
+
 	// emain
 	WebSelectorCommand(ctx context.Context, data CommandWebSelectorData) ([]string, error)
 	NotifyCommand(ctx context.Context, notificationOptions WaveNotificationOptions) error
@@ -846,4 +850,36 @@ type CommandRemoteProcessListData struct {
 type CommandRemoteProcessSignalData struct {
 	Pid    int32  `json:"pid"`
 	Signal string `json:"signal"`
+}
+
+// Git source control types
+type CommandGitStatusData struct {
+	Dir string `json:"dir,omitempty"` // working directory, defaults to terminal cwd
+}
+
+type GitFileChange struct {
+	Path    string `json:"path"`
+	Status  string `json:"status"`  // M, A, D, R, C, U
+	OldPath string `json:"oldPath"` // for renames
+	Icon    string `json:"icon"`    // font-awesome icon name
+	Color   string `json:"color"`   // CSS color
+}
+
+type GitStatusResponse struct {
+	Branch    string          `json:"branch"`
+	Staged    []GitFileChange `json:"staged"`
+	Unstaged  []GitFileChange `json:"unstaged"`
+	Untracked []GitFileChange `json:"untracked"`
+}
+
+type CommandGitDiffData struct {
+	Dir   string `json:"dir,omitempty"`   // working directory
+	Path  string `json:"path"`            // file path
+	Staged bool   `json:"staged,omitempty"` // true for staged diff (git diff --cached)
+}
+
+type GitDiffResponse struct {
+	Original string `json:"original"`
+	Modified string `json:"modified"`
+	Language string `json:"language"` // detected from file extension
 }

@@ -1008,6 +1008,18 @@ export class RpcApiType {
         return client.wshRpcCall("wslstatus", null, opts);
     }
 
+    // command "gitstatus" [call]
+    GitStatusCommand(client: WshClient, data: CommandGitStatusData, opts?: RpcOpts): Promise<GitStatusResponse> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitstatus", data, opts);
+        return client.wshRpcCall("gitstatus", data, opts);
+    }
+
+    // command "gitdiff" [call]
+    GitDiffCommand(client: WshClient, data: CommandGitDiffData, opts?: RpcOpts): Promise<GitDiffResponse> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitdiff", data, opts);
+        return client.wshRpcCall("gitdiff", data, opts);
+    }
+
 }
 
 export const RpcApi = new RpcApiType();

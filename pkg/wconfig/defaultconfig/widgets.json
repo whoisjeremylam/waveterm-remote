@@ -1,12 +1,22 @@
 {
     "defwidget@terminal": {
-        "display:order": -5,
+        "display:order": -6,
         "icon": "square-terminal",
         "label": "terminal",
         "blockdef": {
             "meta": {
                 "view": "term",
                 "controller": "shell"
+            }
+        }
+    },
+    "defwidget@sourcecontrol": {
+        "display:order": -5,
+        "icon": "code-branch",
+        "label": "source\ncontrol",
+        "blockdef": {
+            "meta": {
+                "view": "sourcecontrol"
             }
         }
     },

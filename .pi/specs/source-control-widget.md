@@ -273,15 +273,10 @@ npm install react-arborist
 | **Phase 4** | Context menus, keyboard shortcuts | 2-3 days |
 | **Phase 5** | History, branches, conflict resolution | 1-2 weeks |
 
-## [S10] Open Questions
+## [S10] Resolved Design Decisions
 
-1. **Connection to terminal cwd:** How do we get the current terminal's working directory?
-   - Option A: Read from block metadata
-   - Option B: Add a wsh command to get cwd
-   - Option C: Use `wsh getmeta` on the active terminal block
+1. **Terminal CWD:** Use focused terminal's cwd via `getBlockMetaKeyAtom(blockId, "cmd:cwd")`. Fall back to "local" if no terminal is focused. Re-poll when terminal's cwd changes.
 
-2. **File open behavior:** Clicking a file shows diff. Should double-click open the file in waveterm's editor?
-   - Recommendation: Yes, for Phase 2+
+2. **File open behavior:** Single-click shows diff. Double-click also shows diff (same behavior). Keep simple for MVP.
 
-3. **Auto-refresh:** Should we poll when the view is not visible?
-   - Recommendation: No, only poll when visible
+3. **Auto-refresh:** Stop polling when view is hidden. On refocus, immediately check for git changes, then resume polling every 3 seconds.
