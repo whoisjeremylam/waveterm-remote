@@ -295,77 +295,88 @@ export class TermWrap {
             // patches. This intercept handles TIFF rendering directly.
             const iipH = (this.imageAddon as any)._handlers?.get("iip");
             if (iipH && !iipH.__iipFixed) {
+                const origPut = iipH.put?.bind(iipH);
                 const origEnd = iipH.end?.bind(iipH);
+                let rawChunks: Uint8Array[] = [];
+                let rawTotal = 0;
+
+                iipH.put = function(data: any, start: number, end: number) {
+                    const chunk = new Uint8Array((end - start) * 4);
+                    let len = 0;
+                    for (let i = start; i < end; i++) chunk[len++] = data[i] & 0xFF;
+                    rawChunks.push(chunk.subarray(0, len));
+                    rawTotal += len;
+                    return origPut?.(data, start, end);
+                };
+
                 iipH.end = function(success: boolean) {
                     const h = (iipH as any)._header;
                     const headerType = h?.type;
 
-                    if (success && headerType === 1) {
+                    if (success && headerType === 1 && rawChunks.length > 0) {
                         try {
-                            const chunks = (iipH as any)._rawPayloadChunks;
-                            const total = (iipH as any)._rawPayloadTotal;
-                            if (chunks && chunks.length > 0 && total > 0) {
-                                let b64Str = '';
-                                for (const chunk of chunks) {
-                                    for (let i = 0; i < chunk.length; i++) b64Str += String.fromCharCode(chunk[i]);
-                                }
-                                const decoded = atob(b64Str);
-                                const decodedBytes = new Uint8Array(decoded.length);
-                                for (let i = 0; i < decoded.length; i++) decodedBytes[i] = decoded.charCodeAt(i);
+                            let b64Str = '';
+                            for (const chunk of rawChunks) {
+                                for (let i = 0; i < chunk.length; i++) b64Str += String.fromCharCode(chunk[i]);
+                            }
+                            const decoded = atob(b64Str);
+                            const decodedBytes = new Uint8Array(decoded.length);
+                            for (let i = 0; i < decoded.length; i++) decodedBytes[i] = decoded.charCodeAt(i);
 
-                                const isTiff = decodedBytes.length >= 4 &&
-                                    ((decodedBytes[0] === 0x49 && decodedBytes[1] === 0x49 && decodedBytes[2] === 0x2A && decodedBytes[3] === 0x00) ||
-                                     (decodedBytes[0] === 0x4D && decodedBytes[1] === 0x4D && decodedBytes[2] === 0x00 && decodedBytes[3] === 0x2A));
-                                if (isTiff) {
-                                    const tiffResult = decodeTiffFallback(decodedBytes);
-                                    if (tiffResult) {
-                                        const storage = (iipH as any)._storage;
-                                        const terminal = (iipH as any)._coreTerminal;
-                                        const renderer = (iipH as any)._renderer;
-                                        const dims = renderer?.dimensions;
-                                        const cw = dims?.css?.cell?.width || 7;
-                                        const ch = dims?.css?.cell?.height || 14;
+                            const isTiff = decodedBytes.length >= 4 &&
+                                ((decodedBytes[0] === 0x49 && decodedBytes[1] === 0x49 && decodedBytes[2] === 0x2A && decodedBytes[3] === 0x00) ||
+                                 (decodedBytes[0] === 0x4D && decodedBytes[1] === 0x4D && decodedBytes[2] === 0x00 && decodedBytes[3] === 0x2A));
+                            if (isTiff) {
+                                const tiffResult = decodeTiffFallback(decodedBytes);
+                                if (tiffResult) {
+                                    const storage = (iipH as any)._storage;
+                                    const renderer = (iipH as any)._renderer;
+                                    const dims = renderer?.dimensions;
+                                    const cw = dims?.css?.cell?.width || 7;
+                                    const ch = dims?.css?.cell?.height || 14;
 
-                                        // Compute target size from header cell counts
-                                        let tw = tiffResult.width;
-                                        let th = tiffResult.height;
-                                        if (h.width && h.width !== 'auto' && h.height && h.height !== 'auto') {
-                                            const cellW = parseInt(String(h.width), 10);
-                                            const cellH = parseInt(String(h.height), 10);
-                                            if (cellW > 0 && cellH > 0) {
-                                                tw = cellW * cw;
-                                                th = cellH * ch;
-                                            }
+                                    let tw = tiffResult.width;
+                                    let th = tiffResult.height;
+                                    if (h.width && h.width !== 'auto' && h.height && h.height !== 'auto') {
+                                        const cellW = parseInt(String(h.width), 10);
+                                        const cellH = parseInt(String(h.height), 10);
+                                        if (cellW > 0 && cellH > 0) {
+                                            tw = cellW * cw;
+                                            th = cellH * ch;
                                         }
-
-                                        const canvas = document.createElement("canvas");
-                                        if (tw === tiffResult.width && th === tiffResult.height) {
-                                            canvas.width = tiffResult.width;
-                                            canvas.height = tiffResult.height;
-                                            const imgData = new ImageData(tiffResult.width, tiffResult.height);
-                                            imgData.data.set(tiffResult.pixels);
-                                            canvas.getContext("2d")?.putImageData(imgData, 0, 0);
-                                        } else {
-                                            const tmp = document.createElement("canvas");
-                                            tmp.width = tiffResult.width;
-                                            tmp.height = tiffResult.height;
-                                            const tmpData = new ImageData(tiffResult.width, tiffResult.height);
-                                            tmpData.data.set(tiffResult.pixels);
-                                            tmp.getContext("2d")?.putImageData(tmpData, 0, 0);
-                                            canvas.width = tw;
-                                            canvas.height = th;
-                                            const ctx = canvas.getContext("2d");
-                                            if (ctx) { ctx.imageSmoothingEnabled = true; ctx.drawImage(tmp, 0, 0, tw, th); }
-                                        }
-                                        storage.addImage(canvas);
-                                        return true;
                                     }
+
+                                    const canvas = document.createElement("canvas");
+                                    if (tw === tiffResult.width && th === tiffResult.height) {
+                                        canvas.width = tiffResult.width;
+                                        canvas.height = tiffResult.height;
+                                        const imgData = new ImageData(tiffResult.width, tiffResult.height);
+                                        imgData.data.set(tiffResult.pixels);
+                                        canvas.getContext("2d")?.putImageData(imgData, 0, 0);
+                                    } else {
+                                        const tmp = document.createElement("canvas");
+                                        tmp.width = tiffResult.width;
+                                        tmp.height = tiffResult.height;
+                                        const tmpData = new ImageData(tiffResult.width, tiffResult.height);
+                                        tmpData.data.set(tiffResult.pixels);
+                                        tmp.getContext("2d")?.putImageData(tmpData, 0, 0);
+                                        canvas.width = tw;
+                                        canvas.height = th;
+                                        const ctx = canvas.getContext("2d");
+                                        if (ctx) { ctx.imageSmoothingEnabled = true; ctx.drawImage(tmp, 0, 0, tw, th); }
+                                    }
+                                    storage.addImage(canvas);
+                                    rawChunks = [];
+                                    rawTotal = 0;
+                                    return true;
                                 }
                             }
                         } catch (e) {
                             console.error("[IIP-FIX] TIFF intercept failed:", e);
                         }
                     }
+                    rawChunks = [];
+                    rawTotal = 0;
                     return origEnd?.(success);
                 };
                 iipH.__iipFixed = true;
