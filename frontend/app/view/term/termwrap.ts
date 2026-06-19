@@ -355,20 +355,12 @@ export class TermWrap {
                                     let th = tiffResult.height;
                                     if (h.width && h.width !== 'auto') {
                                         const rw = parseInt(String(h.width), 10) * cw;
-                                        if (rw > 0) {
-                                            tw = rw;
-                                            th = Math.round(tiffResult.height * rw / tiffResult.width);
-                                        }
-                                    } else if (h.height && h.height !== 'auto') {
-                                        const rh = parseInt(String(h.height), 10) * ch;
-                                        if (rh > 0) {
-                                            th = rh;
-                                            tw = Math.round(tiffResult.width * rh / tiffResult.height);
-                                        }
+                                        if (rw > 0) tw = rw;
                                     }
-                                    const cols = Math.ceil(tw / cw);
-                                    const rows = Math.ceil(th / ch);
-                                    console.log(`[IIP-FIX] TIFF ${tiffResult.width}x${tiffResult.height} → canvas ${tw}x${th} (${cols}x${rows} cells, cw=${cw} ch=${ch})`);
+                                    if (h.height && h.height !== 'auto') {
+                                        const rh = parseInt(String(h.height), 10) * ch;
+                                        if (rh > 0) th = rh;
+                                    }
 
                                     const canvas = document.createElement("canvas");
                                     if (tw === tiffResult.width && th === tiffResult.height) {
@@ -389,6 +381,11 @@ export class TermWrap {
                                         const ctx = canvas.getContext("2d");
                                         if (ctx) { ctx.imageSmoothingEnabled = true; ctx.drawImage(tmp, 0, 0, tw, th); }
                                     }
+
+                                    const cols = Math.ceil(canvas.width / cw);
+                                    const rows = Math.ceil(canvas.height / ch);
+                                    console.log(`[IIP-FIX] TIFF ${tiffResult.width}x${tiffResult.height} → canvas ${tw}x${th} (${cols}x${rows} cells, cw=${cw} ch=${ch})`);
+
                                     storage.addImage(canvas);
                                     rawChunks = [];
                                     rawTotal = 0;
