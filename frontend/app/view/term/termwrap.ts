@@ -172,6 +172,7 @@ export function canvasToPngBase64(img: HTMLCanvasElement | ImageBitmap): string 
 }
 
 export async function decodePngBase64(b64: string, w: number, h: number): Promise<HTMLCanvasElement | null> {
+    if (!b64 || w <= 0 || h <= 0) return null;
     try {
         const bin = atob(b64);
         const bytes = new Uint8Array(bin.length);
@@ -833,6 +834,7 @@ export class TermWrap {
     }
 
     dispose() {
+        this._writtenImageHashes.clear();
         this.promptMarkers.forEach((marker) => {
             try {
                 marker.dispose();
@@ -981,8 +983,15 @@ export class TermWrap {
                     if (!canvas) continue;
 
                     if (entry.row < 0 || entry.row >= buffer.lines.length) continue;
-                    const viewportRow = entry.row - buffer.ybase - ybaseOffset;
-                    if (viewportRow < 0 || viewportRow >= this.terminal.rows) continue;
+                    // Prefer stored viewportRow if valid, fall back to absolute row calculation
+                    let viewportRow: number;
+                    if (entry.viewportRow !== undefined &&
+                        entry.viewportRow >= 0 && entry.viewportRow < this.terminal.rows) {
+                        viewportRow = entry.viewportRow;
+                    } else {
+                        viewportRow = entry.row - buffer.ybase - ybaseOffset;
+                        if (viewportRow < 0 || viewportRow >= this.terminal.rows) continue;
+                    }
 
                     const ybaseBefore = buffer.ybase;
                     buffer.x = entry.col;
@@ -1153,6 +1162,7 @@ export class TermWrap {
                     images.push({
                         hash: hashImageData(b64),
                         row: y,
+                        viewportRow: y - buffer.ybase,
                         col: x,
                         width: spec.orig.width,
                         height: spec.orig.height,

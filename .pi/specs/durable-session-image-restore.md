@@ -66,7 +66,7 @@ Raw base64-encoded PNG data. One file per unique image. Content-addressed: same 
 
 ### Hash computation
 
-Hash is the first 12 hex characters of a simple hash of the base64 PNG string. Not cryptographic — just fast dedup. Collision probability is negligible for typical terminal usage (a few images).
+Hash is the first 8 hex characters (32 bits) of a simple hash of the base64 PNG string. Not cryptographic — just fast dedup. Collision probability is negligible for typical terminal usage (a few images).
 
 ```typescript
 function hashImageData(b64: string): string {

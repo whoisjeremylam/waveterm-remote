@@ -189,6 +189,21 @@ describe("decodePngBase64", () => {
         const result = await decodePngBase64("", 10, 10);
         expect(result).toBeNull();
     });
+
+    it("returns null for zero width", async () => {
+        const result = await decodePngBase64("abc", 0, 10);
+        expect(result).toBeNull();
+    });
+
+    it("returns null for zero height", async () => {
+        const result = await decodePngBase64("abc", 10, 0);
+        expect(result).toBeNull();
+    });
+
+    it("returns null for negative dimensions", async () => {
+        const result = await decodePngBase64("abc", -1, -1);
+        expect(result).toBeNull();
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -278,6 +293,7 @@ describe("Image restore round-trip", () => {
                 {
                     hash: "a1b2c3d4",
                     row: 10,
+                    viewportRow: 5,
                     col: 0,
                     width: 100,
                     height: 50,
@@ -295,7 +311,37 @@ describe("Image restore round-trip", () => {
         expect(parsed.images).toHaveLength(1);
         expect(parsed.images[0].hash).toBe("a1b2c3d4");
         expect(parsed.images[0].row).toBe(10);
+        expect(parsed.images[0].viewportRow).toBe(5);
         expect(parsed.images[0].width).toBe(100);
+    });
+
+    it("manifest with multiple images preserves order", () => {
+        const manifest = {
+            version: 1,
+            images: [
+                { hash: "aaa", row: 0, viewportRow: 0, col: 0, width: 10, height: 10, layer: "top", zIndex: 0, scrolling: true, cursorPos: "iip" },
+                { hash: "bbb", row: 5, viewportRow: 3, col: 10, width: 20, height: 20, layer: "top", zIndex: 1, scrolling: true, cursorPos: "iip" },
+            ],
+        };
+
+        const parsed = JSON.parse(JSON.stringify(manifest));
+        expect(parsed.images[0].hash).toBe("aaa");
+        expect(parsed.images[1].hash).toBe("bbb");
+        expect(parsed.images[0].row).toBe(0);
+        expect(parsed.images[1].row).toBe(5);
+    });
+
+    it("manifest handles missing viewportRow gracefully", () => {
+        // Old manifests may not have viewportRow
+        const manifest = {
+            version: 1,
+            images: [
+                { hash: "abc", row: 10, col: 0, width: 100, height: 50, layer: "top", zIndex: 0, scrolling: true, cursorPos: "iip" },
+            ],
+        };
+
+        const parsed = JSON.parse(JSON.stringify(manifest));
+        expect(parsed.images[0].viewportRow).toBeUndefined();
     });
 
     it("empty manifest is valid", () => {

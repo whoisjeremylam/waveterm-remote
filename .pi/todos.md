@@ -130,9 +130,10 @@
   - [ ] Kitty image sizing: Kitty handler doesn't resize bitmaps to cell grid (unlike IIP's `_resize`), causing overflow past allocated cells
   - [ ] Kitty protocol not rendering: APC data flows (hundreds of chunks) but nothing renders — likely WaveTerm's binary data handler intercepts APC sequences before parser dispatches to Kitty handler
   - [ ] Durable session image restore: sidecar approach — spec at [[.pi/specs/durable-session-image-restore.md]]
-    - Add `exportImages()`/`importImages()` to ImageStorage via patch
-    - Add `SaveTerminalImages` RPC + `cache:term:images` file
-    - Modify `processAndCacheData()` and `loadInitialTerminalData()` in termwrap.ts
+    - [x] Add `exportImages()`/`importImages()` to ImageStorage via patch
+    - [x] Add `SaveTerminalImages` RPC + `cache:term:images` file
+    - [x] Modify `processAndCacheData()` and `loadInitialTerminalData()` in termwrap.ts
+    - [ ] Atomic manifest write: crash during WriteFile could leave truncated JSON, losing all images. Fix: write to temp file then rename. Depends on filestore API supporting rename.
 - [ ] **Remote file paste** — image paste + drag-drop for remote sessions
   - Primary use case: pasting screenshots and dragging files when using pi or Claude Code's TUI over SSH
   - Currently pastes local file paths that don't exist on the remote server
