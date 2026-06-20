@@ -1327,3 +1327,140 @@ func TestConnect_ConnectedBlocked(t *testing.T) {
 		t.Fatal("expected error when already connected")
 	}
 }
+
+// --- CanAutoReconnect Tests ---
+
+func TestCanAutoReconnect_CachedPassword(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("secret123")
+	status := conn.DeriveConnStatus()
+	if !status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=true when password is cached")
+	}
+}
+
+func TestCanAutoReconnect_NoCachedPassword_UnknownConn(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	// No cached password, connection not in config → false
+	status := conn.DeriveConnStatus()
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false for unknown connection without cached password")
+	}
+}
+
+func TestCanAutoReconnect_BatchMode(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	batchMode := true
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{SshBatchMode: &batchMode}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+
+	status := conn.DeriveConnStatus()
+	if !status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=true when batch mode is on")
+	}
+}
+
+func TestCanAutoReconnect_PasswordSecretStore(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	secretName := "my-secret"
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{SshPasswordSecretName: &secretName}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+
+	status := conn.DeriveConnStatus()
+	if !status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=true when password secret is configured")
+	}
+}
+
+func TestCanAutoReconnect_KeyOnlyAuth(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{
+			SshPreferredAuthentications: []string{"publickey"},
+		}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+
+	status := conn.DeriveConnStatus()
+	if !status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=true when only key-based auth is preferred")
+	}
+}
+
+func TestCanAutoReconnect_PasswordAuthDisabled(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	falseVal := false
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{
+			SshPasswordAuthentication:        &falseVal,
+			SshKbdInteractiveAuthentication: &falseVal,
+		}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+
+	status := conn.DeriveConnStatus()
+	if !status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=true when password auth is disabled")
+	}
+}
+
+func TestCanAutoReconnect_PasswordAuthEnabled_Default(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	// Default: password auth enabled, no cached password → false
+	// (connection is unknown, so canAutoReconnectLocked returns false)
+	status := conn.DeriveConnStatus()
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false when password auth is enabled by default")
+	}
+}
+
+func TestDeriveConnStatus_IncludesCanAutoReconnect(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	status := conn.DeriveConnStatus()
+	// Connected with no cached password → false
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false for connected without cached password")
+	}
+
+	// Cache password → true
+	conn.cachePassword("test")
+	status = conn.DeriveConnStatus()
+	if !status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=true after caching password")
+	}
+
+	// Clear cache → false
+	conn.clearCachedPassword()
+	status = conn.DeriveConnStatus()
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false after clearing cache")
+	}
+}
