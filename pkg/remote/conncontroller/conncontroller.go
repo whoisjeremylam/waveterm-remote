@@ -183,6 +183,10 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 	for _, rule := range conn.RemoteForwardListeners {
 		forwardingRules = append(forwardingRules, "R: "+rule.Rule)
 	}
+	// Determine if auto-reconnect is possible without user input:
+	// - Password is cached from a previous session, OR
+	// - Connection doesn't require interactive auth (key-based only)
+	canAutoReconnect := conn.canAutoReconnectLocked()
 	return wshrpc.ConnStatus{
 		Status:                        conn.Status,
 		Connected:                     conn.Status == Status_Connected,
@@ -201,6 +205,7 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 		ReconnectNextAttempt:          conn.ReconnectNextAttempt,
 		ReconnectError:                conn.ReconnectError,
 		ForwardingRules:               forwardingRules,
+		CanAutoReconnect:              canAutoReconnect,
 	}
 }
 
@@ -997,6 +1002,46 @@ func (conn *SSHConn) getCachedPassword() *string {
 	conn.lock.Lock()
 	defer conn.lock.Unlock()
 	return conn.CachedPassword
+}
+
+// canAutoReconnectLocked returns true if the scheduler can auto-reconnect
+// without user input. Must be called with conn.lock held.
+func (conn *SSHConn) canAutoReconnectLocked() bool {
+	// If a password is cached, auto-reconnect is possible
+	if conn.CachedPassword != nil {
+		return true
+	}
+	// Check if the connection requires interactive auth
+	config := wconfig.GetWatcher().GetFullConfig()
+	connConfig, ok := config.Connections[conn.Opts.String()]
+	if !ok {
+		return false // unknown connection, assume interactive auth needed
+	}
+	// If batch mode is on, interactive prompts are suppressed
+	if utilfn.SafeDeref(connConfig.SshBatchMode) {
+		return true
+	}
+	// If a password is stored in the secret store, no user prompt is needed
+	if connConfig.SshPasswordSecretName != nil && *connConfig.SshPasswordSecretName != "" {
+		return true
+	}
+	// Check if either interactive method is in the preferred auth order
+	if connConfig.SshPreferredAuthentications != nil {
+		hasInteractive := false
+		for _, method := range connConfig.SshPreferredAuthentications {
+			if method == "password" || method == "keyboard-interactive" {
+				hasInteractive = true
+				break
+			}
+		}
+		if !hasInteractive {
+			return true // only key-based auth configured
+		}
+	}
+	// Check if password or keyboard-interactive auth is enabled (both default true)
+	passwordAuth := utilfn.SafeDeref(connConfig.SshPasswordAuthentication)
+	kbdAuth := utilfn.SafeDeref(connConfig.SshKbdInteractiveAuthentication)
+	return !(passwordAuth || kbdAuth)
 }
 
 func (conn *SSHConn) WithLock(fn func()) {

@@ -415,6 +415,7 @@ type ConnStatus struct {
 	ReconnectNextAttempt          int64    `json:"reconnectnextattempt,omitempty"`
 	ReconnectError                string   `json:"reconnecterror,omitempty"`
 	ForwardingRules               []string `json:"forwardingrules,omitempty"`
+	CanAutoReconnect              bool     `json:"canautoreconnect"` // true if scheduler can auto-reconnect without user input
 }
 
 type WebSelectorOpts struct {

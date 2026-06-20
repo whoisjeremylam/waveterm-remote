@@ -373,8 +373,11 @@ export const ConnStatusOverlay = React.memo(
         );
 
         const showStalled = connStatus.status == "connected" && connStatus.connhealthstatus == "stalled";
-        const showRetrying = connStatus.status == "connecting" && (connStatus.reconnectattempt ?? 0) > 0;
-        const showCountdown = connStatus.status == "disconnected" && (connStatus.reconnectnextattempt ?? 0) > 0;
+        // Only show retry/countdown overlays if auto-reconnect is possible
+        // (password cached or no interactive auth required)
+        const canAutoReconnect = connStatus.canautoreconnect;
+        const showRetrying = canAutoReconnect && connStatus.status == "connecting" && (connStatus.reconnectattempt ?? 0) > 0;
+        const showCountdown = canAutoReconnect && connStatus.status == "disconnected" && (connStatus.reconnectnextattempt ?? 0) > 0;
         const showDisconnected = connStatus.status == "disconnected" && !connStatus.connected;
 
         if (!showWshError && !showStalled && !showRetrying && !showCountdown && (isLayoutMode || connStatus.status == "connected" || connModalOpen)) {
