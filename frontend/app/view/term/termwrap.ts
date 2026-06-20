@@ -406,11 +406,16 @@ export class TermWrap {
                                     let th = tiffResult.height;
                                     if (h.width && h.width !== 'auto') {
                                         const rw = parseInt(String(h.width), 10) * cw;
-                                        if (rw > 0) tw = rw;
-                                    }
-                                    if (h.height && h.height !== 'auto') {
+                                        if (rw > 0) {
+                                            tw = rw;
+                                            th = Math.round(tiffResult.height * rw / tiffResult.width);
+                                        }
+                                    } else if (h.height && h.height !== 'auto') {
                                         const rh = parseInt(String(h.height), 10) * ch;
-                                        if (rh > 0) th = rh;
+                                        if (rh > 0) {
+                                            th = rh;
+                                            tw = Math.round(tiffResult.width * rh / tiffResult.height);
+                                        }
                                     }
 
                                     const canvas = document.createElement("canvas");
@@ -1175,6 +1180,7 @@ export class TermWrap {
             }
 
             const manifest = { version: 1, images };
+            console.log(`[IIP-FIX] Manifest: ${images.length} images, hashes: ${images.map(i => i.hash).join(', ')}`);
             fireAndForget(() =>
                 services.BlockService.SaveTerminalImages(this.blockId, JSON.stringify(manifest))
             );
