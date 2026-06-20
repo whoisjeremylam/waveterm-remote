@@ -20,6 +20,7 @@ import * as services from "@/store/services";
 import { PLATFORM, PlatformMacOS } from "@/util/platformutil";
 import { base64ToArray, fireAndForget } from "@/util/util";
 import { FitAddon } from "@xterm/addon-fit";
+import { ImageAddon } from "@xterm/addon-image";
 import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -49,9 +50,145 @@ const dlog = debug("wave:termwrap");
 
 const TermFileName = "term";
 const TermCacheFileName = "cache:term:full";
+const TermImagesFileName = "cache:term:images";
 const MinDataProcessedForCache = 100 * 1024;
 export const SupportsImageInput = true;
 const MaxRepaintTransactionMs = 2000;
+
+// Minimal TIFF decoder for IIP rendering (chafa sends TIFF for --format=iterm2)
+function decodeTiffFallback(d: Uint8Array): { width: number; height: number; pixels: Uint8ClampedArray } | null {
+    if (d.length < 8) return null;
+    const le = d[0] === 0x49;
+    const u16 = (o: number) => le ? (d[o] | (d[o + 1] << 8)) : ((d[o] << 8) | d[o + 1]);
+    const u32 = (o: number) => le
+        ? (d[o] | (d[o + 1] << 8) | (d[o + 2] << 16) | (d[o + 3] << 24)) >>> 0
+        : ((d[o] << 24) | (d[o + 1] << 16) | (d[o + 2] << 8) | d[o + 3]) >>> 0;
+    if (u16(2) !== 42) return null;
+    const ifo = u32(4);
+    if (ifo + 2 > d.length) return null;
+    const n = u16(ifo);
+    let w = 0, h = 0, comp = 1, bps = 8, spp = 3, photo = 2;
+    const so: number[] = [], sl: number[] = [];
+    let rps = 0;
+    for (let i = 0; i < n; i++) {
+        const eo = ifo + 2 + i * 12;
+        if (eo + 12 > d.length) break;
+        const tag = u16(eo), typ = u16(eo + 2), cnt = u32(eo + 4);
+        const vs = typ === 3 ? 2 : typ === 4 ? 4 : 0;
+        let vo = eo + 8;
+        if (cnt * vs > 4) vo = u32(eo + 8);
+        const rv = typ === 3 ? u16(vo) : u32(vo);
+        switch (tag) {
+            case 256: w = rv; break; case 257: h = rv; break;
+            case 258: bps = rv; break; case 259: comp = rv; break;
+            case 262: photo = rv; break; case 277: spp = rv; break;
+            case 278: rps = rv; break;
+            case 273: so.length = 0; if (cnt === 1) so.push(rv); else for (let j = 0; j < cnt && vo + j * 4 + 4 <= d.length; j++) so.push(u32(vo + j * 4)); break;
+            case 279: sl.length = 0; if (cnt === 1) sl.push(rv); else for (let j = 0; j < cnt && vo + j * 4 + 4 <= d.length; j++) sl.push(u32(vo + j * 4)); break;
+        }
+    }
+    if (!w || !h || !so.length) return null;
+    const px = new Uint8ClampedArray(w * h * 4);
+    const bpp = (bps / 8) * spp;
+    const rb = w * bpp;
+    function lzwDecode(input: Uint8Array, expectedLen: number): Uint8Array | null {
+        if (input.length < 2) return null;
+        const cc = 256, eoi = 257;
+        let cs = 9, nc = 258;
+        const tbl: Uint8Array[] = [];
+        for (let i = 0; i < 256; i++) tbl.push(new Uint8Array([i]));
+        const out = new Uint8Array(expectedLen);
+        let op = 0, bits = 0, bb = 0, ip = 0;
+        const rc = (): number => { while (bb < cs) { if (ip >= input.length) return eoi; bb |= input[ip++] << bits; bits += 8; } const c = bb & ((1 << cs) - 1); bb >>= cs; bits -= cs; return c; };
+        let prev: Uint8Array | null = null;
+        while (true) {
+            const c = rc();
+            if (c === eoi) break;
+            if (c === cc) { cs = 9; nc = 258; tbl.length = 256; prev = null; continue; }
+            if (c >= tbl.length) { if (!prev) return null; const ent = new Uint8Array(prev.length + 1); ent.set(prev); ent[prev.length] = prev[0]; tbl.push(ent); if (nc === (1 << cs) && cs < 12) cs++; nc++; out.set(ent, op); op += ent.length; prev = ent; if (op >= expectedLen) break; continue; }
+            const ent = tbl[c]; if (prev) { const merged = new Uint8Array(prev.length + 1); merged.set(prev); merged[prev.length] = ent[0]; tbl.push(merged); if (nc === (1 << cs) && cs < 12) cs++; nc++; } out.set(ent, op); op += ent.length; prev = ent; if (op >= expectedLen) break;
+        }
+        return out;
+    }
+    if (comp === 1) {
+        let y = 0;
+        for (let s = 0; s < so.length && y < h; s++) {
+            const off = so[s], rows = Math.min(rps || h, h - y);
+            for (let r = 0; r < rows; r++) {
+                const sr = off + r * rb, dy = (y + r) * w * 4;
+                for (let x = 0; x < w; x++) {
+                    const si = sr + x * bpp, di = dy + x * 4;
+                    if (spp === 3) { px[di] = d[si]; px[di + 1] = d[si + 1]; px[di + 2] = d[si + 2]; px[di + 3] = 255; }
+                    else if (spp === 4) { px[di] = d[si]; px[di + 1] = d[si + 1]; px[di + 2] = d[si + 2]; px[di + 3] = d[si + 3]; }
+                    else if (spp === 1) { const v = photo === 0 ? 255 - d[si] : d[si]; px[di] = px[di + 1] = px[di + 2] = v; px[di + 3] = 255; }
+                }
+            }
+            y += rows;
+        }
+    } else if (comp === 5) {
+        let y = 0;
+        for (let s = 0; s < so.length && y < h; s++) {
+            const off = so[s], slen = sl[s] || 0, rows = Math.min(rps || h, h - y);
+            const dec = lzwDecode(d.subarray(off, off + slen), rows * rb);
+            if (!dec) return null;
+            for (let r = 0; r < rows; r++) {
+                const sr = r * rb, dy = (y + r) * w * 4;
+                for (let x = 0; x < w; x++) {
+                    const si = sr + x * bpp, di = dy + x * 4;
+                    if (spp === 3) { px[di] = dec[si]; px[di + 1] = dec[si + 1]; px[di + 2] = dec[si + 2]; px[di + 3] = 255; }
+                    else if (spp === 4) { px[di] = dec[si]; px[di + 1] = dec[si + 1]; px[di + 2] = dec[si + 2]; px[di + 3] = dec[si + 3]; }
+                    else if (spp === 1) { const v = photo === 0 ? 255 - dec[si] : dec[si]; px[di] = px[di + 1] = px[di + 2] = v; px[di + 3] = 255; }
+                }
+            }
+            y += rows;
+        }
+    } else return null;
+    return { width: w, height: h, pixels: px };
+}
+
+export function hashImageData(b64: string): string {
+    let hash = 0;
+    for (let i = 0; i < b64.length; i++) {
+        hash = ((hash << 5) - hash + b64.charCodeAt(i)) | 0;
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+export function canvasToPngBase64(img: HTMLCanvasElement | ImageBitmap): string | null {
+    try {
+        let canvas: HTMLCanvasElement;
+        if (img instanceof HTMLCanvasElement) {
+            canvas = img;
+        } else {
+            canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            canvas.getContext('2d')?.drawImage(img, 0, 0);
+        }
+        return canvas.toDataURL('image/png').split(',')[1];
+    } catch {
+        return null;
+    }
+}
+
+export async function decodePngBase64(b64: string, w: number, h: number): Promise<HTMLCanvasElement | null> {
+    if (!b64 || w <= 0 || h <= 0) return null;
+    try {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'image/png' });
+        const bmp = await createImageBitmap(blob);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d')?.drawImage(bmp, 0, 0, w, h);
+        bmp.close();
+        return canvas;
+    } catch {
+        return null;
+    }
+}
 
 // detect webgl support
 function detectWebGLSupport(): boolean {
@@ -100,6 +237,7 @@ export class TermWrap {
     onSearchResultsDidChange?: (result: { resultIndex: number; resultCount: number }) => void;
     toDispose: TermTypes.IDisposable[] = [];
     webglAddon: WebglAddon | null = null;
+    imageAddon: any = null;
     webglContextLossDisposable: TermTypes.IDisposable | null = null;
     webglEnabledAtom: jotai.PrimitiveAtom<boolean>;
     pasteActive: boolean = false;
@@ -130,6 +268,12 @@ export class TermWrap {
 
     // Track active DEC private modes for durable reconnect state restoration
     activeDecModes: Set<number> = new Set();
+
+    // Track written image asset hashes to avoid redundant writes
+    _writtenImageHashes: Set<string> = new Set();
+
+    // Guard flag to suppress onImageAdded during restore
+    _restoring: boolean = false;
 
     constructor(
         tabId: string,
@@ -189,6 +333,228 @@ export class TermWrap {
             )
         );
         this.setTermRenderer(WebGLSupported && waveOptions.useWebGl ? "webgl" : "dom");
+        try {
+            this.imageAddon = new ImageAddon({
+                sixelSupport: true,
+                kittySupport: true,
+                iipSupport: true,
+                enableSizeReports: true,
+            });
+            this.terminal.loadAddon(this.imageAddon);
+
+            // IIP TIFF intercept: the compiled addon doesn't have our TIFF
+            // patches. This intercept handles TIFF rendering directly.
+            const iipH = (this.imageAddon as any)._handlers?.get("iip");
+            if (iipH && !iipH.__iipFixed) {
+                console.log("[IIP-FIX] Intercept installed on IIP handler");
+                const origPut = iipH.put?.bind(iipH);
+                const origEnd = iipH.end?.bind(iipH);
+                let rawChunks: Uint8Array[] = [];
+                let rawTotal = 0;
+
+                iipH.put = function(data: any, start: number, end: number) {
+                    const chunk = new Uint8Array((end - start) * 4);
+                    let len = 0;
+                    for (let i = start; i < end; i++) chunk[len++] = data[i] & 0xFF;
+                    rawChunks.push(chunk.subarray(0, len));
+                    rawTotal += len;
+                    return origPut?.(data, start, end);
+                };
+
+                iipH.end = function(success: boolean) {
+                    const h = (iipH as any)._header;
+                    const headerType = h?.type;
+
+                    if (success && headerType === 1 && rawChunks.length > 0) {
+                        try {
+                            // Reassemble raw bytes — includes header text before colon
+                            const rawBytes = new Uint8Array(rawTotal);
+                            let offset = 0;
+                            for (const chunk of rawChunks) { rawBytes.set(chunk, offset); offset += chunk.length; }
+
+                            // Find colon (0x3A) — separates header from base64 payload
+                            const colonIdx = rawBytes.indexOf(0x3A);
+                            if (colonIdx < 0 || colonIdx >= rawBytes.length - 1) {
+                                console.log("[IIP-FIX] No colon found in payload, falling through");
+                                rawChunks = []; rawTotal = 0;
+                                return origEnd?.(success);
+                            }
+
+                            // Find BEL (0x07) — terminates the IIP sequence
+                            let endIdx = rawBytes.indexOf(0x07, colonIdx + 1);
+                            if (endIdx < 0) endIdx = rawBytes.length;
+
+                            let b64Str = '';
+                            for (let i = colonIdx + 1; i < endIdx; i++) b64Str += String.fromCharCode(rawBytes[i]);
+                            const decoded = atob(b64Str);
+                            const decodedBytes = new Uint8Array(decoded.length);
+                            for (let i = 0; i < decoded.length; i++) decodedBytes[i] = decoded.charCodeAt(i);
+
+                            const isTiff = decodedBytes.length >= 4 &&
+                                ((decodedBytes[0] === 0x49 && decodedBytes[1] === 0x49 && decodedBytes[2] === 0x2A && decodedBytes[3] === 0x00) ||
+                                 (decodedBytes[0] === 0x4D && decodedBytes[1] === 0x4D && decodedBytes[2] === 0x00 && decodedBytes[3] === 0x2A));
+                            if (isTiff) {
+                                const tiffResult = decodeTiffFallback(decodedBytes);
+                                if (tiffResult) {
+                                    const storage = (iipH as any)._storage;
+                                    const renderer = (iipH as any)._renderer;
+                                    const dims = renderer?.dimensions;
+                                    const cw = dims?.css?.cell?.width || 7;
+                                    const ch = dims?.css?.cell?.height || 14;
+
+                                    let tw = tiffResult.width;
+                                    let th = tiffResult.height;
+                                    if (h.width && h.width !== 'auto') {
+                                        const rw = parseInt(String(h.width), 10) * cw;
+                                        if (rw > 0) {
+                                            tw = rw;
+                                            th = Math.round(tiffResult.height * rw / tiffResult.width);
+                                        }
+                                    } else if (h.height && h.height !== 'auto') {
+                                        const rh = parseInt(String(h.height), 10) * ch;
+                                        if (rh > 0) {
+                                            th = rh;
+                                            tw = Math.round(tiffResult.width * rh / tiffResult.height);
+                                        }
+                                    }
+
+                                    const canvas = document.createElement("canvas");
+                                    if (tw === tiffResult.width && th === tiffResult.height) {
+                                        canvas.width = tiffResult.width;
+                                        canvas.height = tiffResult.height;
+                                        const imgData = new ImageData(tiffResult.width, tiffResult.height);
+                                        imgData.data.set(tiffResult.pixels);
+                                        canvas.getContext("2d")?.putImageData(imgData, 0, 0);
+                                    } else {
+                                        const tmp = document.createElement("canvas");
+                                        tmp.width = tiffResult.width;
+                                        tmp.height = tiffResult.height;
+                                        const tmpData = new ImageData(tiffResult.width, tiffResult.height);
+                                        tmpData.data.set(tiffResult.pixels);
+                                        tmp.getContext("2d")?.putImageData(tmpData, 0, 0);
+                                        canvas.width = tw;
+                                        canvas.height = th;
+                                        const ctx = canvas.getContext("2d");
+                                        if (ctx) { ctx.imageSmoothingEnabled = true; ctx.drawImage(tmp, 0, 0, tw, th); }
+                                    }
+
+                                    const cols = Math.ceil(canvas.width / cw);
+                                    const rows = Math.ceil(canvas.height / ch);
+                                    console.log(`[IIP-FIX] TIFF ${tiffResult.width}x${tiffResult.height} → canvas ${tw}x${th} (${cols}x${rows} cells, cw=${cw} ch=${ch})`);
+
+                                    storage.addImage(canvas);
+                                    rawChunks = [];
+                                    rawTotal = 0;
+                                    return true;
+                                }
+                            }
+                        } catch (e) {
+                            console.error("[IIP-FIX] TIFF intercept failed:", e);
+                        }
+                    }
+                    rawChunks = [];
+                    rawTotal = 0;
+                    console.log("[IIP-FIX] Not TIFF, falling through to addon");
+                    return origEnd?.(success);
+                };
+                iipH.__iipFixed = true;
+            }
+
+            // Write image assets to disk immediately on first encounter
+            this.imageAddon.onImageAdded(() => {
+                if (!this._restoring) this.writeNewImageAssets();
+            });
+
+            (window as any).__imageAddon = this.imageAddon;
+            (window as any).__term = this.terminal;
+            // ── Manual IIP test helpers (call from browser console) ──
+            const tinyPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
+            const tinyPngSize = Math.ceil(tinyPng.length * 3 / 4);
+
+            // Quick test: write IIP with tiny PNG
+            (window as any).__testIIP = () => {
+                const term = (window as any).__term;
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const seq = `\x1b]1337;File=inline=1;size=${tinyPngSize}:${tinyPng}\x07`;
+                console.log("[IIP-DEBUG] Writing IIP with PNG, length:", seq.length);
+                term.write(seq);
+            };
+            // Test header parsing with minimal payload
+            (window as any).__testIIPHeader = () => {
+                const term = (window as any).__term;
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const seq = `\x1b]1337;File=inline=1;size=8:dGVzdGRhdGE=\x07`;
+                console.log("[IIP-DEBUG] Writing IIP header test, length:", seq.length);
+                term.write(seq);
+            };
+            // Test empty OSC 1337
+            (window as any).__testOsc1337 = () => {
+                const term = (window as any).__term;
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const seq = `\x1b]1337;File=inline=1;size=0:\x07`;
+                console.log("[IIP-DEBUG] Writing empty OSC 1337, length:", seq.length);
+                term.write(seq);
+            };
+            // Write IIP as Uint8Array (like WaveTerm's base64ToArray path)
+            (window as any).__testIIPUint8 = () => {
+                const term = (window as any).__term;
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const str = `\x1b]1337;File=inline=1;size=${tinyPngSize}:${tinyPng}\x07`;
+                const bytes = new Uint8Array(str.length);
+                for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
+                console.log("[IIP-DEBUG] Writing IIP as Uint8Array, length:", bytes.length);
+                term.write(bytes);
+            };
+            // Write IIP in chunks (simulating PTY delivery)
+            (window as any).__testIIPChunked = () => {
+                const term = (window as any).__term;
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const header = `\x1b]1337;File=inline=1;size=${tinyPngSize}:`;
+                console.log("[IIP-DEBUG] Writing chunked IIP: header(", header.length, ") + payload(", tinyPng.length, ") + BEL");
+                term.write(header);
+                setTimeout(() => term.write(tinyPng), 10);
+                setTimeout(() => term.write("\x07"), 20);
+            };
+            // Check parser state
+            (window as any).__testIIPParserState = () => {
+                const term = (window as any).__term;
+                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
+                const parser = (term as any)._core?._inputHandler?._parser;
+                console.log("[IIP-DEBUG] Parser state:", {
+                    currentState: parser?.currentState,
+                    initialState: parser?.initialState,
+                    stuck: parser?.currentState !== parser?.initialState,
+                });
+                const oscParser = parser?._oscParser;
+                if (oscParser) {
+                    const ids = Object.keys(oscParser._handlers || {}).filter(k => !isNaN(Number(k))).map(Number);
+                    console.log("[IIP-DEBUG] Registered OSC IDs:", ids);
+                    const h = oscParser._handlers[1337];
+                    console.log("[IIP-DEBUG] OSC 1337 handlers:", h?.length ?? 0, h?.map((x: any) => x?.constructor?.name));
+                }
+            };
+            // Run all tests in sequence
+            (window as any).__testIIPAll = async () => {
+                console.log("[IIP-DEBUG] === Running all IIP tests ===");
+                (window as any).__testIIPParserState();
+                console.log("[IIP-DEBUG] --- Test: minimal OSC 1337 ---");
+                (window as any).__testOsc1337();
+                await new Promise(r => setTimeout(r, 300));
+                (window as any).__testIIPParserState();
+                console.log("[IIP-DEBUG] --- Test: IIP with PNG ---");
+                (window as any).__testIIP();
+                await new Promise(r => setTimeout(r, 300));
+                (window as any).__testIIPParserState();
+                console.log("[IIP-DEBUG] --- Test: Uint8Array ---");
+                (window as any).__testIIPUint8();
+                await new Promise(r => setTimeout(r, 300));
+                (window as any).__testIIPParserState();
+                console.log("[IIP-DEBUG] === All tests done. Check [IIP-DEBUG] logs above ===");
+            };
+            console.log("[IIP-DEBUG] Test helpers: __testIIP() __testIIPHeader() __testOsc1337() __testIIPUint8() __testIIPChunked() __testIIPParserState() __testIIPAll()");
+        } catch (e) {
+            console.error("[IIP-DEBUG] ImageAddon failed to load", e);
+        }
         // Register OSC handlers
         this.terminal.parser.registerOscHandler(7, (data: string) => {
             try {
@@ -473,6 +839,7 @@ export class TermWrap {
     }
 
     dispose() {
+        this._writtenImageHashes.clear();
         this.promptMarkers.forEach((marker) => {
             try {
                 marker.dispose();
@@ -568,7 +935,7 @@ export class TermWrap {
                     this.terminal.resize(fileTermSize.cols, fileTermSize.rows);
                     didResize = true;
                 }
-                this.doTerminalWrite(cacheData, ptyOffset);
+                await this.doTerminalWrite(cacheData, ptyOffset);
                 if (didResize) {
                     this.terminal.resize(curTermSize.cols, curTermSize.rows);
                 }
@@ -578,6 +945,9 @@ export class TermWrap {
             if (decModes) {
                 this.replayDecModes(decModes);
             }
+
+            // Restore images from sidecar
+            await this.restoreImages();
         }
         const { data: mainData, fileInfo: mainFile } = await fetchWaveFile(zoneId, TermFileName, ptyOffset);
         console.log(
@@ -585,6 +955,98 @@ export class TermWrap {
         );
         if (mainFile != null) {
             await this.doTerminalWrite(mainData, null);
+        }
+    }
+
+    private async restoreImages(): Promise<void> {
+        if (!this.imageAddon) return;
+        try {
+            const zoneId = this.getZoneId();
+            const { data: manifestData } = await fetchWaveFile(zoneId, TermImagesFileName);
+            if (!manifestData || manifestData.byteLength === 0) return;
+
+            const manifest = JSON.parse(new TextDecoder().decode(manifestData));
+            if (manifest.version !== 1 || !Array.isArray(manifest.images)) return;
+
+            const storage = (this.imageAddon as any)._storage;
+            if (!storage?.addImage) return;
+
+            const buffer = (this.terminal as any)._core.buffer;
+
+            // Suppress onImageAdded during restore to avoid redundant writes
+            this._restoring = true;
+            try {
+                let nextImageId = (storage as any)._lastId || 0;
+                for (const entry of manifest.images) {
+                    const { data: imgData } = await fetchWaveFile(zoneId, "cache:term:img:" + entry.hash);
+                    if (!imgData || imgData.byteLength === 0) continue;
+
+                    const b64 = new TextDecoder().decode(imgData);
+                    const canvas = await decodePngBase64(b64, entry.width, entry.height);
+                    if (!canvas) continue;
+
+                    if (entry.row < 0 || entry.row >= buffer.lines.length) continue;
+
+                    const viewportRow = entry.row - buffer.ybase;
+                    const isInViewport = viewportRow >= 0 && viewportRow < this.terminal.rows;
+
+                    if (isInViewport) {
+                        // Use addImage for visible images (handles cursor, lineFeed, eviction markers)
+                        const ybaseBefore = buffer.ybase;
+                        buffer.x = entry.col;
+                        buffer.y = viewportRow;
+                        storage.addImage(canvas, {
+                            scrolling: true,
+                            layer: entry.layer ?? 'top',
+                            zIndex: entry.zIndex ?? 0,
+                            cursorPos: entry.cursorPos ?? 'iip'
+                        });
+                    } else {
+                        // Scrollback image: write tiles directly to buffer lines at absolute row
+                        // This avoids addImage's cursor-based positioning which can't reach scrollback
+                        const cellSize = (storage as any)._renderer?.cellSize || { width: 7, height: 14 };
+                        const cols = Math.ceil(canvas.width / cellSize.width);
+                        const rows = Math.ceil(canvas.height / cellSize.height);
+                        const imageId = ++nextImageId;
+
+                        // Register in _images map so renderer can find it
+                        (storage as any)._images.set(imageId, {
+                            orig: canvas,
+                            origCellSize: cellSize,
+                            actual: canvas,
+                            actualCellSize: { ...cellSize },
+                            marker: undefined,
+                            tileCount: cols * rows,
+                            bufferType: 'normal',
+                            layer: entry.layer ?? 'top',
+                            zIndex: entry.zIndex ?? 0
+                        });
+
+                        // Write tiles directly to buffer lines at absolute positions
+                        for (let r = 0; r < rows; r++) {
+                            const line = buffer.lines.get(entry.row + r);
+                            if (!line) continue;
+                            for (let c = 0; c < cols; c++) {
+                                if (entry.col + c >= this.terminal.cols) break;
+                                const writeToCell = (storage as any)._writeToCell;
+                                if (writeToCell) {
+                                    writeToCell.call(storage, line, entry.col + c, imageId, r * cols + c);
+                                }
+                            }
+                        }
+                        console.log(`[IIP-FIX] Placed scrollback image at row ${entry.row} (${cols}x${rows} tiles)`);
+                    }
+                }
+            } finally {
+                this._restoring = false;
+            }
+
+            // Restore cursor position
+            buffer.x = 0;
+            buffer.y = this.terminal.rows - 1;
+            console.log(`[IIP-FIX] Restored ${manifest.images.length} images from cache`);
+        } catch (e) {
+            console.warn("[IIP-FIX] Failed to restore images:", e);
         }
     }
 
@@ -662,7 +1124,97 @@ export class TermWrap {
         fireAndForget(() =>
             services.BlockService.SaveTerminalState(this.blockId, serializedOutput, "full", this.ptyOffset, termSize, decModes)
         );
+        this.writeImageManifest();
         this.dataBytesProcessed = 0;
+    }
+
+    private writeNewImageAssets(): void {
+        if (!this.imageAddon) return;
+        try {
+            const storage = (this.imageAddon as any)._storage;
+            if (!storage?._images) return;
+
+            const buffer = (this.terminal as any)._core.buffer;
+            const rows = buffer.lines.length;
+            const seen = new Set<number>();
+
+            for (let y = 0; y < rows; y++) {
+                const line = buffer.lines.get(y);
+                if (!line) continue;
+                for (let x = 0; x < this.terminal.cols; x++) {
+                    const e = (line as any)._extendedAttrs?.[x];
+                    if (!e || e.imageId === undefined || e.imageId === -1) continue;
+                    if (seen.has(e.imageId)) continue;
+
+                    const spec = storage._images.get(e.imageId);
+                    if (!spec || !spec.orig) continue;
+
+                    const b64 = canvasToPngBase64(spec.orig);
+                    if (!b64) continue;
+
+                    seen.add(e.imageId);
+                    const hash = hashImageData(b64);
+                    if (this._writtenImageHashes.has(hash)) continue;
+                    this._writtenImageHashes.add(hash);
+                    fireAndForget(() =>
+                        services.BlockService.SaveImageAsset(this.blockId, hash, b64)
+                    );
+                }
+            }
+        } catch (e) {
+            console.warn("[IIP-FIX] Failed to write image asset:", e);
+        }
+    }
+
+    private writeImageManifest(): void {
+        if (!this.imageAddon) return;
+        try {
+            const storage = (this.imageAddon as any)._storage;
+            if (!storage?._images) return;
+
+            const buffer = (this.terminal as any)._core.buffer;
+            const rows = buffer.lines.length;
+            const images: any[] = [];
+            const seen = new Set<number>();
+
+            for (let y = 0; y < rows; y++) {
+                const line = buffer.lines.get(y);
+                if (!line) continue;
+                for (let x = 0; x < this.terminal.cols; x++) {
+                    const e = (line as any)._extendedAttrs?.[x];
+                    if (!e || e.imageId === undefined || e.imageId === -1) continue;
+                    if (seen.has(e.imageId)) continue;
+
+                    const spec = storage._images.get(e.imageId);
+                    if (!spec || !spec.orig) continue;
+
+                    const b64 = canvasToPngBase64(spec.orig);
+                    if (!b64) continue;
+
+                    seen.add(e.imageId);
+                    images.push({
+                        hash: hashImageData(b64),
+                        row: y,
+                        viewportRow: y - buffer.ybase,
+                        col: x,
+                        width: spec.orig.width,
+                        height: spec.orig.height,
+                        layer: spec.layer,
+                        zIndex: spec.zIndex,
+                        scrolling: true,
+                        cursorPos: 'iip'
+                    });
+                }
+            }
+
+            const manifest = { version: 1, images };
+            console.log(`[IIP-FIX] Manifest: ${images.length} images, hashes: ${images.map(i => i.hash).join(', ')}`);
+            fireAndForget(() =>
+                services.BlockService.SaveTerminalImages(this.blockId, JSON.stringify(manifest))
+            );
+        } catch (e) {
+            console.warn("[IIP-FIX] Failed to write image manifest:", e);
+        }
     }
 
     runProcessIdleTimeout() {

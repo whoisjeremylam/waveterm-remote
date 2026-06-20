@@ -118,6 +118,22 @@
   - [x] Create `port-forward-status.tsx` component (plug icon + badge + tooltip)
   - [x] Wire into `blockframe-header.tsx` between DurableSessionFlyover and badge
   - [x] Go build passes, Go tests pass, TypeScript compiles cleanly
+- [x] **Image rendering support** — `@xterm/addon-image` for Sixel, IIP, Kitty (branch: `feat/image-rendering-support`)
+  - [x] Install and load ImageAddon in termwrap.ts (after WebGL renderer)
+  - [x] Bridge public parser OSC 1337 to ImageAddon's IIP handler (prototype patch survives Reinit Wave)
+  - [x] Fix IIP detection: upgrade to `@xterm/addon-image@0.10.0-beta.287` + `@xterm/xterm@6.1.0-beta.287`
+  - [x] Fix TIFF rendering: chafa outputs TIFF for IIP, Chromium `createImageBitmap()` doesn't support TIFF — decode TIFF in termwrap.ts using JS base64 decoder + self-contained TIFF decoder (uncompressed + LZW)
+  - [x] patch-package infrastructure for addon-image (TIFF detection in `IIPMetrics.ts`)
+  - [x] Fix Sixel bottom-edge overlap: pre-scale Sixel images to cell-aligned dimensions in `SixelHandler.unhook()` before calling `addImage()` (same approach as IIP's `_resize()` + `Math.floor`)
+  - [x] Pi extension published: `@whoisjeremylam/pi-waveterm-images@1.0.1` (enables kitty protocol via `setCapabilities()`)
+  - [ ] Clean up: strip debug logging, remove `iip-debug-tests.js`, squash debug commits
+  - [ ] Kitty image sizing: Kitty handler doesn't resize bitmaps to cell grid (unlike IIP's `_resize`), causing overflow past allocated cells
+  - [ ] Kitty protocol not rendering: APC data flows (hundreds of chunks) but nothing renders — likely WaveTerm's binary data handler intercepts APC sequences before parser dispatches to Kitty handler
+  - [ ] Durable session image restore: sidecar approach — spec at [[.pi/specs/durable-session-image-restore.md]]
+    - [x] Add `exportImages()`/`importImages()` to ImageStorage via patch
+    - [x] Add `SaveTerminalImages` RPC + `cache:term:images` file
+    - [x] Modify `processAndCacheData()` and `loadInitialTerminalData()` in termwrap.ts
+    - [ ] Atomic manifest write: crash during WriteFile could leave truncated JSON, losing all images. Fix: write to temp file then rename. Depends on filestore API supporting rename.
 - [ ] **Remote file paste** — image paste + drag-drop for remote sessions
   - Primary use case: pasting screenshots and dragging files when using pi or Claude Code's TUI over SSH
   - Currently pastes local file paths that don't exist on the remote server

@@ -34,6 +34,16 @@ export class BlockServiceType {
     SaveTerminalState(blockId: string, state: string, stateType: string, ptyOffset: number, termSize: TermSize, decModes: string): Promise<void> {
         return callBackendService(this?.waveEnv, "block", "SaveTerminalState", Array.from(arguments))
     }
+
+    // save image manifest for terminal state restore
+    SaveTerminalImages(blockId: string, manifest: string): Promise<void> {
+        return callBackendService(this?.waveEnv, "block", "SaveTerminalImages", Array.from(arguments))
+    }
+
+    // save a single image asset (content-addressed)
+    SaveImageAsset(blockId: string, name: string, data: string): Promise<void> {
+        return callBackendService(this?.waveEnv, "block", "SaveImageAsset", Array.from(arguments))
+    }
 }
 
 export const BlockService = new BlockServiceType();
