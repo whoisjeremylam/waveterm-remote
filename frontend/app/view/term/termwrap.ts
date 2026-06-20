@@ -972,13 +972,11 @@ export class TermWrap {
             if (!storage?.addImage) return;
 
             const buffer = (this.terminal as any)._core.buffer;
-            const savedX = buffer.x;
-            const savedY = buffer.y;
 
             // Suppress onImageAdded during restore to avoid redundant writes
             this._restoring = true;
-            let ybaseOffset = 0;
             try {
+                let nextImageId = (storage as any)._lastId || 0;
                 for (const entry of manifest.images) {
                     const { data: imgData } = await fetchWaveFile(zoneId, "cache:term:img:" + entry.hash);
                     if (!imgData || imgData.byteLength === 0) continue;
@@ -988,34 +986,64 @@ export class TermWrap {
                     if (!canvas) continue;
 
                     if (entry.row < 0 || entry.row >= buffer.lines.length) continue;
-                    // Prefer stored viewportRow if valid, fall back to absolute row calculation
-                    let viewportRow: number;
-                    if (entry.viewportRow !== undefined &&
-                        entry.viewportRow >= 0 && entry.viewportRow < this.terminal.rows) {
-                        viewportRow = entry.viewportRow;
-                    } else {
-                        viewportRow = entry.row - buffer.ybase - ybaseOffset;
-                        if (viewportRow < 0 || viewportRow >= this.terminal.rows) continue;
-                    }
 
-                    const ybaseBefore = buffer.ybase;
-                    buffer.x = entry.col;
-                    buffer.y = viewportRow;
-                    storage.addImage(canvas, {
-                        scrolling: true,
-                        layer: entry.layer ?? 'top',
-                        zIndex: entry.zIndex ?? 0,
-                        cursorPos: entry.cursorPos ?? 'iip'
-                    });
-                    // Compensate for any scroll that addImage caused
-                    ybaseOffset += buffer.ybase - ybaseBefore;
+                    const viewportRow = entry.row - buffer.ybase;
+                    const isInViewport = viewportRow >= 0 && viewportRow < this.terminal.rows;
+
+                    if (isInViewport) {
+                        // Use addImage for visible images (handles cursor, lineFeed, eviction markers)
+                        const ybaseBefore = buffer.ybase;
+                        buffer.x = entry.col;
+                        buffer.y = viewportRow;
+                        storage.addImage(canvas, {
+                            scrolling: true,
+                            layer: entry.layer ?? 'top',
+                            zIndex: entry.zIndex ?? 0,
+                            cursorPos: entry.cursorPos ?? 'iip'
+                        });
+                    } else {
+                        // Scrollback image: write tiles directly to buffer lines at absolute row
+                        // This avoids addImage's cursor-based positioning which can't reach scrollback
+                        const cellSize = (storage as any)._renderer?.cellSize || { width: 7, height: 14 };
+                        const cols = Math.ceil(canvas.width / cellSize.width);
+                        const rows = Math.ceil(canvas.height / cellSize.height);
+                        const imageId = ++nextImageId;
+
+                        // Register in _images map so renderer can find it
+                        (storage as any)._images.set(imageId, {
+                            orig: canvas,
+                            origCellSize: cellSize,
+                            actual: canvas,
+                            actualCellSize: { ...cellSize },
+                            marker: undefined,
+                            tileCount: cols * rows,
+                            bufferType: 'normal',
+                            layer: entry.layer ?? 'top',
+                            zIndex: entry.zIndex ?? 0
+                        });
+
+                        // Write tiles directly to buffer lines at absolute positions
+                        for (let r = 0; r < rows; r++) {
+                            const line = buffer.lines.get(entry.row + r);
+                            if (!line) continue;
+                            for (let c = 0; c < cols; c++) {
+                                if (entry.col + c >= this.terminal.cols) break;
+                                const writeToCell = (storage as any)._writeToCell;
+                                if (writeToCell) {
+                                    writeToCell.call(storage, line, entry.col + c, imageId, r * cols + c);
+                                }
+                            }
+                        }
+                        console.log(`[IIP-FIX] Placed scrollback image at row ${entry.row} (${cols}x${rows} tiles)`);
+                    }
                 }
             } finally {
                 this._restoring = false;
             }
 
-            buffer.x = savedX;
-            buffer.y = savedY;
+            // Restore cursor position
+            buffer.x = 0;
+            buffer.y = this.terminal.rows - 1;
             console.log(`[IIP-FIX] Restored ${manifest.images.length} images from cache`);
         } catch (e) {
             console.warn("[IIP-FIX] Failed to restore images:", e);
