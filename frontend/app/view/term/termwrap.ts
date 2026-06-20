@@ -271,6 +271,9 @@ export class TermWrap {
     // Track written image asset hashes to avoid redundant writes
     _writtenImageHashes: Set<string> = new Set();
 
+    // Guard flag to suppress onImageAdded during restore
+    _restoring: boolean = false;
+
     constructor(
         tabId: string,
         blockId: string,
@@ -452,7 +455,9 @@ export class TermWrap {
             }
 
             // Write image assets to disk immediately on first encounter
-            this.imageAddon.onImageAdded(() => this.writeNewImageAssets());
+            this.imageAddon.onImageAdded(() => {
+                if (!this._restoring) this.writeNewImageAssets();
+            });
 
             (window as any).__imageAddon = this.imageAddon;
             (window as any).__term = this.terminal;
@@ -923,7 +928,7 @@ export class TermWrap {
                     this.terminal.resize(fileTermSize.cols, fileTermSize.rows);
                     didResize = true;
                 }
-                this.doTerminalWrite(cacheData, ptyOffset);
+                await this.doTerminalWrite(cacheData, ptyOffset);
                 if (didResize) {
                     this.terminal.resize(curTermSize.cols, curTermSize.rows);
                 }
@@ -963,26 +968,36 @@ export class TermWrap {
             const savedX = buffer.x;
             const savedY = buffer.y;
 
-            for (const entry of manifest.images) {
-                const { data: imgData } = await fetchWaveFile(zoneId, "cache:term:img:" + entry.hash);
-                if (!imgData || imgData.byteLength === 0) continue;
+            // Suppress onImageAdded during restore to avoid redundant writes
+            this._restoring = true;
+            let ybaseOffset = 0;
+            try {
+                for (const entry of manifest.images) {
+                    const { data: imgData } = await fetchWaveFile(zoneId, "cache:term:img:" + entry.hash);
+                    if (!imgData || imgData.byteLength === 0) continue;
 
-                const b64 = new TextDecoder().decode(imgData);
-                const canvas = await decodePngBase64(b64, entry.width, entry.height);
-                if (!canvas) continue;
+                    const b64 = new TextDecoder().decode(imgData);
+                    const canvas = await decodePngBase64(b64, entry.width, entry.height);
+                    if (!canvas) continue;
 
-                if (entry.row < 0 || entry.row >= buffer.lines.length) continue;
-                const viewportRow = entry.row - buffer.ybase;
-                if (viewportRow < 0 || viewportRow >= this.terminal.rows) continue;
+                    if (entry.row < 0 || entry.row >= buffer.lines.length) continue;
+                    const viewportRow = entry.row - buffer.ybase - ybaseOffset;
+                    if (viewportRow < 0 || viewportRow >= this.terminal.rows) continue;
 
-                buffer.x = entry.col;
-                buffer.y = viewportRow;
-                storage.addImage(canvas, {
-                    scrolling: entry.scrolling ?? true,
-                    layer: entry.layer ?? 'top',
-                    zIndex: entry.zIndex ?? 0,
-                    cursorPos: entry.cursorPos ?? 'iip'
-                });
+                    const ybaseBefore = buffer.ybase;
+                    buffer.x = entry.col;
+                    buffer.y = viewportRow;
+                    storage.addImage(canvas, {
+                        scrolling: true,
+                        layer: entry.layer ?? 'top',
+                        zIndex: entry.zIndex ?? 0,
+                        cursorPos: entry.cursorPos ?? 'iip'
+                    });
+                    // Compensate for any scroll that addImage caused
+                    ybaseOffset += buffer.ybase - ybaseBefore;
+                }
+            } finally {
+                this._restoring = false;
             }
 
             buffer.x = savedX;

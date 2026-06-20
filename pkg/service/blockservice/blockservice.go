@@ -6,6 +6,7 @@ package blockservice
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -112,7 +113,12 @@ func (*BlockService) SaveImageAsset_Meta() tsgenmeta.MethodMeta {
 	}
 }
 
+var hexNamePattern = regexp.MustCompile(`^[0-9a-f]{1,32}$`)
+
 func (bs *BlockService) SaveImageAsset(ctx context.Context, blockId string, name string, data string) error {
+	if !hexNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid image asset name: %q", name)
+	}
 	_, err := wstore.DBMustGet[*waveobj.Block](ctx, blockId)
 	if err != nil {
 		return err
