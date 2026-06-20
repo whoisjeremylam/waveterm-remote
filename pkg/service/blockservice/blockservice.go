@@ -88,3 +88,36 @@ func (bs *BlockService) CleanupOrphanedBlocks(ctx context.Context, tabId string)
 	}
 	return waveobj.ContextGetUpdatesRtn(ctx), nil
 }
+
+func (*BlockService) SaveTerminalImages_Meta() tsgenmeta.MethodMeta {
+	return tsgenmeta.MethodMeta{
+		Desc:     "save image manifest for terminal state restore",
+		ArgNames: []string{"ctx", "blockId", "manifest"},
+	}
+}
+
+func (bs *BlockService) SaveTerminalImages(ctx context.Context, blockId string, manifest string) error {
+	_, err := wstore.DBMustGet[*waveobj.Block](ctx, blockId)
+	if err != nil {
+		return err
+	}
+	filestore.WFS.MakeFile(ctx, blockId, "cache:term:images", nil, wshrpc.FileOpts{})
+	return filestore.WFS.WriteFile(ctx, blockId, "cache:term:images", []byte(manifest))
+}
+
+func (*BlockService) SaveImageAsset_Meta() tsgenmeta.MethodMeta {
+	return tsgenmeta.MethodMeta{
+		Desc:     "save a single image asset (content-addressed)",
+		ArgNames: []string{"ctx", "blockId", "name", "data"},
+	}
+}
+
+func (bs *BlockService) SaveImageAsset(ctx context.Context, blockId string, name string, data string) error {
+	_, err := wstore.DBMustGet[*waveobj.Block](ctx, blockId)
+	if err != nil {
+		return err
+	}
+	fileName := "cache:term:img:" + name
+	filestore.WFS.MakeFile(ctx, blockId, fileName, nil, wshrpc.FileOpts{})
+	return filestore.WFS.WriteFile(ctx, blockId, fileName, []byte(data))
+}

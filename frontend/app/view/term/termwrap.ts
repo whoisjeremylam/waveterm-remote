@@ -50,6 +50,7 @@ const dlog = debug("wave:termwrap");
 
 const TermFileName = "term";
 const TermCacheFileName = "cache:term:full";
+const TermImagesFileName = "cache:term:images";
 const MinDataProcessedForCache = 100 * 1024;
 export const SupportsImageInput = true;
 const MaxRepaintTransactionMs = 2000;
@@ -145,6 +146,49 @@ function decodeTiffFallback(d: Uint8Array): { width: number; height: number; pix
     return { width: w, height: h, pixels: px };
 }
 
+export function hashImageData(b64: string): string {
+    let hash = 0;
+    for (let i = 0; i < b64.length; i++) {
+        hash = ((hash << 5) - hash + b64.charCodeAt(i)) | 0;
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+export function canvasToPngBase64(img: HTMLCanvasElement | ImageBitmap): string | null {
+    try {
+        let canvas: HTMLCanvasElement;
+        if (img instanceof HTMLCanvasElement) {
+            canvas = img;
+        } else {
+            canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            canvas.getContext('2d')?.drawImage(img, 0, 0);
+        }
+        return canvas.toDataURL('image/png').split(',')[1];
+    } catch {
+        return null;
+    }
+}
+
+export async function decodePngBase64(b64: string, w: number, h: number): Promise<HTMLCanvasElement | null> {
+    try {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'image/png' });
+        const bmp = await createImageBitmap(blob);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d')?.drawImage(bmp, 0, 0, w, h);
+        bmp.close();
+        return canvas;
+    } catch {
+        return null;
+    }
+}
+
 // detect webgl support
 function detectWebGLSupport(): boolean {
     try {
@@ -223,6 +267,9 @@ export class TermWrap {
 
     // Track active DEC private modes for durable reconnect state restoration
     activeDecModes: Set<number> = new Set();
+
+    // Track written image asset hashes to avoid redundant writes
+    _writtenImageHashes: Set<string> = new Set();
 
     constructor(
         tabId: string,
@@ -403,6 +450,9 @@ export class TermWrap {
                 };
                 iipH.__iipFixed = true;
             }
+
+            // Write image assets to disk immediately on first encounter
+            this.imageAddon.onImageAdded(() => this.writeNewImageAssets());
 
             (window as any).__imageAddon = this.imageAddon;
             (window as any).__term = this.terminal;
@@ -883,6 +933,9 @@ export class TermWrap {
             if (decModes) {
                 this.replayDecModes(decModes);
             }
+
+            // Restore images from sidecar
+            await this.restoreImages();
         }
         const { data: mainData, fileInfo: mainFile } = await fetchWaveFile(zoneId, TermFileName, ptyOffset);
         console.log(
@@ -890,6 +943,53 @@ export class TermWrap {
         );
         if (mainFile != null) {
             await this.doTerminalWrite(mainData, null);
+        }
+    }
+
+    private async restoreImages(): Promise<void> {
+        if (!this.imageAddon) return;
+        try {
+            const zoneId = this.getZoneId();
+            const { data: manifestData } = await fetchWaveFile(zoneId, TermImagesFileName);
+            if (!manifestData || manifestData.byteLength === 0) return;
+
+            const manifest = JSON.parse(new TextDecoder().decode(manifestData));
+            if (manifest.version !== 1 || !Array.isArray(manifest.images)) return;
+
+            const storage = (this.imageAddon as any)._storage;
+            if (!storage?.addImage) return;
+
+            const buffer = (this.terminal as any)._core.buffer;
+            const savedX = buffer.x;
+            const savedY = buffer.y;
+
+            for (const entry of manifest.images) {
+                const { data: imgData } = await fetchWaveFile(zoneId, "cache:term:img:" + entry.hash);
+                if (!imgData || imgData.byteLength === 0) continue;
+
+                const b64 = new TextDecoder().decode(imgData);
+                const canvas = await decodePngBase64(b64, entry.width, entry.height);
+                if (!canvas) continue;
+
+                if (entry.row < 0 || entry.row >= buffer.lines.length) continue;
+                const viewportRow = entry.row - buffer.ybase;
+                if (viewportRow < 0 || viewportRow >= this.terminal.rows) continue;
+
+                buffer.x = entry.col;
+                buffer.y = viewportRow;
+                storage.addImage(canvas, {
+                    scrolling: entry.scrolling ?? true,
+                    layer: entry.layer ?? 'top',
+                    zIndex: entry.zIndex ?? 0,
+                    cursorPos: entry.cursorPos ?? 'iip'
+                });
+            }
+
+            buffer.x = savedX;
+            buffer.y = savedY;
+            console.log(`[IIP-FIX] Restored ${manifest.images.length} images from cache`);
+        } catch (e) {
+            console.warn("[IIP-FIX] Failed to restore images:", e);
         }
     }
 
@@ -967,7 +1067,95 @@ export class TermWrap {
         fireAndForget(() =>
             services.BlockService.SaveTerminalState(this.blockId, serializedOutput, "full", this.ptyOffset, termSize, decModes)
         );
+        this.writeImageManifest();
         this.dataBytesProcessed = 0;
+    }
+
+    private writeNewImageAssets(): void {
+        if (!this.imageAddon) return;
+        try {
+            const storage = (this.imageAddon as any)._storage;
+            if (!storage?._images) return;
+
+            const buffer = (this.terminal as any)._core.buffer;
+            const rows = buffer.lines.length;
+            const seen = new Set<number>();
+
+            for (let y = 0; y < rows; y++) {
+                const line = buffer.lines.get(y);
+                if (!line) continue;
+                for (let x = 0; x < this.terminal.cols; x++) {
+                    const e = (line as any)._extendedAttrs?.[x];
+                    if (!e || e.imageId === undefined || e.imageId === -1) continue;
+                    if (seen.has(e.imageId)) continue;
+
+                    const spec = storage._images.get(e.imageId);
+                    if (!spec || !spec.orig) continue;
+
+                    const b64 = canvasToPngBase64(spec.orig);
+                    if (!b64) continue;
+
+                    seen.add(e.imageId);
+                    const hash = hashImageData(b64);
+                    if (this._writtenImageHashes.has(hash)) continue;
+                    this._writtenImageHashes.add(hash);
+                    fireAndForget(() =>
+                        services.BlockService.SaveImageAsset(this.blockId, hash, b64)
+                    );
+                }
+            }
+        } catch (e) {
+            console.warn("[IIP-FIX] Failed to write image asset:", e);
+        }
+    }
+
+    private writeImageManifest(): void {
+        if (!this.imageAddon) return;
+        try {
+            const storage = (this.imageAddon as any)._storage;
+            if (!storage?._images) return;
+
+            const buffer = (this.terminal as any)._core.buffer;
+            const rows = buffer.lines.length;
+            const images: any[] = [];
+            const seen = new Set<number>();
+
+            for (let y = 0; y < rows; y++) {
+                const line = buffer.lines.get(y);
+                if (!line) continue;
+                for (let x = 0; x < this.terminal.cols; x++) {
+                    const e = (line as any)._extendedAttrs?.[x];
+                    if (!e || e.imageId === undefined || e.imageId === -1) continue;
+                    if (seen.has(e.imageId)) continue;
+
+                    const spec = storage._images.get(e.imageId);
+                    if (!spec || !spec.orig) continue;
+
+                    const b64 = canvasToPngBase64(spec.orig);
+                    if (!b64) continue;
+
+                    seen.add(e.imageId);
+                    images.push({
+                        hash: hashImageData(b64),
+                        row: y,
+                        col: x,
+                        width: spec.orig.width,
+                        height: spec.orig.height,
+                        layer: spec.layer,
+                        zIndex: spec.zIndex,
+                        scrolling: true,
+                        cursorPos: 'iip'
+                    });
+                }
+            }
+
+            const manifest = { version: 1, images };
+            fireAndForget(() =>
+                services.BlockService.SaveTerminalImages(this.blockId, JSON.stringify(manifest))
+            );
+        } catch (e) {
+            console.warn("[IIP-FIX] Failed to write image manifest:", e);
+        }
     }
 
     runProcessIdleTimeout() {
