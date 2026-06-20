@@ -7,7 +7,6 @@ import { Tooltip } from "@/app/element/tooltip";
 import { makeIconClass } from "@/util/util";
 import * as jotai from "jotai";
 import { memo, useCallback, useMemo, useState } from "react";
-import { NodeApi } from "react-arborist";
 import { SourceControlViewModel } from "./sourcecontrol-model";
 import type { FileTreeNode, SelectedFile } from "./types";
 
@@ -31,14 +30,12 @@ const FileIcon = memo(({ icon, color }: { icon: string; color: string }) => (
 FileIcon.displayName = "FileIcon";
 
 // Single file row component
-const FileRow = memo(({ node, isSelected, onClick }: { node: NodeApi<FileTreeNode>; isSelected: boolean; onClick: () => void }) => {
-    const data = node.data;
+const FileRow = memo(({ data, isSelected, onClick }: { data: FileTreeNode; isSelected: boolean; onClick: () => void }) => {
     return (
         <div
             className={`flex items-center gap-2 px-2 py-1 cursor-pointer text-sm ${
                 isSelected ? "bg-activebg text-white" : "hover:bg-hoverbg text-secondary"
             }`}
-            style={{ paddingLeft: `${node.level * 16 + 8}px` }}
             onClick={onClick}
         >
             <StatusBadge status={data.status.status} color={data.status.color} />
@@ -256,7 +253,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                             {stagedExpanded && filteredStaged.map((file) => (
                                 <FileRow
                                     key={`staged-${file.path}`}
-                                    node={{ data: { id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }, level: 0 } as any}
+                                    data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
                                     isSelected={selectedFile?.path === file.path && selectedFile?.staged === true}
                                     onClick={() => handleFileSelect({ path: file.path, staged: true })}
                                 />
@@ -276,7 +273,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                             {unstagedExpanded && filteredUnstaged.map((file) => (
                                 <FileRow
                                     key={`unstaged-${file.path}`}
-                                    node={{ data: { id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }, level: 0 } as any}
+                                    data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
                                     isSelected={selectedFile?.path === file.path && selectedFile?.staged === false}
                                     onClick={() => handleFileSelect({ path: file.path, staged: false })}
                                 />
@@ -296,7 +293,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                             {untrackedExpanded && filteredUntracked.map((file) => (
                                 <FileRow
                                     key={`untracked-${file.path}`}
-                                    node={{ data: { id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }, level: 0 } as any}
+                                    data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
                                     isSelected={selectedFile?.path === file.path && selectedFile?.staged === false}
                                     onClick={() => handleFileSelect({ path: file.path, staged: false })}
                                 />

@@ -55,14 +55,14 @@ func (impl *ServerImpl) GitStatusCommand(ctx context.Context, data wshrpc.Comman
 		case change.Status == "?":
 			response.Untracked = append(response.Untracked, *change)
 		case strings.HasPrefix(line, "1 ") || strings.HasPrefix(line, "2 "):
-			// Line format: "XY path" or "XY orig -> path"
-			// X = index status (staged), Y = worktree status (unstaged)
-			parts := strings.SplitN(line, " ", 4)
-			if len(parts) < 4 {
+			// Porcelain v2: "1 XY sub mH mI mW path" or "2 XY sub mH mI mW oH oM oW path"
+			parts := strings.Split(line, " ")
+			if len(parts) < 7 {
 				continue
 			}
-			indexStatus := parts[1][0:1]
-			worktreeStatus := parts[1][1:2]
+			xy := parts[1]
+			indexStatus := xy[0:1]
+			worktreeStatus := xy[1:2]
 
 			if indexStatus != "." && indexStatus != "?" {
 				// Staged change
@@ -139,21 +139,19 @@ func parseGitStatusLine(line string) *wshrpc.GitFileChange {
 	var status, path, oldPath string
 
 	if strings.HasPrefix(line, "1 ") || strings.HasPrefix(line, "2 ") {
-		// Regular file change: "XY path" or "XY orig -> path"
-		parts := strings.SplitN(line, " ", 4)
-		if len(parts) < 4 {
+		// Porcelain v2 type 1: "1 XY sub mH mI mW path"
+		// Porcelain v2 type 2: "2 XY sub mH mI mW oH oM oW path" (for renames)
+		parts := strings.Split(line, " ")
+		if len(parts) < 7 {
 			return nil
 		}
 		xy := parts[1]
-		path = parts[3]
+		// Path is always the last field (handles paths with spaces correctly)
+		path = parts[len(parts)-1]
 
-		// Handle renames
-		if strings.Contains(path, " -> ") {
-			arrowParts := strings.Split(path, " -> ")
-			if len(arrowParts) == 2 {
-				oldPath = arrowParts[0]
-				path = arrowParts[1]
-			}
+		// Handle renames (type 2 has extra fields before path)
+		if strings.HasPrefix(line, "2 ") && len(parts) >= 10 {
+			oldPath = parts[len(parts)-2]
 		}
 
 		// Determine status from XY codes

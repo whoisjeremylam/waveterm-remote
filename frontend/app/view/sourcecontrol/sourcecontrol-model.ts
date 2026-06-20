@@ -19,6 +19,7 @@ export class SourceControlViewModel implements ViewModel {
     viewIcon = jotai.atom<string>("code-branch");
     viewName = jotai.atom<string>("Source Control");
     noPadding = jotai.atom<boolean>(true);
+    manageConnection = jotai.atom<boolean>(true);
 
     // State atoms
     statusAtom: jotai.PrimitiveAtom<GitStatusResponse | null>;
@@ -26,9 +27,7 @@ export class SourceControlViewModel implements ViewModel {
     loadingAtom: jotai.PrimitiveAtom<boolean>;
     errorAtom: jotai.PrimitiveAtom<string | null>;
     viewModeAtom: jotai.PrimitiveAtom<"side-by-side" | "inline">;
-
-    // Derived atoms
-    diffAtom: jotai.Atom<Promise<GitDiffResponse | null> | null>;
+    diffAtom: jotai.PrimitiveAtom<GitDiffResponse | null>;
 
     // Connection
     connection: jotai.Atom<string>;
@@ -38,6 +37,7 @@ export class SourceControlViewModel implements ViewModel {
     // Polling
     pollInterval = 3000;
     pollTimer: ReturnType<typeof setInterval> | null = null;
+    selectedFileUnsub: (() => void) | null = null;
     disposed = false;
 
     constructor({ blockId, waveEnv }: ViewModelInitType) {
@@ -51,6 +51,7 @@ export class SourceControlViewModel implements ViewModel {
         this.loadingAtom = jotai.atom<boolean>(true) as jotai.PrimitiveAtom<boolean>;
         this.errorAtom = jotai.atom<string | null>(null) as jotai.PrimitiveAtom<string | null>;
         this.viewModeAtom = jotai.atom<"side-by-side" | "inline">("side-by-side") as jotai.PrimitiveAtom<"side-by-side" | "inline">;
+        this.diffAtom = jotai.atom<GitDiffResponse | null>(null) as jotai.PrimitiveAtom<GitDiffResponse | null>;
 
         // Connection from block metadata
         this.connection = jotai.atom((get) => {
@@ -76,17 +77,14 @@ export class SourceControlViewModel implements ViewModel {
             return get(connAtom);
         });
 
-        // Diff atom - fetches diff when selectedFile changes
-        this.diffAtom = jotai.atom((get) => {
-            const selected = get(this.selectedFileAtom);
-            const cwd = get(this.cwd);
-            const connStatus = get(this.connStatus);
-
-            if (!selected || !connStatus?.connected) {
-                return null;
+        // Subscribe to selectedFile changes to fetch diff
+        this.selectedFileUnsub = globalStore.sub(this.selectedFileAtom, () => {
+            const selected = globalStore.get(this.selectedFileAtom);
+            if (selected) {
+                this.fetchDiffForSelected();
+            } else {
+                globalStore.set(this.diffAtom, null);
             }
-
-            return this.fetchDiff(cwd, selected.path, selected.staged);
         });
 
         // Start polling when view is visible
@@ -160,6 +158,21 @@ export class SourceControlViewModel implements ViewModel {
         }
     }
 
+    async fetchDiffForSelected() {
+        const selected = globalStore.get(this.selectedFileAtom);
+        const cwd = globalStore.get(this.cwd);
+
+        if (!selected) {
+            globalStore.set(this.diffAtom, null);
+            return;
+        }
+
+        const diff = await this.fetchDiff(cwd, selected.path, selected.staged);
+        if (!this.disposed) {
+            globalStore.set(this.diffAtom, diff);
+        }
+    }
+
     refresh() {
         this.fetchStatus();
     }
@@ -167,5 +180,9 @@ export class SourceControlViewModel implements ViewModel {
     dispose() {
         this.disposed = true;
         this.stopPolling();
+        if (this.selectedFileUnsub) {
+            this.selectedFileUnsub();
+            this.selectedFileUnsub = null;
+        }
     }
 }
