@@ -6,6 +6,7 @@ package blockservice
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -87,4 +88,42 @@ func (bs *BlockService) CleanupOrphanedBlocks(ctx context.Context, tabId string)
 		return nil, fmt.Errorf("error queuing cleanup layout action: %w", err)
 	}
 	return waveobj.ContextGetUpdatesRtn(ctx), nil
+}
+
+func (*BlockService) SaveTerminalImages_Meta() tsgenmeta.MethodMeta {
+	return tsgenmeta.MethodMeta{
+		Desc:     "save image manifest for terminal state restore",
+		ArgNames: []string{"ctx", "blockId", "manifest"},
+	}
+}
+
+func (bs *BlockService) SaveTerminalImages(ctx context.Context, blockId string, manifest string) error {
+	_, err := wstore.DBMustGet[*waveobj.Block](ctx, blockId)
+	if err != nil {
+		return err
+	}
+	filestore.WFS.MakeFile(ctx, blockId, "cache:term:images", nil, wshrpc.FileOpts{})
+	return filestore.WFS.WriteFile(ctx, blockId, "cache:term:images", []byte(manifest))
+}
+
+func (*BlockService) SaveImageAsset_Meta() tsgenmeta.MethodMeta {
+	return tsgenmeta.MethodMeta{
+		Desc:     "save a single image asset (content-addressed)",
+		ArgNames: []string{"ctx", "blockId", "name", "data"},
+	}
+}
+
+var hexNamePattern = regexp.MustCompile(`^[0-9a-f]{1,32}$`)
+
+func (bs *BlockService) SaveImageAsset(ctx context.Context, blockId string, name string, data string) error {
+	if !hexNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid image asset name: %q", name)
+	}
+	_, err := wstore.DBMustGet[*waveobj.Block](ctx, blockId)
+	if err != nil {
+		return err
+	}
+	fileName := "cache:term:img:" + name
+	filestore.WFS.MakeFile(ctx, blockId, fileName, nil, wshrpc.FileOpts{})
+	return filestore.WFS.WriteFile(ctx, blockId, fileName, []byte(data))
 }

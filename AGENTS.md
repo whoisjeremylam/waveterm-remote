@@ -42,6 +42,23 @@ Current active spec: `.pi/specs/portforwarding.md`
 - **Electron main**: `emain/` (Node.js bridge between frontend and Go)
 - **Go backend runs as separate process** — Electron main process bridges to it via IPC
 
+## Build and Release Workflow
+
+**The user never builds locally.** The workflow is:
+1. Edit code locally
+2. Commit + push
+3. GitHub CI runs: `npm ci` → `postinstall` → `patch-package` → `electron-vite build` → `electron-builder`
+4. User downloads the CI-built binary from GitHub artifacts
+
+This means:
+- `frontend/` TypeScript files ARE bundled by electron-vite — changes to `termwrap.ts` etc. appear in the CI binary
+- `node_modules/` compiled JS files (`.mjs`/`.js`) ARE included if the patch file captures them
+- `node_modules/` TypeScript source files (`.ts`) are **NOT compiled** — they are reference only. Editing `.ts` files in node_modules has **zero runtime effect** unless the corresponding `.js`/`.mjs` bundles are also updated in the patch
+
+**patch-package behavior**: `npx patch-package` captures the delta between current `node_modules` files and the original npm package. It does NOT rebuild/compile. If you edit `.ts` source but not `.mjs`/`.js`, only the `.ts` section of the patch updates. The compiled sections remain at their previous state.
+
+**To modify npm dependency behavior**: Edit the compiled `.mjs`/`.js` files in `node_modules/`, then run `npx patch-package` to capture both source and compiled changes in the patch. The `.ts` changes are cosmetic only (helpful for readability but not executed).
+
 ## Priorities
 
 1. Verify `task dev` and `task start` work (build tools installed)

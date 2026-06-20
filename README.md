@@ -31,7 +31,9 @@ This fork is optimized for remote development workflows with a focus on macOS.
 - **Local toolchain** — Go and Task are installed locally (not global), no system dependencies required
 - **macOS builds** — CI builds macOS `.dmg` via GitHub Actions (manual trigger)
 - **Bug fixes** — Fixed tmux mouse integration lost on durable SSH session reconnect (commit `01f5073d`, issue #2); fixed crash on tab close after SSH session exit (commit `0cd6489b`)
-- **Planned changes** — SSH port forwarding, remote file paste (image/drag-drop for SSH sessions), vertical tabs, SSH config as source of truth for connections
+- **Image rendering** — Inline image display via `@xterm/addon-image` supporting Sixel, iTerm2 (IIP), and Kitty protocols. Tools like `chafa`, `imgcat`, and pi-tui can render images directly in the terminal
+- **SSH port forwarding** — Local and remote port forwarding via SSH config (`LocalForward`/`RemoteForward`)
+- **Planned changes** — Remote file paste (image/drag-drop for SSH sessions), SSH config as source of truth for connections
 
 ![WaveTerm Screenshot](./assets/wave-screenshot.webp)
 
@@ -48,6 +50,7 @@ This fork is optimized for remote development workflows with a focus on macOS.
 - Rich customization including tab themes, terminal styles, and background images
 - Powerful `wsh` command system for managing your workspace from the CLI and sharing data between terminal sessions
 - Connected file management with `wsh file` - seamlessly copy and sync files between local and remote SSH hosts
+- Inline image rendering - display images directly in the terminal using Sixel, iTerm2, or Kitty protocols
 
 ## Installation
 
