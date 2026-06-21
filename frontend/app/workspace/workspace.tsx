@@ -116,7 +116,7 @@ const WorkspaceElem = memo(() => {
                         onLayout={workspaceLayoutModel.handleOuterPanelLayout}
                         ref={outerPanelGroupRef}
                     >
-                        <Panel order={0} defaultSize={leftGroupInitialPct} className="overflow-hidden">
+                        <Panel order={0} defaultSize={leftGroupInitialPct}>
                             <div ref={vtabPanelWrapperRef} className="w-full h-full">
                                 {showLeftTabBar && <VTabBar workspace={ws} />}
                             </div>

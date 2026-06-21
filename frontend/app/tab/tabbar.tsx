@@ -664,6 +664,7 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
                     title="Add Tab"
                     className={`flex h-[22px] px-2 mb-1 mx-1 items-center rounded-md box-border cursor-pointer hover:bg-hoverbg transition-colors text-[12px] text-secondary hover:text-primary${noTabs ? " invisible" : ""}`}
                     style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                    onMouseDown={(e) => e.stopPropagation()}
                     onClick={handleAddTab}
                 >
                     <i className="fa fa-solid fa-plus" />
