@@ -3,7 +3,7 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-describe("ModalsModel - user input modal methods", () => {
+describe("ModalsModel - user input prompt methods", () => {
     let modalsModel: any;
     let mockStore: Map<any, any>;
 
@@ -29,80 +29,80 @@ describe("ModalsModel - user input modal methods", () => {
         modalsModel = mod.modalsModel;
     });
 
-    describe("upsertUserInputModal", () => {
-        it("adds a new modal keyed by connName", () => {
-            modalsModel.upsertUserInputModal("user@host", "UserInputModal", { requestid: "123" });
+    describe("upsertUserInputPrompt", () => {
+        it("adds a new prompt keyed by connName", () => {
+            modalsModel.upsertUserInputPrompt("user@host", "UserInputPrompt", { requestid: "123" });
 
-            const value = mockStore.get(modalsModel.activeUserInputModalsAtom);
+            const value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
             expect(value).toEqual({
-                "user@host": { displayName: "UserInputModal", props: { requestid: "123" } },
+                "user@host": { displayName: "UserInputPrompt", props: { requestid: "123" } },
             });
         });
 
-        it("updates existing modal for same connName", () => {
-            modalsModel.upsertUserInputModal("user@host", "UserInputModal", { requestid: "123" });
-            modalsModel.upsertUserInputModal("user@host", "UserInputModal", { requestid: "456" });
+        it("updates existing prompt for same connName", () => {
+            modalsModel.upsertUserInputPrompt("user@host", "UserInputPrompt", { requestid: "123" });
+            modalsModel.upsertUserInputPrompt("user@host", "UserInputPrompt", { requestid: "456" });
 
-            const value = mockStore.get(modalsModel.activeUserInputModalsAtom);
+            const value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
             expect(value).toEqual({
-                "user@host": { displayName: "UserInputModal", props: { requestid: "456" } },
+                "user@host": { displayName: "UserInputPrompt", props: { requestid: "456" } },
             });
         });
 
-        it("keeps separate modals for different connNames", () => {
-            modalsModel.upsertUserInputModal("user@host1", "UserInputModal", { requestid: "1" });
-            modalsModel.upsertUserInputModal("user@host2", "UserInputModal", { requestid: "2" });
+        it("keeps separate prompts for different connNames", () => {
+            modalsModel.upsertUserInputPrompt("user@host1", "UserInputPrompt", { requestid: "1" });
+            modalsModel.upsertUserInputPrompt("user@host2", "UserInputPrompt", { requestid: "2" });
 
-            const value = mockStore.get(modalsModel.activeUserInputModalsAtom);
+            const value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
             expect(Object.keys(value)).toEqual(["user@host1", "user@host2"]);
             expect(value["user@host1"].props.requestid).toBe("1");
             expect(value["user@host2"].props.requestid).toBe("2");
         });
     });
 
-    describe("dismissUserInputModal", () => {
-        it("removes modal for given connName", () => {
-            modalsModel.upsertUserInputModal("user@host1", "UserInputModal", {});
-            modalsModel.upsertUserInputModal("user@host2", "UserInputModal", {});
+    describe("dismissUserInputPrompt", () => {
+        it("removes prompt for given connName", () => {
+            modalsModel.upsertUserInputPrompt("user@host1", "UserInputPrompt", {});
+            modalsModel.upsertUserInputPrompt("user@host2", "UserInputPrompt", {});
 
-            modalsModel.dismissUserInputModal("user@host1");
+            modalsModel.dismissUserInputPrompt("user@host1");
 
-            const value = mockStore.get(modalsModel.activeUserInputModalsAtom);
+            const value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
             expect(Object.keys(value)).toEqual(["user@host2"]);
         });
 
         it("does not error when dismissing non-existent connName", () => {
-            modalsModel.upsertUserInputModal("user@host", "UserInputModal", {});
+            modalsModel.upsertUserInputPrompt("user@host", "UserInputPrompt", {});
 
-            modalsModel.dismissUserInputModal("nonexistent");
+            modalsModel.dismissUserInputPrompt("nonexistent");
 
-            const value = mockStore.get(modalsModel.activeUserInputModalsAtom);
+            const value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
             expect(Object.keys(value)).toEqual(["user@host"]);
         });
 
         it("handles dismissing from empty state", () => {
-            modalsModel.dismissUserInputModal("user@host");
+            modalsModel.dismissUserInputPrompt("user@host");
 
-            const value = mockStore.get(modalsModel.activeUserInputModalsAtom);
+            const value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
             expect(value).toEqual({});
         });
     });
 
-    describe("dismissAllUserInputModals", () => {
-        it("clears all modals", () => {
-            modalsModel.upsertUserInputModal("user@host1", "UserInputModal", {});
-            modalsModel.upsertUserInputModal("user@host2", "UserInputModal", {});
+    describe("dismissAllUserInputPrompts", () => {
+        it("clears all prompts", () => {
+            modalsModel.upsertUserInputPrompt("user@host1", "UserInputPrompt", {});
+            modalsModel.upsertUserInputPrompt("user@host2", "UserInputPrompt", {});
 
-            modalsModel.dismissAllUserInputModals();
+            modalsModel.dismissAllUserInputPrompts();
 
-            const value = mockStore.get(modalsModel.activeUserInputModalsAtom);
+            const value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
             expect(value).toEqual({});
         });
 
-        it("handles dismissing when no modals exist", () => {
-            modalsModel.dismissAllUserInputModals();
+        it("handles dismissing when no prompts exist", () => {
+            modalsModel.dismissAllUserInputPrompts();
 
-            const value = mockStore.get(modalsModel.activeUserInputModalsAtom);
+            const value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
             expect(value).toEqual({});
         });
     });

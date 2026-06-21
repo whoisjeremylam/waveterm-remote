@@ -1,22 +1,25 @@
 // Copyright 2025, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Modal } from "@/app/modals/modal";
+import { Button } from "@/app/element/button";
 import { Markdown } from "@/element/markdown";
 import { modalsModel } from "@/store/modalmodel";
 import * as keyutil from "@/util/keyutil";
 import { fireAndForget } from "@/util/util";
 import { useCallback, useMemo, useRef, useState } from "react";
+import ReactDOM from "react-dom";
 import { UserInputService } from "../store/services";
+import "./userinputprompt.scss";
 
-const UserInputModal = (userInputRequest: UserInputRequest) => {
+const UserInputPrompt = (userInputRequest: UserInputRequest) => {
     const [responseText, setResponseText] = useState("");
     const checkboxRef = useRef<HTMLInputElement>(null);
+    const inputRef = useRef<HTMLInputElement>(null);
     const connName = userInputRequest.connname;
 
     const handleDismiss = useCallback(() => {
         if (connName) {
-            modalsModel.dismissUserInputModal(connName);
+            modalsModel.dismissUserInputPrompt(connName);
         } else {
             modalsModel.popModal();
         }
@@ -72,16 +75,14 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
     }, [handleSendConfirm, handleSendText, userInputRequest.responsetype]);
 
     const handleKeyDown = useCallback(
-        (waveEvent: WaveKeyboardEvent): boolean => {
-            if (keyutil.checkKeyPressed(waveEvent, "Escape")) {
+        (e: React.KeyboardEvent) => {
+            if (keyutil.checkKeyPressed(e as WaveKeyboardEvent, "Escape")) {
                 handleSendErrResponse();
-                return true;
+                return;
             }
-            if (keyutil.checkKeyPressed(waveEvent, "Enter")) {
+            if (keyutil.checkKeyPressed(e as WaveKeyboardEvent, "Enter")) {
                 handleSubmit();
-                return true;
             }
-			return false;
         },
         [handleSendErrResponse, handleSubmit]
     );
@@ -99,13 +100,14 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
         }
         return (
             <input
+                ref={inputRef}
                 type={userInputRequest.publictext ? "text" : "password"}
                 onChange={(e) => setResponseText(e.target.value)}
                 value={responseText}
                 maxLength={400}
                 className="resize-none bg-panel rounded-md border border-border py-1.5 pl-4 min-h-[30px] text-inherit cursor-text focus:ring-2 focus:ring-accent focus:outline-none"
                 autoFocus={true}
-                onKeyDown={(e) => keyutil.keydownWrapper(handleKeyDown)(e)}
+                onKeyDown={handleKeyDown}
             />
         );
     }, [userInputRequest.responsetype, userInputRequest.publictext, responseText, handleKeyDown, setResponseText]);
@@ -140,25 +142,32 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
         }
     }, [userInputRequest.responsetype, handleSendErrResponse, handleSendConfirm]);
 
-    return (
-        <Modal
-            className="pt-6 pb-4 px-5"
-            onOk={() => handleSubmit()}
-            onCancel={() => handleNegativeResponse()}
-            onClose={() => handleSendErrResponse()}
-            okLabel={userInputRequest.oklabel}
-            cancelLabel={userInputRequest.cancellabel}
-        >
-            <div className="font-bold text-primary mx-4 pb-2.5">{userInputRequest.title}</div>
-            <div className="flex flex-col justify-between gap-4 mx-4 mb-4 max-w-[500px] font-mono text-primary">
-                {queryText}
-                {inputBox}
-                {optionalCheckbox}
+    const renderPrompt = () => (
+        <div className="userinput-prompt-wrapper">
+            <div className="userinput-prompt" onKeyDown={handleKeyDown}>
+                <div className="userinput-prompt-header">
+                    <div className="font-bold text-primary">{userInputRequest.title}</div>
+                </div>
+                <div className="userinput-prompt-body">
+                    {queryText}
+                    {inputBox}
+                    {optionalCheckbox}
+                </div>
+                <div className="userinput-prompt-footer">
+                    <Button className="grey ghost" onClick={handleNegativeResponse}>
+                        {userInputRequest.cancellabel || "Cancel"}
+                    </Button>
+                    <Button onClick={() => handleSubmit()}>
+                        {userInputRequest.oklabel || "Ok"}
+                    </Button>
+                </div>
             </div>
-        </Modal>
+        </div>
     );
+
+    return ReactDOM.createPortal(renderPrompt(), document.getElementById("main"));
 };
 
-UserInputModal.displayName = "UserInputModal";
+UserInputPrompt.displayName = "UserInputPrompt";
 
-export { UserInputModal };
+export { UserInputPrompt };

@@ -860,10 +860,6 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 	// Inject cached password into connFlags so sshclient uses it without prompting
 	cachedPw := conn.getCachedPassword()
 	if cachedPw != nil && connFlags.SshPasswordSecretName == nil {
-		// We have a cached password but no secret store configured.
-		// We cannot directly inject it into connFlags (SshPasswordSecretName is for the secret store).
-		// Instead, we rely on the password callback to check conn.CachedPassword.
-		// This is handled by passing the password through the connection context.
 		conn.Infof(ctx, "using cached password for reconnection\n")
 	}
 
@@ -871,7 +867,15 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 		conn.LastConnectTryAt = time.Now().UnixMilli()
 	})
 
+	// Mark PendingAuth before the SSH handshake so other goroutines for the same
+	// connection wait instead of queuing up additional Connect() calls.
+	conn.setPendingAuth()
+
 	err := conn.connectInternal(ctx, connFlags)
+
+	// Always clear PendingAuth after the handshake completes (success or failure).
+	conn.clearPendingAuth()
+
 	if err != nil {
 		errorCode, _ := remote.ClassifyConnError(err)
 		conn.Infof(ctx, "ERROR [%s] %v\n\n", errorCode, err)
@@ -1728,8 +1732,10 @@ func EnsureConnection(ctx context.Context, connName string) error {
 	case Status_Init, Status_Disconnected:
 		// Cooldown guard: don't re-enter Connect() within 5 seconds of last attempt
 		if conn.isWithinConnectCooldown() {
-			// If another goroutine is already connecting, wait for it
-			if conn.PendingAuth {
+			// If another goroutine is already waiting for auth, wait for it to complete
+			pendingAuth := false
+			conn.WithLock(func() { pendingAuth = conn.PendingAuth })
+			if pendingAuth {
 				return conn.waitForPendingAuth(ctx)
 			}
 			return conn.WaitForConnect(ctx)

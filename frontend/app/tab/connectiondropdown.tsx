@@ -43,12 +43,16 @@ export const ConnectionDropdown = memo(function ConnectionDropdown({ onSelect, o
     return (
         <div ref={dropdownRef} className="connection-dropdown">
             {loading ? (
-                <div className="connection-dropdown-item">Loading...</div>
+                <div className="connection-dropdown-item">
+                    <span className="typeahead-item-name">Loading...</span>
+                </div>
             ) : (
                 <>
                     <div className="connection-dropdown-header">Local</div>
                     <div className="connection-dropdown-item" onClick={() => onSelect("")}>
-                        <i className="fa fa-solid fa-laptop" /> Local
+                        <span className="typeahead-item-name">
+                            <i className="fa fa-solid fa-laptop" /> Local
+                        </span>
                     </div>
                     {connections.length > 0 && (
                         <>
@@ -59,7 +63,9 @@ export const ConnectionDropdown = memo(function ConnectionDropdown({ onSelect, o
                                     className="connection-dropdown-item"
                                     onClick={() => onSelect(conn)}
                                 >
-                                    <i className="fa fa-solid fa-arrows-left-right" /> {conn}
+                                    <span className="typeahead-item-name">
+                                        <i className="fa fa-solid fa-arrows-left-right" /> {conn}
+                                    </span>
                                 </div>
                             ))}
                         </>

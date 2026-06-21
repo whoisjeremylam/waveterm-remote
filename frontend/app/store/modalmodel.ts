@@ -8,13 +8,13 @@ class ModalsModel {
     modalsAtom: jotai.PrimitiveAtom<Array<{ displayName: string; props?: any }>>;
     newInstallOnboardingOpen: jotai.PrimitiveAtom<boolean>;
     upgradeOnboardingOpen: jotai.PrimitiveAtom<boolean>;
-    activeUserInputModalsAtom: jotai.PrimitiveAtom<Record<string, { displayName: string; props: any }>>;
+    activeUserInputPromptsAtom: jotai.PrimitiveAtom<Record<string, { displayName: string; props: any }>>;
 
     constructor() {
         this.newInstallOnboardingOpen = jotai.atom(false);
         this.upgradeOnboardingOpen = jotai.atom(false);
         this.modalsAtom = jotai.atom([]);
-        this.activeUserInputModalsAtom = jotai.atom({});
+        this.activeUserInputPromptsAtom = jotai.atom({});
     }
 
     pushModal = (displayName: string, props?: any) => {
@@ -33,8 +33,8 @@ class ModalsModel {
 
     hasOpenModals(): boolean {
         const modals = globalStore.get(this.modalsAtom);
-        const userInputModals = globalStore.get(this.activeUserInputModalsAtom);
-        return modals.length > 0 || Object.keys(userInputModals).length > 0;
+        const userInputPrompts = globalStore.get(this.activeUserInputPromptsAtom);
+        return modals.length > 0 || Object.keys(userInputPrompts).length > 0;
     }
 
     isModalOpen(displayName: string): boolean {
@@ -42,23 +42,23 @@ class ModalsModel {
         return modals.some((modal) => modal.displayName === displayName);
     }
 
-    upsertUserInputModal(connName: string, displayName: string, props: any) {
-        globalStore.set(this.activeUserInputModalsAtom, (prev) => ({
+    upsertUserInputPrompt(connName: string, displayName: string, props: any) {
+        globalStore.set(this.activeUserInputPromptsAtom, (prev) => ({
             ...prev,
             [connName]: { displayName, props },
         }));
     }
 
-    dismissUserInputModal(connName: string) {
-        globalStore.set(this.activeUserInputModalsAtom, (prev) => {
+    dismissUserInputPrompt(connName: string) {
+        globalStore.set(this.activeUserInputPromptsAtom, (prev) => {
             const next = { ...prev };
             delete next[connName];
             return next;
         });
     }
 
-    dismissAllUserInputModals() {
-        globalStore.set(this.activeUserInputModalsAtom, {});
+    dismissAllUserInputPrompts() {
+        globalStore.set(this.activeUserInputPromptsAtom, {});
     }
 }
 

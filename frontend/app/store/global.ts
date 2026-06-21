@@ -72,9 +72,9 @@ function initGlobalWaveEventSubs(initOpts: WaveInitOpts) {
         handler: (event) => {
             const connName = event.data?.connname;
             if (connName) {
-                modalsModel.upsertUserInputModal(connName, "UserInputModal", { ...event.data });
+                modalsModel.upsertUserInputPrompt(connName, "UserInputPrompt", { ...event.data });
             } else {
-                modalsModel.pushModal("UserInputModal", { ...event.data });
+                modalsModel.pushModal("UserInputPrompt", { ...event.data });
             }
         },
         scope: initOpts.windowId,
@@ -636,24 +636,17 @@ function subscribeToConnEvents() {
                     return;
                 }
                 if (connStatus.connected) {
-                    // Auto-dismiss password prompts for this connection on successful connect
-                    const userInputModals = globalStore.get(modalsModel.activeUserInputModalsAtom);
-                    const modalEntry = userInputModals[connStatus.connection];
-                    if (modalEntry) {
-                        const promptType = modalEntry.props?.prompttype;
-                        const title = (modalEntry.props?.title ?? "").toLowerCase();
-                        // Use PromptType field if available, fall back to title string matching
-                        const isPasswordPrompt =
-                            promptType === "password" ||
-                            promptType === "passphrase" ||
-                            promptType === "keyboard-interactive" ||
-                            title.includes("password") ||
-                            title.includes("passphrase") ||
-                            title.includes("authentication");
-                        if (isPasswordPrompt) {
-                            modalsModel.dismissUserInputModal(connStatus.connection);
-                        }
+                    // Auto-dismiss user input prompts for this connection on successful connect
+                    const userInputPrompts = globalStore.get(modalsModel.activeUserInputPromptsAtom);
+                    const promptEntry = userInputPrompts[connStatus.connection];
+                    if (promptEntry) {
+                        modalsModel.dismissUserInputPrompt(connStatus.connection);
                     }
+                } else if (connStatus.status === "error") {
+                    // Dismiss stale prompts when connection fails or times out.
+                    // The backend has already given up on the handshake, so the prompt
+                    // would be a zombie — responses go to an unregistered channel.
+                    modalsModel.dismissUserInputPrompt(connStatus.connection);
                 }
                 console.log("connstatus update", connStatus);
                 const curAtom = getConnStatusAtom(connStatus.connection);
