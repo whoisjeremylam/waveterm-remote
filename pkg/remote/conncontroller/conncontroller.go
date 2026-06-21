@@ -870,11 +870,9 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 	// Mark PendingAuth before the SSH handshake so other goroutines for the same
 	// connection wait instead of queuing up additional Connect() calls.
 	conn.setPendingAuth()
+	defer conn.clearPendingAuth()
 
 	err := conn.connectInternal(ctx, connFlags)
-
-	// Always clear PendingAuth after the handshake completes (success or failure).
-	conn.clearPendingAuth()
 
 	if err != nil {
 		errorCode, _ := remote.ClassifyConnError(err)

@@ -76,11 +76,12 @@ const UserInputPrompt = (userInputRequest: UserInputRequest) => {
 
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent) => {
-            if (keyutil.checkKeyPressed(e as WaveKeyboardEvent, "Escape")) {
+            const waveEvent = keyutil.adaptFromReactOrNativeKeyEvent(e);
+            if (keyutil.checkKeyPressed(waveEvent, "Escape")) {
                 handleSendErrResponse();
                 return;
             }
-            if (keyutil.checkKeyPressed(e as WaveKeyboardEvent, "Enter")) {
+            if (keyutil.checkKeyPressed(waveEvent, "Enter")) {
                 handleSubmit();
             }
         },
