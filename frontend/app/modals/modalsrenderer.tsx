@@ -6,32 +6,12 @@ import { CurrentOnboardingVersion } from "@/app/onboarding/onboarding-common";
 import { UpgradeOnboardingModal } from "@/app/onboarding/onboarding-upgrade";
 import { ClientModel } from "@/app/store/client-model";
 import { globalStore } from "@/app/store/jotaiStore";
-import * as WOS from "@/app/store/wos";
 import { atoms, globalPrimaryTabStartup } from "@/store/global";
 import { modalsModel } from "@/store/modalmodel";
 import * as jotai from "jotai";
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import * as semver from "semver";
 import { getModalComponent } from "./modalregistry";
-
-function getActiveTabConnections(): Set<string> {
-    const tabId = globalStore.get(atoms.staticTabId);
-    if (!tabId) {
-        return new Set();
-    }
-    const tabData = globalStore.get(WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tabId)));
-    if (!tabData?.blockids) {
-        return new Set();
-    }
-    const connections = new Set<string>();
-    for (const blockId of tabData.blockids) {
-        const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
-        if (blockData?.meta?.connection) {
-            connections.add(blockData.meta.connection);
-        }
-    }
-    return connections;
-}
 
 const ModalsRenderer = () => {
     const clientData = jotai.useAtomValue(ClientModel.getInstance().clientAtom);
@@ -39,9 +19,6 @@ const ModalsRenderer = () => {
     const [upgradeOnboardingOpen, setUpgradeOnboardingOpen] = jotai.useAtom(modalsModel.upgradeOnboardingOpen);
     const [modals] = jotai.useAtom(modalsModel.modalsAtom);
     const activeUserInputPrompts = jotai.useAtomValue(modalsModel.activeUserInputPromptsAtom);
-    const tabId = jotai.useAtomValue(atoms.staticTabId);
-
-    const activeTabConnections = useMemo(() => getActiveTabConnections(), [tabId]);
 
     const rtn: React.ReactElement[] = [];
     for (const modal of modals) {
@@ -51,9 +28,6 @@ const ModalsRenderer = () => {
         }
     }
     for (const [connName, promptEntry] of Object.entries(activeUserInputPrompts)) {
-        if (connName && !activeTabConnections.has(connName)) {
-            continue;
-        }
         const PromptComponent = getModalComponent(promptEntry.displayName);
         if (PromptComponent) {
             rtn.push(<PromptComponent key={`userinput-${connName}`} {...promptEntry.props} />);
