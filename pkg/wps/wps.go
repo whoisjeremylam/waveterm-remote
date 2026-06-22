@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wavetermdev/waveterm/pkg/util/utilfn"
 	"github.com/wavetermdev/waveterm/pkg/waveobj"
@@ -17,6 +18,10 @@ import (
 // strong typing and event types can be defined elsewhere
 
 const MaxPersist = 4096
+
+// PendingEventTTL is how long an event stays in the pending buffer.
+// After this, it's assumed all subscribers have registered and it's safe to drop.
+const PendingEventTTL = 5 * time.Minute
 
 type Client interface {
 	SendEvent(routeId string, event WaveEvent)
@@ -37,19 +42,24 @@ type persistEventWrap struct {
 	Events []*WaveEvent
 }
 
+type pendingEvent struct {
+	Event     *WaveEvent
+	PublishedAt time.Time
+}
+
 type BrokerType struct {
 	Lock          *sync.Mutex
 	Client        Client
 	SubMap        map[string]*BrokerSubscription
 	PersistMap    map[persistKey]*persistEventWrap
-	PendingEvents map[string]*WaveEvent // events published before any subscriber registered
+	PendingEvents map[string][]*pendingEvent // events published before any subscriber registered
 }
 
 var Broker = &BrokerType{
 	Lock:          &sync.Mutex{},
 	SubMap:        make(map[string]*BrokerSubscription),
 	PersistMap:    make(map[persistKey]*persistEventWrap),
-	PendingEvents: make(map[string]*WaveEvent),
+	PendingEvents: make(map[string][]*pendingEvent),
 }
 
 func scopeHasStarMatch(scope string) bool {
@@ -109,44 +119,57 @@ func (b *BrokerType) Subscribe(subRouteId string, sub SubscriptionRequest) {
 	b.deliverPendingEvent(sub.Event, subRouteId, sub.Scopes)
 }
 
-// deliverPendingEvent checks if there's a pending event for the given event type
-// and delivers it to the newly registered subscriber, if scopes match.
+// deliverPendingEvent checks if there are pending events for the given event type
+// and delivers all matching ones to the newly registered subscriber, if scopes match.
+// Events are kept in the buffer so that later subscribers (e.g., other windows) also receive them.
+// Expired events (older than PendingEventTTL) are cleaned up during delivery.
 func (b *BrokerType) deliverPendingEvent(eventType string, routeId string, scopes []string) {
 	b.Lock.Lock()
-	pending := b.PendingEvents[eventType]
-	if pending != nil {
-		// Only deliver if scopes match (or subscriber uses allscopes, or pending has no scopes)
-		if len(pending.Scopes) == 0 || len(scopes) == 0 {
-			// No scope filtering needed
-		} else {
-			matched := false
-			for _, pendingScope := range pending.Scopes {
-				for _, subScope := range scopes {
-					if pendingScope == subScope {
-						matched = true
-						break
-					}
-				}
-				if matched {
-					break
-				}
-			}
-			if !matched {
-				log.Printf("[DEBUG] wps.deliverPendingEvent: scopes not matched, pending=%v sub=%v", pending.Scopes, scopes)
-				b.Lock.Unlock()
-				return
-			}
-		}
-		delete(b.PendingEvents, eventType)
+	events := b.PendingEvents[eventType]
+	if len(events) == 0 {
 		b.Lock.Unlock()
-		client := b.GetClient()
-		if client != nil {
-			log.Printf("[DEBUG] wps.deliverPendingEvent: delivering buffered %s to %s", eventType, routeId)
-			client.SendEvent(routeId, *pending)
-		}
 		return
 	}
+	now := time.Now()
+	var filtered []*pendingEvent
+	var toDeliver []*WaveEvent
+	for _, pe := range events {
+		if now.Sub(pe.PublishedAt) > PendingEventTTL {
+			continue // expired, drop it
+		}
+		filtered = append(filtered, pe)
+		if pendingEventMatchesScopes(pe.Event, scopes) {
+			toDeliver = append(toDeliver, pe.Event)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(b.PendingEvents, eventType)
+	} else {
+		b.PendingEvents[eventType] = filtered
+	}
 	b.Lock.Unlock()
+	client := b.GetClient()
+	for _, event := range toDeliver {
+		if client != nil {
+			log.Printf("[DEBUG] wps.deliverPendingEvent: delivering buffered %s to %s (scopes=%v)", eventType, routeId, event.Scopes)
+			client.SendEvent(routeId, *event)
+		}
+	}
+}
+
+// pendingEventMatchesScopes checks if a pending event's scopes overlap with the subscriber's scopes.
+func pendingEventMatchesScopes(event *WaveEvent, subScopes []string) bool {
+	if len(event.Scopes) == 0 || len(subScopes) == 0 {
+		return true
+	}
+	for _, eventScope := range event.Scopes {
+		for _, subScope := range subScopes {
+			if eventScope == subScope {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (bs *BrokerSubscription) IsEmpty() bool {
@@ -274,22 +297,32 @@ func (b *BrokerType) Publish(event WaveEvent) {
 	if event.Persist > 0 {
 		b.persistEvent(event)
 	}
-	client := b.GetClient()
-	if client == nil {
-		log.Printf("[DEBUG] wps.Publish: no client, dropping event")
-		return
-	}
 	// Hold lock across check+buffer to prevent TOCTOU race where a subscriber
 	// registers between getMatchingRouteIds and the buffer write.
 	b.Lock.Lock()
 	routeIds := b.getMatchingRouteIds_nolock(event)
 	if len(routeIds) == 0 {
-		b.PendingEvents[event.Event] = &event
+		b.PendingEvents[event.Event] = append(b.PendingEvents[event.Event], &pendingEvent{
+			Event:       &event,
+			PublishedAt: time.Now(),
+		})
+		buffered := len(b.PendingEvents[event.Event])
 		b.Lock.Unlock()
-		log.Printf("[DEBUG] wps.Publish: matched 0 routeIds: [], buffered %s", event.Event)
+		log.Printf("[DEBUG] wps.Publish: matched 0 routeIds: [], buffered %s (total buffered=%d)", event.Event, buffered)
 		return
 	}
+	client := b.Client
 	b.Lock.Unlock()
+	if client == nil {
+		log.Printf("[DEBUG] wps.Publish: matched %d routeIds but no client, buffering %s", len(routeIds), event.Event)
+		b.Lock.Lock()
+		b.PendingEvents[event.Event] = append(b.PendingEvents[event.Event], &pendingEvent{
+			Event:       &event,
+			PublishedAt: time.Now(),
+		})
+		b.Lock.Unlock()
+		return
+	}
 	log.Printf("[DEBUG] wps.Publish: matched %d routeIds: %v", len(routeIds), routeIds)
 	for _, routeId := range routeIds {
 		client.SendEvent(routeId, event)
