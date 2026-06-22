@@ -132,6 +132,7 @@ func (b *BrokerType) deliverPendingEvent(eventType string, routeId string, scope
 				}
 			}
 			if !matched {
+				log.Printf("[DEBUG] wps.deliverPendingEvent: scopes not matched, pending=%v sub=%v", pending.Scopes, scopes)
 				b.Lock.Unlock()
 				return
 			}
@@ -313,8 +314,6 @@ func (b *BrokerType) getMatchingRouteIds(event WaveEvent) []string {
 
 // getMatchingRouteIds_nolock must be called with b.Lock held.
 func (b *BrokerType) getMatchingRouteIds_nolock(event WaveEvent) []string {
-	b.Lock.Lock()
-	defer b.Lock.Unlock()
 	bs := b.SubMap[event.Event]
 	if bs == nil {
 		return nil

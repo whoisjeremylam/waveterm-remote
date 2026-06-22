@@ -253,6 +253,7 @@ globalEvents.on("windows-updated", () => {
 });
 
 async function appMain() {
+    console.log("[DEBUG] appMain starting");
     // Set disableHardwareAcceleration as early as possible, if required.
     const launchSettings = getLaunchSettings();
     if (launchSettings?.["window:disablehardwareacceleration"]) {
@@ -272,7 +273,9 @@ async function appMain() {
         fireAndForget(createNewWaveWindow);
     });
     try {
+        console.log("[DEBUG] calling runWaveSrv...");
         await runWaveSrv(handleWSEvent);
+        console.log("[DEBUG] runWaveSrv returned");
     } catch (e) {
         console.log(e.toString());
     }
@@ -284,8 +287,10 @@ async function appMain() {
 
     await sleep(10); // wait a bit for wavesrv to be ready
     try {
+        console.log("[DEBUG] initializing wshrpc...");
         initElectronWshClient();
         initElectronWshrpc(ElectronWshClient, { authKey: AuthKey });
+        console.log("[DEBUG] wshrpc initialized");
         initMenuEventSubscriptions();
     } catch (e) {
         console.log("error initializing wshrpc", e);
