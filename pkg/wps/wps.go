@@ -293,6 +293,12 @@ func (b *BrokerType) persistEvent(event WaveEvent) {
 	}
 }
 
+// shouldBufferEvent returns true for event types that must survive the
+// startup window before the frontend connects (e.g. userinput password prompts).
+func shouldBufferEvent(eventType string) bool {
+	return eventType == Event_UserInput
+}
+
 func (b *BrokerType) Publish(event WaveEvent) {
 	if event.Persist > 0 {
 		b.persistEvent(event)
@@ -300,28 +306,31 @@ func (b *BrokerType) Publish(event WaveEvent) {
 	b.Lock.Lock()
 	routeIds := b.getMatchingRouteIds_nolock(event)
 	if len(routeIds) == 0 {
-		b.PendingEvents[event.Event] = append(b.PendingEvents[event.Event], &pendingEvent{
-			Event:       &event,
-			PublishedAt: time.Now(),
-		})
-		buffered := len(b.PendingEvents[event.Event])
-		b.Lock.Unlock()
-		if event.Event == Event_UserInput {
-			log.Printf("[DEBUG] wps.Publish: userinput buffered (total=%d)", buffered)
+		if shouldBufferEvent(event.Event) {
+			b.PendingEvents[event.Event] = append(b.PendingEvents[event.Event], &pendingEvent{
+				Event:       &event,
+				PublishedAt: time.Now(),
+			})
+			buffered := len(b.PendingEvents[event.Event])
+			b.Lock.Unlock()
+			log.Printf("[DEBUG] wps.Publish: buffered %s (total=%d)", event.Event, buffered)
+			return
 		}
+		b.Lock.Unlock()
 		return
 	}
 	client := b.Client
 	b.Lock.Unlock()
 	if client == nil {
-		b.Lock.Lock()
-		b.PendingEvents[event.Event] = append(b.PendingEvents[event.Event], &pendingEvent{
-			Event:       &event,
-			PublishedAt: time.Now(),
-		})
-		b.Lock.Unlock()
-		if event.Event == Event_UserInput {
-			log.Printf("[DEBUG] wps.Publish: userinput buffered (no client)")
+		if shouldBufferEvent(event.Event) {
+			b.Lock.Lock()
+			b.PendingEvents[event.Event] = append(b.PendingEvents[event.Event], &pendingEvent{
+				Event:       &event,
+				PublishedAt: time.Now(),
+			})
+			b.Lock.Unlock()
+			log.Printf("[DEBUG] wps.Publish: buffered %s (no client)", event.Event)
+			return
 		}
 		return
 	}
