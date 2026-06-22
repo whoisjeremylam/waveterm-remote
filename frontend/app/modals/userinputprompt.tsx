@@ -22,14 +22,12 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
     const blockId = userInputRequest.blockId;
 
     const handleDismiss = useCallback(() => {
-        if (blockId && connName) {
-            modalsModel.dismissUserInputPromptForTab(connName, blockId);
-        } else if (connName) {
+        if (connName) {
             modalsModel.dismissUserInputPrompt(connName);
         } else {
             modalsModel.popModal();
         }
-    }, [connName, blockId]);
+    }, [connName]);
 
     const handleSendErrResponse = useCallback(() => {
         fireAndForget(() =>
