@@ -86,7 +86,6 @@ func (b *BrokerType) GetClient() Client {
 
 // if already subscribed, this will *resubscribe* with the new subscription (remove the old one, and replace with this one)
 func (b *BrokerType) Subscribe(subRouteId string, sub SubscriptionRequest) {
-	log.Printf("[DEBUG] wps.Subscribe: routeId=%s event=%s scopes=%v allscopes=%v", subRouteId, sub.Event, sub.Scopes, sub.AllScopes)
 	if sub.Event == "" {
 		return
 	}
@@ -151,7 +150,9 @@ func (b *BrokerType) deliverPendingEvent(eventType string, routeId string, scope
 	client := b.GetClient()
 	for _, event := range toDeliver {
 		if client != nil {
-			log.Printf("[DEBUG] wps.deliverPendingEvent: delivering buffered %s to %s (scopes=%v)", eventType, routeId, event.Scopes)
+			if event.Event == Event_UserInput {
+				log.Printf("[DEBUG] wps.deliverPendingEvent: delivering buffered userinput to %s", routeId)
+			}
 			client.SendEvent(routeId, *event)
 		}
 	}
@@ -293,12 +294,9 @@ func (b *BrokerType) persistEvent(event WaveEvent) {
 }
 
 func (b *BrokerType) Publish(event WaveEvent) {
-	log.Printf("[DEBUG] wps.Publish: event=%s scopes=%v", event.Event, event.Scopes)
 	if event.Persist > 0 {
 		b.persistEvent(event)
 	}
-	// Hold lock across check+buffer to prevent TOCTOU race where a subscriber
-	// registers between getMatchingRouteIds and the buffer write.
 	b.Lock.Lock()
 	routeIds := b.getMatchingRouteIds_nolock(event)
 	if len(routeIds) == 0 {
@@ -308,22 +306,25 @@ func (b *BrokerType) Publish(event WaveEvent) {
 		})
 		buffered := len(b.PendingEvents[event.Event])
 		b.Lock.Unlock()
-		log.Printf("[DEBUG] wps.Publish: matched 0 routeIds: [], buffered %s (total buffered=%d)", event.Event, buffered)
+		if event.Event == Event_UserInput {
+			log.Printf("[DEBUG] wps.Publish: userinput buffered (total=%d)", buffered)
+		}
 		return
 	}
 	client := b.Client
 	b.Lock.Unlock()
 	if client == nil {
-		log.Printf("[DEBUG] wps.Publish: matched %d routeIds but no client, buffering %s", len(routeIds), event.Event)
 		b.Lock.Lock()
 		b.PendingEvents[event.Event] = append(b.PendingEvents[event.Event], &pendingEvent{
 			Event:       &event,
 			PublishedAt: time.Now(),
 		})
 		b.Lock.Unlock()
+		if event.Event == Event_UserInput {
+			log.Printf("[DEBUG] wps.Publish: userinput buffered (no client)")
+		}
 		return
 	}
-	log.Printf("[DEBUG] wps.Publish: matched %d routeIds: %v", len(routeIds), routeIds)
 	for _, routeId := range routeIds {
 		client.SendEvent(routeId, event)
 	}

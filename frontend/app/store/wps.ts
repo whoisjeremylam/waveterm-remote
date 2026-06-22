@@ -49,7 +49,6 @@ function updateWaveEventSub(eventType: string) {
     }
     const subjects = waveEventSubjects.get(eventType);
     if (subjects == null) {
-        console.log("[DEBUG] updateWaveEventSub: no subjects for", eventType, "- unsubscribing");
         RpcApi.EventUnsubCommand(WpsRpcClient, eventType, { noresponse: true });
         return;
     }
@@ -62,12 +61,10 @@ function updateWaveEventSub(eventType: string) {
         }
         subreq.scopes.push(scont.scope);
     }
-    console.log("[DEBUG] updateWaveEventSub:", eventType, "allscopes:", subreq.allscopes, "scopes:", subreq.scopes);
     RpcApi.EventSubCommand(WpsRpcClient, subreq, { noresponse: true });
 }
 
 function waveEventSubscribeSingle<T extends WaveEventName>(subscription: WaveEventSubscription<T>): () => void {
-    console.log("[DEBUG] waveEventSubscribeSingle:", subscription.eventType, "scope:", subscription.scope);
     if (subscription.handler == null) {
         return () => {};
     }
@@ -130,24 +127,19 @@ function getFileSubject(zoneId: string, fileName: string): SubjectWithRef<WSFile
 }
 
 function handleWaveEvent(event: WaveEvent) {
-    console.log("[DEBUG] handleWaveEvent:", event.event, "scopes:", event.scopes);
     const subjects = waveEventSubjects.get(event.event);
     if (subjects == null) {
-        console.log("[DEBUG] handleWaveEvent: no subscribers for", event.event);
         return;
     }
     for (const scont of subjects) {
         if (isBlank(scont.scope)) {
-            console.log("[DEBUG] handleWaveEvent: dispatching to allscope subscriber", scont.id);
             scont.handler(event);
             continue;
         }
         if (event.scopes == null) {
-            console.log("[DEBUG] handleWaveEvent: event has no scopes, skipping scoped subscriber", scont.id);
             continue;
         }
         if (event.scopes.includes(scont.scope)) {
-            console.log("[DEBUG] handleWaveEvent: scope matched, dispatching to", scont.id, "scope:", scont.scope);
             scont.handler(event);
         }
     }

@@ -71,13 +71,10 @@ function initGlobalWaveEventSubs(initOpts: WaveInitOpts) {
         eventType: "userinput",
         handler: (event) => {
             const connName = event.data?.connname;
-            console.log("[DEBUG] userinput event received:", { connName, promptType: event.data?.prompttype, requestId: event.data?.requestid });
             if (connName) {
                 modalsModel.upsertUserInputPrompt(connName, "UserInputPrompt", { ...event.data });
-                console.log("[DEBUG] upsertUserInputPrompt called for connName:", connName);
             } else {
                 modalsModel.pushModal("UserInputPrompt", { ...event.data });
-                console.log("[DEBUG] pushModal called (no connName)");
             }
         },
         scope: initOpts.windowId,
