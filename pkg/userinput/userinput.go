@@ -107,6 +107,38 @@ func determineScopes(ctx context.Context) ([]string, error) {
 	return []string{windowId}, nil
 }
 
+// findWindowsForConnection finds all windows that contain blocks using the given connection.
+// Used as a fallback when determineScopes fails (e.g., during reconnect without BlockId in context).
+func findWindowsForConnection(ctx context.Context, connName string) []string {
+	blockIds, err := wstore.DBFindBlocksByConnection(ctx, connName)
+	if err != nil || len(blockIds) == 0 {
+		return nil
+	}
+	windowSet := make(map[string]bool)
+	for _, blockId := range blockIds {
+		tabId, err := wstore.DBFindTabForBlockId(ctx, blockId)
+		if err != nil {
+			continue
+		}
+		workspaceId, err := wstore.DBFindWorkspaceForTabId(ctx, tabId)
+		if err != nil {
+			continue
+		}
+		windowId, err := wstore.DBFindWindowForWorkspaceId(ctx, workspaceId)
+		if err != nil {
+			continue
+		}
+		if windowId != "" {
+			windowSet[windowId] = true
+		}
+	}
+	windows := make([]string, 0, len(windowSet))
+	for w := range windowSet {
+		windows = append(windows, w)
+	}
+	return windows
+}
+
 func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputRequest) (*UserInputResponse, error) {
 	id, uiCh := MainUserInputHandler.registerChannel()
 	defer MainUserInputHandler.unregisterChannel(id)
@@ -118,27 +150,41 @@ func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputR
 		request.ConnName = connData.GetConnName()
 	}
 
+	log.Printf("[DEBUG] GetUserInput called: connName=%q promptType=%q requestId=%q", request.ConnName, request.PromptType, request.RequestId)
+
 	scopes, scopesErr := determineScopes(ctx)
 	if scopesErr != nil {
-		log.Printf("user input scopes could not be found: %v", scopesErr)
+		log.Printf("[DEBUG] determineScopes failed: %v", scopesErr)
 		blocklogger.Infof(ctx, "user input scopes could not be found: %v", scopesErr)
-		allWindows, err := wstore.DBGetAllOIDsByType(ctx, "window")
-		if err != nil {
-			blocklogger.Infof(ctx, "unable to find windows for user input: %v", err)
-			return nil, fmt.Errorf("unable to find windows for user input: %v", err)
+		// Try to find windows by connection name (used during reconnect)
+		if request.ConnName != "" {
+			scopes = findWindowsForConnection(ctx, request.ConnName)
+			log.Printf("[DEBUG] findWindowsForConnection returned %d scopes for %q", len(scopes), request.ConnName)
 		}
-		scopes = allWindows
+		if len(scopes) == 0 {
+			allWindows, err := wstore.DBGetAllOIDsByType(ctx, "window")
+			if err != nil {
+				blocklogger.Infof(ctx, "unable to find windows for user input: %v", err)
+				return nil, fmt.Errorf("unable to find windows for user input: %v", err)
+			}
+			log.Printf("[DEBUG] falling back to all %d windows", len(allWindows))
+			scopes = allWindows
+		}
+	} else {
+		log.Printf("[DEBUG] determineScopes returned %d scopes: %v", len(scopes), scopes)
 	}
 
+	log.Printf("[DEBUG] sending userinput event to scopes: %v", scopes)
 	MainUserInputHandler.sendRequestToFrontend(request, scopes)
 
 	var response *UserInputResponse
 	var err error
 	select {
 	case resp := <-uiCh:
-		log.Printf("checking received: %v", resp.RequestId)
+		log.Printf("[DEBUG] received response for requestId=%q", resp.RequestId)
 		response = resp
 	case <-ctx.Done():
+		log.Printf("[DEBUG] GetUserInput timed out for requestId=%q connName=%q", request.RequestId, request.ConnName)
 		return nil, fmt.Errorf("timed out waiting for user input")
 	}
 

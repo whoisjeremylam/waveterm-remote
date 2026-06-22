@@ -406,6 +406,7 @@ type ConnStatus struct {
 	HasConnected                  bool     `json:"hasconnected"` // true if it has *ever* connected successfully
 	ActiveConnNum                 int      `json:"activeconnnum"`
 	Error                         string   `json:"error,omitempty"`
+	ErrorCode                     string   `json:"errorcode,omitempty"`
 	WshError                      string   `json:"wsherror,omitempty"`
 	NoWshReason                   string   `json:"nowshreason,omitempty"`
 	WshVersion                    string   `json:"wshversion,omitempty"`

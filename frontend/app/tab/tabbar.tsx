@@ -671,6 +671,7 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
                 </button>
                 {showConnectionDropdown && (
                     <ConnectionDropdown
+                        anchorRef={addBtnRef}
                         onSelect={handleSelectConnection}
                         onClose={() => setShowConnectionDropdown(false)}
                     />

@@ -178,6 +178,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
     const scrollSpeedRef = useRef<number>(0);
     const pendingConnectionRef = useRef<string | null>(null);
     const prevTabIdsRef = useRef<string[]>(tabIds);
+    const newTabBtnRef = useRef<HTMLButtonElement>(null);
 
     useEffect(() => {
         setOrderedTabIds(tabIds);
@@ -421,6 +422,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
             </div>
             <div className="relative">
                 <button
+                    ref={newTabBtnRef}
                     type="button"
                     className="group relative flex h-9 w-full shrink-0 cursor-pointer items-center gap-1.5 pl-3 pr-3 text-xs text-secondary/60 transition-colors hover:text-primary select-none whitespace-nowrap"
                     onMouseDown={(e) => e.stopPropagation()}
@@ -441,6 +443,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                 </button>
                 {showConnectionDropdown && (
                     <ConnectionDropdown
+                        anchorRef={newTabBtnRef}
                         onSelect={(connName) => {
                             setShowConnectionDropdown(false);
                             if (connName) {

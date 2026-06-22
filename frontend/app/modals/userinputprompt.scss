@@ -2,11 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 .userinput-prompt-wrapper {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: var(--zindex-modal-wrapper);
     pointer-events: none;
 }
 
@@ -20,7 +15,8 @@
     box-shadow: 0px 8px 32px 0px rgba(0, 0, 0, 0.25);
     min-width: 360px;
     max-width: 480px;
-    overflow: hidden;
+    max-height: 80%;
+    overflow: auto;
 }
 
 .userinput-prompt-header {

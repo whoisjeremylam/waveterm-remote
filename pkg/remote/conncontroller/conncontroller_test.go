@@ -1439,6 +1439,26 @@ func TestCanAutoReconnect_PasswordAuthEnabled_Default(t *testing.T) {
 	}
 }
 
+func TestCanAutoReconnect_NilAuthSettings_InteractiveNeeded(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	// Connection is known but auth settings are nil (not explicitly set).
+	// SSH defaults: PasswordAuthentication=yes, KbdInteractiveAuthentication=yes.
+	// So interactive auth is needed → canAutoReconnect=false.
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		// Return empty config — both SshPasswordAuthentication and SshKbdInteractiveAuthentication are nil
+		return wconfig.ConnKeywords{}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+
+	status := conn.DeriveConnStatus()
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false when auth settings are nil (SSH defaults to enabled)")
+	}
+}
+
 func TestDeriveConnStatus_IncludesCanAutoReconnect(t *testing.T) {
 	t.Parallel()
 	conn := makeTestConn(Status_Connected)

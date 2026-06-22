@@ -418,9 +418,11 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 				outErr = panicErr
 			}
 		}()
+		log.Printf("[DEBUG] password-callback fired for %s", remoteDisplayName)
 		blocklogger.Infof(connCtx, "[conndebug] Password Authentication requested from connection %s...\n", remoteDisplayName)
 
 		if password != nil {
+			log.Printf("[DEBUG] password-callback: using password from secret store")
 			blocklogger.Infof(connCtx, "[conndebug] using password from secret store, sending to ssh\n")
 			if pwTracker != nil {
 				pwTracker.Password = *password
@@ -431,6 +433,7 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 
 		// Check for cached password from reconnect
 		if cachedPw := GetCachedPassword(connCtx); cachedPw != nil {
+			log.Printf("[DEBUG] password-callback: using cached password from reconnect")
 			blocklogger.Infof(connCtx, "[conndebug] using cached password from reconnect, sending to ssh\n")
 			if pwTracker != nil {
 				pwTracker.Password = *cachedPw
@@ -439,6 +442,7 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 			return *cachedPw, nil
 		}
 
+		log.Printf("[DEBUG] password-callback: no cached password, will prompt user")
 		ctx, cancelFn := context.WithTimeout(connCtx, 60*time.Second)
 		defer cancelFn()
 		queryText := fmt.Sprintf(
@@ -853,10 +857,12 @@ func createClientConfig(connCtx context.Context, sshKeywords *wconfig.ConnKeywor
 	}
 
 	// note: batch mode turns off interactive input
+	// When nil (not explicitly set), treat as enabled per SSH defaults
+	// (PasswordAuthentication=yes, KbdInteractiveAuthentication=yes)
 	authMethodActiveMap := map[string]bool{
 		"publickey":            utilfn.SafeDeref(sshKeywords.SshPubkeyAuthentication),
-		"keyboard-interactive": utilfn.SafeDeref(sshKeywords.SshKbdInteractiveAuthentication) && !utilfn.SafeDeref(sshKeywords.SshBatchMode),
-		"password":             utilfn.SafeDeref(sshKeywords.SshPasswordAuthentication) && !utilfn.SafeDeref(sshKeywords.SshBatchMode),
+		"keyboard-interactive": (sshKeywords.SshKbdInteractiveAuthentication == nil || utilfn.SafeDeref(sshKeywords.SshKbdInteractiveAuthentication)) && !utilfn.SafeDeref(sshKeywords.SshBatchMode),
+		"password":             (sshKeywords.SshPasswordAuthentication == nil || utilfn.SafeDeref(sshKeywords.SshPasswordAuthentication)) && !utilfn.SafeDeref(sshKeywords.SshBatchMode),
 	}
 
 	var authMethods []ssh.AuthMethod

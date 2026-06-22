@@ -71,10 +71,13 @@ function initGlobalWaveEventSubs(initOpts: WaveInitOpts) {
         eventType: "userinput",
         handler: (event) => {
             const connName = event.data?.connname;
+            console.log("[DEBUG] userinput event received:", { connName, promptType: event.data?.prompttype, requestId: event.data?.requestid });
             if (connName) {
                 modalsModel.upsertUserInputPrompt(connName, "UserInputPrompt", { ...event.data });
+                console.log("[DEBUG] upsertUserInputPrompt called for connName:", connName);
             } else {
                 modalsModel.pushModal("UserInputPrompt", { ...event.data });
+                console.log("[DEBUG] pushModal called (no connName)");
             }
         },
         scope: initOpts.windowId,
@@ -643,10 +646,14 @@ function subscribeToConnEvents() {
                         modalsModel.dismissUserInputPrompt(connStatus.connection);
                     }
                 } else if (connStatus.status === "error") {
-                    // Dismiss stale prompts when connection fails or times out.
-                    // The backend has already given up on the handshake, so the prompt
-                    // would be a zombie — responses go to an unregistered channel.
-                    modalsModel.dismissUserInputPrompt(connStatus.connection);
+                    // On auth failure, DON'T dismiss the prompt — keep it visible for retry.
+                    // Clear per-tab dismissed state so all tabs re-show the prompt.
+                    if (connStatus.errorcode === "auth-failed") {
+                        modalsModel.resetDismissedUserInputPrompts(connStatus.connection);
+                    } else {
+                        // Non-auth errors: dismiss stale prompts (backend gave up)
+                        modalsModel.dismissUserInputPrompt(connStatus.connection);
+                    }
                 }
                 console.log("connstatus update", connStatus);
                 const curAtom = getConnStatusAtom(connStatus.connection);
@@ -668,6 +675,7 @@ function makeDefaultConnStatus(conn: string): ConnStatus {
             hasconnected: true,
             activeconnnum: 0,
             wshenabled: false,
+            canautoreconnect: false,
         };
     }
     return {
@@ -678,6 +686,7 @@ function makeDefaultConnStatus(conn: string): ConnStatus {
         hasconnected: false,
         activeconnnum: 0,
         wshenabled: false,
+        canautoreconnect: false,
     };
 }
 

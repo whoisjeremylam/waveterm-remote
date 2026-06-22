@@ -4,6 +4,7 @@
 import { Button } from "@/app/element/button";
 import { CopyButton } from "@/app/element/copybutton";
 import { useDimensionsWithCallbackRef } from "@/app/hook/useDimensions";
+import { modalsModel } from "@/app/store/modalmodel";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { NodeModel } from "@/layout/index";
@@ -379,6 +380,18 @@ export const ConnStatusOverlay = React.memo(
         const showRetrying = canAutoReconnect && connStatus.status == "connecting" && (connStatus.reconnectattempt ?? 0) > 0;
         const showCountdown = canAutoReconnect && connStatus.status == "disconnected" && (connStatus.reconnectnextattempt ?? 0) > 0;
         const showDisconnected = connStatus.status == "disconnected" && !connStatus.connected;
+
+        // Hide status overlay when a password prompt is active for this connection
+        // and not dismissed on this tab
+        const activeUserInputPrompts = jotai.useAtomValue(modalsModel.activeUserInputPromptsAtom);
+        const hasPasswordPrompt =
+            connName &&
+            connName in activeUserInputPrompts &&
+            !modalsModel.isUserInputPromptDismissedForTab(connName, nodeModel.blockId);
+
+        if (hasPasswordPrompt) {
+            return null;
+        }
 
         if (!showWshError && !showStalled && !showRetrying && !showCountdown && (isLayoutMode || connStatus.status == "connected" || connModalOpen)) {
             return null;

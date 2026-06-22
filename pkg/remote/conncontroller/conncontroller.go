@@ -105,6 +105,7 @@ type SSHConn struct {
 	pendingAuthDone  chan struct{} // closed when PendingAuth transitions to false
 	CachedPassword   *string     // cached password for reconnect (in-memory only)
 	LastConnectTryAt int64       // UnixMilli of last Connect() attempt (cooldown guard)
+	LastErrorCode    string      // error code from last failed Connect() (e.g., "auth-failed")
 }
 
 type ForwardingRule struct {
@@ -194,6 +195,7 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 		HasConnected:                  (conn.LastConnectTime > 0),
 		ActiveConnNum:                 conn.ActiveConnNum,
 		Error:                         conn.Error,
+		ErrorCode:                     conn.LastErrorCode,
 		WshEnabled:                    conn.WshEnabled.Load(),
 		WshError:                      conn.WshError,
 		NoWshReason:                   conn.NoWshReason,
@@ -345,6 +347,12 @@ func (conn *SSHConn) GetStatus() string {
 func (conn *SSHConn) GetName() string {
 	// no lock required because opts is immutable
 	return conn.Opts.String()
+}
+
+func (conn *SSHConn) GetLastErrorCode() string {
+	conn.lock.Lock()
+	defer conn.lock.Unlock()
+	return conn.LastErrorCode
 }
 
 func (conn *SSHConn) OpenDomainSocketListener(ctx context.Context) error {
@@ -880,10 +888,10 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 		conn.WithLock(func() {
 			conn.Status = Status_Error
 			conn.Error = err.Error()
+			conn.LastErrorCode = errorCode
 		})
 		// Clear cached password on auth failure so user is re-prompted
-		errorCode2, _ := remote.ClassifyConnError(err)
-		if errorCode2 == "auth-failed" {
+		if errorCode == "auth-failed" {
 			conn.clearCachedPassword()
 		}
 		conn.closeInternal_withlifecyclelock(nil)
@@ -892,6 +900,7 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 		conn.WithLock(func() {
 			conn.Status = Status_Connected
 			conn.LastConnectTime = time.Now().UnixMilli()
+			conn.LastErrorCode = "" // clear error code on success
 			if conn.ActiveConnNum == 0 {
 				conn.ActiveConnNum = int(activeConnCounter.Add(1))
 			}
@@ -1039,9 +1048,10 @@ func (conn *SSHConn) canAutoReconnectLocked() bool {
 			return true // only key-based auth configured
 		}
 	}
-	// Check if password or keyboard-interactive auth is enabled (both default true)
-	passwordAuth := utilfn.SafeDeref(connConfig.SshPasswordAuthentication)
-	kbdAuth := utilfn.SafeDeref(connConfig.SshKbdInteractiveAuthentication)
+	// Check if password or keyboard-interactive auth is enabled (both default true).
+	// When nil (not explicitly set in config), treat as enabled per SSH defaults.
+	passwordAuth := connConfig.SshPasswordAuthentication == nil || utilfn.SafeDeref(connConfig.SshPasswordAuthentication)
+	kbdAuth := connConfig.SshKbdInteractiveAuthentication == nil || utilfn.SafeDeref(connConfig.SshKbdInteractiveAuthentication)
 	return !(passwordAuth || kbdAuth)
 }
 
@@ -1494,17 +1504,31 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 		return connectInternalTestHook(conn, ctx, connFlags)
 	}
 	conn.Infof(ctx, "connectInternal %s\n", conn.GetName())
+	// Inject connection name into context so GetUserInput can set request.ConnName
+	// for proper scoping of password prompts to the right tabs.
+	ctx = genconn.ContextWithConnDataAndName(ctx, "", conn.GetName())
 	// Inject cached password into context so the password callback uses it
 	cachedPw := conn.getCachedPassword()
 	if cachedPw != nil {
 		ctx = remote.ContextWithCachedPassword(ctx, cachedPw)
+		log.Printf("[DEBUG] connectInternal %s: injecting cached password into context", conn.GetName())
+	} else {
+		log.Printf("[DEBUG] connectInternal %s: no cached password", conn.GetName())
 	}
 	client, _, sshKeywords, pwTracker, err := remote.ConnectToClient(ctx, conn.Opts, nil, 0, connFlags)
 	if err != nil {
-		conn.Infof(ctx, "ERROR ConnectToClient: %s\n", remote.SimpleMessageFromPossibleConnectionError(err))
-		log.Printf("error: failed to connect to client %s: %s\n", conn.GetName(), err)
+		errorCode, _ := remote.ClassifyConnError(err)
+		conn.Infof(ctx, "ERROR ConnectToClient [%s]: %s\n", errorCode, remote.SimpleMessageFromPossibleConnectionError(err))
+		log.Printf("[DEBUG] connectInternal %s: ConnectToClient failed [%s]: %v", conn.GetName(), errorCode, err)
+		// Cache password even on non-auth failure (timeout, network error)
+		// so retry works without re-prompting. Only skip on auth-failed (wrong password).
+		if errorCode != "auth-failed" && pwTracker != nil && pwTracker.Used && pwTracker.Password != "" {
+			conn.cachePassword(pwTracker.Password)
+			conn.Infof(ctx, "cached password despite connection failure (will be reused on retry)\n")
+		}
 		return err
 	}
+	log.Printf("[DEBUG] connectInternal %s: ConnectToClient succeeded, pwTracker.Used=%v", conn.GetName(), pwTracker != nil && pwTracker.Used)
 	// Cache the password that was used during the handshake (if user entered one)
 	if pwTracker != nil && pwTracker.Used && pwTracker.Password != "" {
 		conn.cachePassword(pwTracker.Password)
@@ -1707,6 +1731,45 @@ func HasCachedPassword(connName string) bool {
 		return false
 	}
 	return conn.getCachedPassword() != nil
+}
+
+// NeedsInteractiveAuth checks if a connection might require password or
+// keyboard-interactive authentication. Used by startup reconnect to decide
+// whether to use a timeout context (password prompts need no timeout).
+func NeedsInteractiveAuth(connName string) bool {
+	if IsLocalConnName(connName) {
+		return false
+	}
+	if HasCachedPassword(connName) {
+		return false
+	}
+	config := wconfig.GetWatcher().GetFullConfig()
+	connConfig, ok := config.Connections[connName]
+	if !ok {
+		return true
+	}
+	if utilfn.SafeDeref(connConfig.SshBatchMode) {
+		return false
+	}
+	if connConfig.SshPasswordSecretName != nil && *connConfig.SshPasswordSecretName != "" {
+		return false
+	}
+	if connConfig.SshPreferredAuthentications != nil {
+		hasInteractive := false
+		for _, method := range connConfig.SshPreferredAuthentications {
+			if method == "password" || method == "keyboard-interactive" {
+				hasInteractive = true
+				break
+			}
+		}
+		if !hasInteractive {
+			return false
+		}
+	}
+	// When nil (not explicitly set), treat as enabled per SSH defaults.
+	passwordAuth := connConfig.SshPasswordAuthentication == nil || utilfn.SafeDeref(connConfig.SshPasswordAuthentication)
+	kbdAuth := connConfig.SshKbdInteractiveAuthentication == nil || utilfn.SafeDeref(connConfig.SshKbdInteractiveAuthentication)
+	return passwordAuth || kbdAuth
 }
 
 func EnsureConnection(ctx context.Context, connName string) error {

@@ -9,12 +9,14 @@ class ModalsModel {
     newInstallOnboardingOpen: jotai.PrimitiveAtom<boolean>;
     upgradeOnboardingOpen: jotai.PrimitiveAtom<boolean>;
     activeUserInputPromptsAtom: jotai.PrimitiveAtom<Record<string, { displayName: string; props: any }>>;
+    dismissedUserInputPromptsAtom: jotai.PrimitiveAtom<Record<string, string[]>>;
 
     constructor() {
         this.newInstallOnboardingOpen = jotai.atom(false);
         this.upgradeOnboardingOpen = jotai.atom(false);
         this.modalsAtom = jotai.atom([]);
         this.activeUserInputPromptsAtom = jotai.atom({});
+        this.dismissedUserInputPromptsAtom = jotai.atom({});
     }
 
     pushModal = (displayName: string, props?: any) => {
@@ -47,6 +49,15 @@ class ModalsModel {
             ...prev,
             [connName]: { displayName, props },
         }));
+        // Clear per-tab dismissals — new prompt attempt means all tabs should re-show
+        globalStore.set(this.dismissedUserInputPromptsAtom, (prev) => {
+            if (!(connName in prev)) {
+                return prev;
+            }
+            const next = { ...prev };
+            delete next[connName];
+            return next;
+        });
     }
 
     dismissUserInputPrompt(connName: string) {
@@ -55,10 +66,49 @@ class ModalsModel {
             delete next[connName];
             return next;
         });
+        // Also clear per-tab dismissals for this connection
+        globalStore.set(this.dismissedUserInputPromptsAtom, (prev) => {
+            if (!(connName in prev)) {
+                return prev;
+            }
+            const next = { ...prev };
+            delete next[connName];
+            return next;
+        });
     }
 
     dismissAllUserInputPrompts() {
         globalStore.set(this.activeUserInputPromptsAtom, {});
+        globalStore.set(this.dismissedUserInputPromptsAtom, {});
+    }
+
+    dismissUserInputPromptForTab(connName: string, blockId: string) {
+        globalStore.set(this.dismissedUserInputPromptsAtom, (prev) => {
+            const dismissed = prev[connName] || [];
+            if (dismissed.includes(blockId)) {
+                return prev;
+            }
+            return {
+                ...prev,
+                [connName]: [...dismissed, blockId],
+            };
+        });
+    }
+
+    isUserInputPromptDismissedForTab(connName: string, blockId: string): boolean {
+        const dismissed = globalStore.get(this.dismissedUserInputPromptsAtom);
+        return dismissed[connName]?.includes(blockId) ?? false;
+    }
+
+    resetDismissedUserInputPrompts(connName: string) {
+        globalStore.set(this.dismissedUserInputPromptsAtom, (prev) => {
+            if (!(connName in prev)) {
+                return prev;
+            }
+            const next = { ...prev };
+            delete next[connName];
+            return next;
+        });
     }
 }
 

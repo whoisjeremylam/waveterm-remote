@@ -214,6 +214,7 @@ declare global {
         forcerestart?: boolean;
         tabid: string;
         blockid: string;
+        connname?: string;
         rtopts?: RuntimeOpts;
     };
 
@@ -766,6 +767,7 @@ declare global {
         hasconnected: boolean;
         activeconnnum: number;
         error?: string;
+        errorcode?: string;
         wsherror?: string;
         nowshreason?: string;
         wshversion?: string;
@@ -776,7 +778,6 @@ declare global {
         reconnecterror?: string;
         forwardingrules?: string[];
         canautoreconnect: boolean;
-        forwardingrules?: string[];
     };
 
     // wshrpc.CpuDataRequest

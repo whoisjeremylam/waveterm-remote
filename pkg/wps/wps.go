@@ -5,6 +5,7 @@
 package wps
 
 import (
+	"log"
 	"strings"
 	"sync"
 
@@ -37,16 +38,18 @@ type persistEventWrap struct {
 }
 
 type BrokerType struct {
-	Lock       *sync.Mutex
-	Client     Client
-	SubMap     map[string]*BrokerSubscription
-	PersistMap map[persistKey]*persistEventWrap
+	Lock          *sync.Mutex
+	Client        Client
+	SubMap        map[string]*BrokerSubscription
+	PersistMap    map[persistKey]*persistEventWrap
+	PendingEvents map[string]*WaveEvent // events published before any subscriber registered
 }
 
 var Broker = &BrokerType{
-	Lock:       &sync.Mutex{},
-	SubMap:     make(map[string]*BrokerSubscription),
-	PersistMap: make(map[persistKey]*persistEventWrap),
+	Lock:          &sync.Mutex{},
+	SubMap:        make(map[string]*BrokerSubscription),
+	PersistMap:    make(map[persistKey]*persistEventWrap),
+	PendingEvents: make(map[string]*WaveEvent),
 }
 
 func scopeHasStarMatch(scope string) bool {
@@ -73,12 +76,11 @@ func (b *BrokerType) GetClient() Client {
 
 // if already subscribed, this will *resubscribe* with the new subscription (remove the old one, and replace with this one)
 func (b *BrokerType) Subscribe(subRouteId string, sub SubscriptionRequest) {
-	// log.Printf("[wps] sub %s %s\n", subRouteId, sub.Event)
+	log.Printf("[DEBUG] wps.Subscribe: routeId=%s event=%s scopes=%v allscopes=%v", subRouteId, sub.Event, sub.Scopes, sub.AllScopes)
 	if sub.Event == "" {
 		return
 	}
 	b.Lock.Lock()
-	defer b.Lock.Unlock()
 	b.unsubscribe_nolock(subRouteId, sub.Event)
 	bs := b.SubMap[sub.Event]
 	if bs == nil {
@@ -91,6 +93,8 @@ func (b *BrokerType) Subscribe(subRouteId string, sub SubscriptionRequest) {
 	}
 	if sub.AllScopes {
 		bs.AllSubs = utilfn.AddElemToSliceUniq(bs.AllSubs, subRouteId)
+		b.Lock.Unlock()
+		b.deliverPendingEvent(sub.Event, subRouteId, nil) // nil scopes = allscopes subscriber
 		return
 	}
 	for _, scope := range sub.Scopes {
@@ -101,6 +105,47 @@ func (b *BrokerType) Subscribe(subRouteId string, sub SubscriptionRequest) {
 			addStrToScopeMap(bs.ScopeSubs, scope, subRouteId)
 		}
 	}
+	b.Lock.Unlock()
+	b.deliverPendingEvent(sub.Event, subRouteId, sub.Scopes)
+}
+
+// deliverPendingEvent checks if there's a pending event for the given event type
+// and delivers it to the newly registered subscriber, if scopes match.
+func (b *BrokerType) deliverPendingEvent(eventType string, routeId string, scopes []string) {
+	b.Lock.Lock()
+	pending := b.PendingEvents[eventType]
+	if pending != nil {
+		// Only deliver if scopes match (or subscriber uses allscopes, or pending has no scopes)
+		if len(pending.Scopes) == 0 || len(scopes) == 0 {
+			// No scope filtering needed
+		} else {
+			matched := false
+			for _, pendingScope := range pending.Scopes {
+				for _, subScope := range scopes {
+					if pendingScope == subScope {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					break
+				}
+			}
+			if !matched {
+				b.Lock.Unlock()
+				return
+			}
+		}
+		delete(b.PendingEvents, eventType)
+		b.Lock.Unlock()
+		client := b.GetClient()
+		if client != nil {
+			log.Printf("[DEBUG] wps.deliverPendingEvent: delivering buffered %s to %s", eventType, routeId)
+			client.SendEvent(routeId, *pending)
+		}
+		return
+	}
+	b.Lock.Unlock()
 }
 
 func (bs *BrokerSubscription) IsEmpty() bool {
@@ -224,15 +269,27 @@ func (b *BrokerType) persistEvent(event WaveEvent) {
 }
 
 func (b *BrokerType) Publish(event WaveEvent) {
-	// log.Printf("BrokerType.Publish: %v\n", event)
+	log.Printf("[DEBUG] wps.Publish: event=%s scopes=%v", event.Event, event.Scopes)
 	if event.Persist > 0 {
 		b.persistEvent(event)
 	}
 	client := b.GetClient()
 	if client == nil {
+		log.Printf("[DEBUG] wps.Publish: no client, dropping event")
 		return
 	}
-	routeIds := b.getMatchingRouteIds(event)
+	// Hold lock across check+buffer to prevent TOCTOU race where a subscriber
+	// registers between getMatchingRouteIds and the buffer write.
+	b.Lock.Lock()
+	routeIds := b.getMatchingRouteIds_nolock(event)
+	if len(routeIds) == 0 {
+		b.PendingEvents[event.Event] = &event
+		b.Lock.Unlock()
+		log.Printf("[DEBUG] wps.Publish: matched 0 routeIds: [], buffered %s", event.Event)
+		return
+	}
+	b.Lock.Unlock()
+	log.Printf("[DEBUG] wps.Publish: matched %d routeIds: %v", len(routeIds), routeIds)
 	for _, routeId := range routeIds {
 		client.SendEvent(routeId, event)
 	}
@@ -249,6 +306,13 @@ func (b *BrokerType) SendUpdateEvents(updates waveobj.UpdatesRtnType) {
 }
 
 func (b *BrokerType) getMatchingRouteIds(event WaveEvent) []string {
+	b.Lock.Lock()
+	defer b.Lock.Unlock()
+	return b.getMatchingRouteIds_nolock(event)
+}
+
+// getMatchingRouteIds_nolock must be called with b.Lock held.
+func (b *BrokerType) getMatchingRouteIds_nolock(event WaveEvent) []string {
 	b.Lock.Lock()
 	defer b.Lock.Unlock()
 	bs := b.SubMap[event.Event]

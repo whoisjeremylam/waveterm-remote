@@ -7,23 +7,29 @@ import { modalsModel } from "@/store/modalmodel";
 import * as keyutil from "@/util/keyutil";
 import { fireAndForget } from "@/util/util";
 import { useCallback, useMemo, useRef, useState } from "react";
-import ReactDOM from "react-dom";
 import { UserInputService } from "../store/services";
 import "./userinputprompt.scss";
 
-const UserInputPrompt = (userInputRequest: UserInputRequest) => {
+interface UserInputPromptProps extends UserInputRequest {
+    blockId?: string;
+}
+
+const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
     const [responseText, setResponseText] = useState("");
     const checkboxRef = useRef<HTMLInputElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
     const connName = userInputRequest.connname;
+    const blockId = userInputRequest.blockId;
 
     const handleDismiss = useCallback(() => {
-        if (connName) {
+        if (blockId && connName) {
+            modalsModel.dismissUserInputPromptForTab(connName, blockId);
+        } else if (connName) {
             modalsModel.dismissUserInputPrompt(connName);
         } else {
             modalsModel.popModal();
         }
-    }, [connName]);
+    }, [connName, blockId]);
 
     const handleSendErrResponse = useCallback(() => {
         fireAndForget(() =>
@@ -166,7 +172,7 @@ const UserInputPrompt = (userInputRequest: UserInputRequest) => {
         </div>
     );
 
-    return ReactDOM.createPortal(renderPrompt(), document.getElementById("main"));
+    return renderPrompt();
 };
 
 UserInputPrompt.displayName = "UserInputPrompt";
