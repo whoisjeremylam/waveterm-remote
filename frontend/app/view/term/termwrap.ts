@@ -1187,7 +1187,9 @@ export class TermWrap {
                     } else {
                         tempPath = await createTempFileFromBlob(data.image);
                     }
-                    this.terminal.paste(tempPath + " ");
+                    if (tempPath) {
+                        this.terminal.paste(tempPath + " ");
+                    }
                     firstImage = false;
                 }
                 if (data.text) {

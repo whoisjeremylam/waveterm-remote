@@ -188,6 +188,7 @@ const BlockFrame_Default_Component = (props: BlockFrameProps) => {
             inert={preview || undefined}
         >
             <BlockMask nodeModel={nodeModel} />
+            {preview ? null : <UploadOverlay nodeModel={nodeModel} />}
             {preview || viewModel == null || !manageConnection ? null : (
                 <ConnStatusOverlay
                     nodeModel={nodeModel}
@@ -195,7 +196,6 @@ const BlockFrame_Default_Component = (props: BlockFrameProps) => {
                     changeConnModalAtom={changeConnModalAtom}
                 />
             )}
-            {preview ? null : <UploadOverlay nodeModel={nodeModel} />}
             {preview ? null : <UserInputPromptOverlay nodeModel={nodeModel} />}
             <div className="block-frame-default-inner" style={innerStyle}>
                 {noHeader || <ErrorBoundary fallback={headerElemNoView}>{headerElem}</ErrorBoundary>}
