@@ -5,6 +5,8 @@ import { BlockModel } from "@/app/block/block-model";
 import { BlockFrame_Header } from "@/app/block/blockframe-header";
 import { blockViewToIcon, getViewIconElem, useTabBackground } from "@/app/block/blockutil";
 import { ConnStatusOverlay } from "@/app/block/connstatusoverlay";
+import { UploadOverlay } from "@/app/block/uploadoverlay";
+import { UserInputPromptOverlay } from "@/app/block/userinputpromptoverlay";
 import { ChangeConnectionBlockModal } from "@/app/modals/conntypeahead";
 import { getBlockComponentModel, globalStore, useBlockAtom } from "@/app/store/global";
 import { useTabModel } from "@/app/store/tab-model";
@@ -141,7 +143,6 @@ const BlockFrame_Default_Component = (props: BlockFrameProps) => {
             return;
         }
         if (!util.isLocalConnName(connName)) {
-            console.log("ensure conn", nodeModel.blockId, connName);
             waveEnv.rpc
                 .ConnEnsureCommand(
                     TabRpcClient,
@@ -187,6 +188,7 @@ const BlockFrame_Default_Component = (props: BlockFrameProps) => {
             inert={preview || undefined}
         >
             <BlockMask nodeModel={nodeModel} />
+            {preview ? null : <UploadOverlay nodeModel={nodeModel} />}
             {preview || viewModel == null || !manageConnection ? null : (
                 <ConnStatusOverlay
                     nodeModel={nodeModel}
@@ -194,6 +196,7 @@ const BlockFrame_Default_Component = (props: BlockFrameProps) => {
                     changeConnModalAtom={changeConnModalAtom}
                 />
             )}
+            {preview ? null : <UserInputPromptOverlay nodeModel={nodeModel} />}
             <div className="block-frame-default-inner" style={innerStyle}>
                 {noHeader || <ErrorBoundary fallback={headerElemNoView}>{headerElem}</ErrorBoundary>}
                 {preview ? previewElem : children}

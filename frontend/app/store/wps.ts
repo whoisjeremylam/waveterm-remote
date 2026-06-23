@@ -65,7 +65,6 @@ function updateWaveEventSub(eventType: string) {
 }
 
 function waveEventSubscribeSingle<T extends WaveEventName>(subscription: WaveEventSubscription<T>): () => void {
-    // console.log("waveEventSubscribeSingle", subscription);
     if (subscription.handler == null) {
         return () => {};
     }
@@ -128,7 +127,6 @@ function getFileSubject(zoneId: string, fileName: string): SubjectWithRef<WSFile
 }
 
 function handleWaveEvent(event: WaveEvent) {
-    // console.log("handleWaveEvent", event);
     const subjects = waveEventSubjects.get(event.event);
     if (subjects == null) {
         return;

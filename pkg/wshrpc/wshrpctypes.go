@@ -285,6 +285,7 @@ type CommandControllerResyncData struct {
 	ForceRestart bool                 `json:"forcerestart,omitempty"`
 	TabId        string               `json:"tabid"`
 	BlockId      string               `json:"blockid"`
+	ConnName     string               `json:"connname,omitempty"`
 	RtOpts       *waveobj.RuntimeOpts `json:"rtopts,omitempty"`
 }
 
@@ -349,6 +350,11 @@ type CommandWriteTempFileData struct {
 	Data64   string `json:"data64"`
 }
 
+type CommandRemoteWriteTempFileData struct {
+	FileName string `json:"filename"`
+	Data64   string `json:"data64"`
+}
+
 type ConnRequest struct {
 	Host       string               `json:"host"`
 	Keywords   wconfig.ConnKeywords `json:"keywords,omitempty"`
@@ -405,6 +411,7 @@ type ConnStatus struct {
 	HasConnected                  bool     `json:"hasconnected"` // true if it has *ever* connected successfully
 	ActiveConnNum                 int      `json:"activeconnnum"`
 	Error                         string   `json:"error,omitempty"`
+	ErrorCode                     string   `json:"errorcode,omitempty"`
 	WshError                      string   `json:"wsherror,omitempty"`
 	NoWshReason                   string   `json:"nowshreason,omitempty"`
 	WshVersion                    string   `json:"wshversion,omitempty"`
@@ -414,6 +421,7 @@ type ConnStatus struct {
 	ReconnectNextAttempt          int64    `json:"reconnectnextattempt,omitempty"`
 	ReconnectError                string   `json:"reconnecterror,omitempty"`
 	ForwardingRules               []string `json:"forwardingrules,omitempty"`
+	CanAutoReconnect              bool     `json:"canautoreconnect"` // true if scheduler can auto-reconnect without user input
 }
 
 type WebSelectorOpts struct {

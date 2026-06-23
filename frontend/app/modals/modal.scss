@@ -23,6 +23,12 @@
     }
 }
 
+// When left tab bar is active, backdrop starts after the tab bar
+#main.left-tabbar .modal-wrapper .modal-backdrop {
+    left: var(--left-tabbar-width, 48px);
+    top: 0;
+}
+
 .modal {
     position: relative;
     z-index: var(--zindex-modal);

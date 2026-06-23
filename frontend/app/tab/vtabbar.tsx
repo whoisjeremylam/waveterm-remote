@@ -3,8 +3,10 @@
 
 import { Tooltip } from "@/app/element/tooltip";
 import { getTabBadgeAtom } from "@/app/store/badge";
+import { globalStore } from "@/app/store/jotaiStore";
 import { getTabModelByTabId } from "@/app/store/tab-model";
-import { makeORef } from "@/app/store/wos";
+import { RpcApi } from "@/app/store/wshclientapi";
+import * as WOS from "@/app/store/wos";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
@@ -13,6 +15,7 @@ import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { buildTabBarContextMenu, buildTabContextMenu } from "./tabcontextmenu";
+import { ConnectionDropdown } from "./connectiondropdown";
 import { VTab, VTabItem } from "./vtab";
 import { VTabBarEnv } from "./vtabbarenv";
 import { WorkspaceSwitcher } from "./workspaceswitcher";
@@ -87,7 +90,7 @@ function VTabWrapper({
     onHoverChanged,
 }: VTabWrapperProps) {
     const env = useWaveEnv<VTabBarEnv>();
-    const [tabData] = env.wos.useWaveObjectValue<Tab>(makeORef("tab", tabId));
+    const [tabData] = env.wos.useWaveObjectValue<Tab>(WOS.makeORef("tab", tabId));
     const badges = useAtomValue(getTabBadgeAtom(tabId, env));
     const renameRef = useRef<(() => void) | null>(null);
     const tabModel = getTabModelByTabId(tabId, env);
@@ -166,12 +169,16 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
     const [hoverResetVersion, setHoverResetVersion] = useState(0);
     const [hoveredTabId, setHoveredTabId] = useState<string | null>(null);
     const [isNewTabHovered, setIsNewTabHovered] = useState(false);
+    const [showConnectionDropdown, setShowConnectionDropdown] = useState(false);
     const dragSourceRef = useRef<string | null>(null);
     const didResetHoverForDragRef = useRef(false);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const scrollAnimFrameRef = useRef<number | null>(null);
     const scrollDirectionRef = useRef<number>(0);
     const scrollSpeedRef = useRef<number>(0);
+    const pendingConnectionRef = useRef<string | null>(null);
+    const prevTabIdsRef = useRef<string[]>(tabIds);
+    const newTabBtnRef = useRef<HTMLButtonElement>(null);
 
     useEffect(() => {
         setOrderedTabIds(tabIds);
@@ -182,6 +189,32 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
             setOrderedTabIds(workspace?.tabids ?? []);
         }
     }, [reinitVersion]);
+
+    useEffect(() => {
+        const pendingConn = pendingConnectionRef.current;
+        if (!pendingConn || !workspace?.tabids?.length) {
+            prevTabIdsRef.current = tabIds;
+            return;
+        }
+        const prevTabIds = prevTabIdsRef.current;
+        const newTabId = tabIds.find((id) => !prevTabIds.includes(id));
+        prevTabIdsRef.current = tabIds;
+        if (!newTabId) {
+            return;
+        }
+        pendingConnectionRef.current = null;
+        fireAndForget(async () => {
+            const tabOref = WOS.makeORef("tab", newTabId);
+            const tabData = globalStore.get(WOS.getWaveObjectAtom<Tab>(tabOref));
+            const blockId = tabData?.blockids?.[0];
+            if (blockId) {
+                await RpcApi.SetMetaCommand(TabRpcClient, {
+                    oref: WOS.makeORef("block", blockId),
+                    meta: { connection: pendingConn },
+                });
+            }
+        });
+    }, [tabIds, workspace]);
 
     useEffect(() => {
         if (activeTabId == null || scrollContainerRef.current == null) {
@@ -387,18 +420,41 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                     />
                 )}
             </div>
-            <button
-                type="button"
-                className="group relative flex h-9 w-full shrink-0 cursor-pointer items-center gap-1.5 pl-3 pr-3 text-xs text-secondary/60 transition-colors hover:text-primary select-none whitespace-nowrap"
-                onClick={() => env.electron.createTab()}
-                onMouseEnter={() => setIsNewTabHovered(true)}
-                onMouseLeave={() => setIsNewTabHovered(false)}
-                aria-label="New Tab"
-            >
-                <div className="pointer-events-none absolute inset-x-1 inset-y-[4px] rounded-sm bg-transparent transition-colors group-hover:bg-hover" />
-                <i className="fa fa-solid fa-plus" style={{ fontSize: "10px" }} />
-                <span>New Tab</span>
-            </button>
+            <div className="relative">
+                <button
+                    ref={newTabBtnRef}
+                    type="button"
+                    className="group relative flex h-9 w-full shrink-0 cursor-pointer items-center gap-1.5 pl-3 pr-3 text-xs text-secondary/60 transition-colors hover:text-primary select-none whitespace-nowrap"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={() => {
+                        if (showConnectionDropdown) {
+                            setShowConnectionDropdown(false);
+                            return;
+                        }
+                        setShowConnectionDropdown(true);
+                    }}
+                    onMouseEnter={() => setIsNewTabHovered(true)}
+                    onMouseLeave={() => setIsNewTabHovered(false)}
+                    aria-label="New Tab"
+                >
+                    <div className="pointer-events-none absolute inset-x-1 inset-y-[4px] rounded-sm bg-transparent transition-colors group-hover:bg-hover" />
+                    <i className="fa fa-solid fa-plus" style={{ fontSize: "10px" }} />
+                    <span>New Tab</span>
+                </button>
+                {showConnectionDropdown && (
+                    <ConnectionDropdown
+                        anchorRef={newTabBtnRef}
+                        onSelect={(connName) => {
+                            setShowConnectionDropdown(false);
+                            if (connName) {
+                                pendingConnectionRef.current = connName;
+                            }
+                            env.electron.createTab();
+                        }}
+                        onClose={() => setShowConnectionDropdown(false)}
+                    />
+                )}
+            </div>
         </div>
     );
 }

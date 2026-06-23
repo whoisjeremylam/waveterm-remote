@@ -75,6 +75,27 @@ const WorkspaceElem = memo(() => {
         workspaceLayoutModel.setShowLeftTabBar(showLeftTabBar);
     }, [showLeftTabBar]);
 
+    // Set CSS class and variable on #main so modal backdrop can adjust for left tab bar
+    useEffect(() => {
+        const mainEl = document.getElementById("main");
+        if (mainEl) {
+            if (showLeftTabBar) {
+                mainEl.classList.add("left-tabbar");
+                // Read the actual vtab panel width and set it as a CSS variable
+                const vtabWrapper = vtabPanelWrapperRef.current;
+                if (vtabWrapper) {
+                    const width = vtabWrapper.offsetWidth;
+                    if (width > 0) {
+                        mainEl.style.setProperty("--left-tabbar-width", `${width}px`);
+                    }
+                }
+            } else {
+                mainEl.classList.remove("left-tabbar");
+                mainEl.style.removeProperty("--left-tabbar-width");
+            }
+        }
+    }, [showLeftTabBar]);
+
     useEffect(() => {
         const handleFocus = () => workspaceLayoutModel.syncVTabWidthFromMeta();
         window.addEventListener("focus", handleFocus);
@@ -95,7 +116,7 @@ const WorkspaceElem = memo(() => {
                         onLayout={workspaceLayoutModel.handleOuterPanelLayout}
                         ref={outerPanelGroupRef}
                     >
-                        <Panel order={0} defaultSize={leftGroupInitialPct} className="overflow-hidden">
+                        <Panel order={0} defaultSize={leftGroupInitialPct}>
                             <div ref={vtabPanelWrapperRef} className="w-full h-full">
                                 {showLeftTabBar && <VTabBar workspace={ws} />}
                             </div>

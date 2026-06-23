@@ -42,6 +42,31 @@ import (
 
 const SshProxyJumpMaxDepth = 10
 
+type cachedPasswordContextKeyType struct{}
+
+var cachedPasswordContextKey cachedPasswordContextKeyType
+
+// ContextWithCachedPassword adds a cached password to the context.
+// The password callback will use this instead of prompting the user.
+func ContextWithCachedPassword(ctx context.Context, password *string) context.Context {
+	if password == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, cachedPasswordContextKey, password)
+}
+
+// GetCachedPassword retrieves the cached password from the context, if any.
+func GetCachedPassword(ctx context.Context) *string {
+	v, _ := ctx.Value(cachedPasswordContextKey).(*string)
+	return v
+}
+
+// PasswordUsedTracker tracks whether a password was entered during the SSH handshake.
+type PasswordUsedTracker struct {
+	Password string
+	Used     bool
+}
+
 const (
 	ConnErrCode_ConfigParse    = "config-parse"
 	ConnErrCode_ConfigDefault  = "config-default"
@@ -355,6 +380,7 @@ func createPublicKeyCallback(connCtx context.Context, sshKeywords *wconfig.ConnK
 			ResponseType: "text",
 			QueryText:    fmt.Sprintf("Enter passphrase for the SSH key: %s", identityFile),
 			Title:        "Publickey Auth + Passphrase",
+			PromptType:   "passphrase",
 		}
 		ctx, cancelFn := context.WithTimeout(connCtx, 60*time.Second)
 		defer cancelFn()
@@ -384,7 +410,7 @@ func createPublicKeyCallback(connCtx context.Context, sshKeywords *wconfig.ConnK
 	}
 }
 
-func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName string, password *string, debugInfo *ConnectionDebugInfo) func() (secret string, err error) {
+func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName string, password *string, debugInfo *ConnectionDebugInfo, pwTracker *PasswordUsedTracker) func() (secret string, err error) {
 	return func() (secret string, outErr error) {
 		defer func() {
 			panicErr := panichandler.PanicHandler("sshclient:password-callback", recover())
@@ -392,13 +418,27 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 				outErr = panicErr
 			}
 		}()
+		log.Printf("[PW-PROMPT] password-callback: %s (secret=%v cached=%v)", remoteDisplayName, password != nil, GetCachedPassword(connCtx) != nil)
 		blocklogger.Infof(connCtx, "[conndebug] Password Authentication requested from connection %s...\n", remoteDisplayName)
 
 		if password != nil {
 			blocklogger.Infof(connCtx, "[conndebug] using password from secret store, sending to ssh\n")
+			if pwTracker != nil {
+				pwTracker.Password = *password
+				pwTracker.Used = true
+			}
 			return *password, nil
 		}
 
+		// Check for cached password from reconnect
+		if cachedPw := GetCachedPassword(connCtx); cachedPw != nil {
+			blocklogger.Infof(connCtx, "[conndebug] using cached password from reconnect, sending to ssh\n")
+			if pwTracker != nil {
+				pwTracker.Password = *cachedPw
+				pwTracker.Used = true
+			}
+			return *cachedPw, nil
+		}
 		ctx, cancelFn := context.WithTimeout(connCtx, 60*time.Second)
 		defer cancelFn()
 		queryText := fmt.Sprintf(
@@ -410,6 +450,7 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 			QueryText:    queryText,
 			Markdown:     true,
 			Title:        "Password Authentication",
+			PromptType:   "password",
 		}
 		response, err := userinput.GetUserInput(ctx, request)
 		if err != nil {
@@ -417,6 +458,10 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 			return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
 		}
 		blocklogger.Infof(connCtx, "[conndebug] got password from user, sending to ssh\n")
+		if pwTracker != nil {
+			pwTracker.Password = response.Text
+			pwTracker.Used = true
+		}
 		return response.Text, nil
 	}
 }
@@ -459,6 +504,7 @@ func promptChallengeQuestion(connCtx context.Context, question string, echo bool
 		Markdown:     true,
 		Title:        "Keyboard Interactive Authentication",
 		PublicText:   echo,
+		PromptType:   "keyboard-interactive",
 	}
 	response, err := userinput.GetUserInput(ctx, request)
 	if err != nil {
@@ -756,7 +802,7 @@ func createHostKeyCallback(ctx context.Context, sshKeywords *wconfig.ConnKeyword
 	return waveHostKeyCallback, hostKeyAlgorithms, nil
 }
 
-func createClientConfig(connCtx context.Context, sshKeywords *wconfig.ConnKeywords, debugInfo *ConnectionDebugInfo) (*ssh.ClientConfig, error) {
+func createClientConfig(connCtx context.Context, sshKeywords *wconfig.ConnKeywords, debugInfo *ConnectionDebugInfo, pwTracker *PasswordUsedTracker) (*ssh.ClientConfig, error) {
 	chosenUser := utilfn.SafeDeref(sshKeywords.SshUser)
 	chosenHostName := utilfn.SafeDeref(sshKeywords.SshHostName)
 	chosenPort := utilfn.SafeDeref(sshKeywords.SshPort)
@@ -797,7 +843,7 @@ func createClientConfig(connCtx context.Context, sshKeywords *wconfig.ConnKeywor
 
 	publicKeyCallback := ssh.PublicKeysCallback(createPublicKeyCallback(connCtx, sshKeywords, authSockSigners, agentClient, debugInfo))
 	keyboardInteractive := ssh.KeyboardInteractive(createInteractiveKbdInteractiveChallenge(connCtx, remoteName, debugInfo))
-	passwordCallback := ssh.PasswordCallback(createPasswordCallbackPrompt(connCtx, remoteName, sshPassword, debugInfo))
+	passwordCallback := ssh.PasswordCallback(createPasswordCallbackPrompt(connCtx, remoteName, sshPassword, debugInfo, pwTracker))
 
 	// exclude gssapi-with-mic and hostbased until implemented
 	authMethodMap := map[string]ssh.AuthMethod{
@@ -807,10 +853,12 @@ func createClientConfig(connCtx context.Context, sshKeywords *wconfig.ConnKeywor
 	}
 
 	// note: batch mode turns off interactive input
+	// When nil (not explicitly set), treat as enabled per SSH defaults
+	// (PasswordAuthentication=yes, KbdInteractiveAuthentication=yes)
 	authMethodActiveMap := map[string]bool{
 		"publickey":            utilfn.SafeDeref(sshKeywords.SshPubkeyAuthentication),
-		"keyboard-interactive": utilfn.SafeDeref(sshKeywords.SshKbdInteractiveAuthentication) && !utilfn.SafeDeref(sshKeywords.SshBatchMode),
-		"password":             utilfn.SafeDeref(sshKeywords.SshPasswordAuthentication) && !utilfn.SafeDeref(sshKeywords.SshBatchMode),
+		"keyboard-interactive": (sshKeywords.SshKbdInteractiveAuthentication == nil || utilfn.SafeDeref(sshKeywords.SshKbdInteractiveAuthentication)) && !utilfn.SafeDeref(sshKeywords.SshBatchMode),
+		"password":             (sshKeywords.SshPasswordAuthentication == nil || utilfn.SafeDeref(sshKeywords.SshPasswordAuthentication)) && !utilfn.SafeDeref(sshKeywords.SshBatchMode),
 	}
 
 	var authMethods []ssh.AuthMethod
@@ -983,15 +1031,16 @@ func connectInternal(ctx context.Context, networkAddr string, clientConfig *ssh.
 	return sshClient, nil
 }
 
-func ConnectToClient(connCtx context.Context, opts *SSHOpts, currentClient *ssh.Client, jumpNum int32, connFlags *wconfig.ConnKeywords) (*ssh.Client, int32, *wconfig.ConnKeywords, error) {
+func ConnectToClient(connCtx context.Context, opts *SSHOpts, currentClient *ssh.Client, jumpNum int32, connFlags *wconfig.ConnKeywords) (*ssh.Client, int32, *wconfig.ConnKeywords, *PasswordUsedTracker, error) {
 	blocklogger.Infof(connCtx, "[conndebug] ConnectToClient %s (jump:%d)...\n", opts.String(), jumpNum)
 	debugInfo := &ConnectionDebugInfo{
 		CurrentClient: currentClient,
 		NextOpts:      opts,
 		JumpNum:       jumpNum,
 	}
+	pwTracker := &PasswordUsedTracker{}
 	if jumpNum > SshProxyJumpMaxDepth {
-		return nil, jumpNum, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: utilds.Errorf(ConnErrCode_ProxyDepth, "ProxyJump %d exceeds Wave's max depth of %d", jumpNum, SshProxyJumpMaxDepth)}
+		return nil, jumpNum, nil, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: utilds.Errorf(ConnErrCode_ProxyDepth, "ProxyJump %d exceeds Wave's max depth of %d", jumpNum, SshProxyJumpMaxDepth)}
 	}
 
 	rawName := opts.String()
@@ -1007,14 +1056,14 @@ func ConnectToClient(connCtx context.Context, opts *SSHOpts, currentClient *ssh.
 		sshConfigKeywords, err = findSshDefaults(opts.SSHHost)
 		if err != nil {
 			err = utilds.MakeCodedError(ConnErrCode_ConfigDefault, fmt.Errorf("cannot determine default config keywords: %w", err))
-			return nil, debugInfo.JumpNum, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
+			return nil, debugInfo.JumpNum, nil, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
 		}
 	} else {
 		var err error
 		sshConfigKeywords, err = findSshConfigKeywords(opts.SSHHost)
 		if err != nil {
 			err = utilds.MakeCodedError(ConnErrCode_ConfigParse, fmt.Errorf("cannot determine config keywords: %w", err))
-			return nil, debugInfo.JumpNum, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
+			return nil, debugInfo.JumpNum, nil, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
 		}
 	}
 
@@ -1045,7 +1094,7 @@ func ConnectToClient(connCtx context.Context, opts *SSHOpts, currentClient *ssh.
 	for _, proxyName := range sshKeywords.SshProxyJump {
 		proxyOpts, err := ParseOpts(proxyName)
 		if err != nil {
-			return nil, debugInfo.JumpNum, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: utilds.MakeCodedError(ConnErrCode_ProxyParse, err)}
+			return nil, debugInfo.JumpNum, nil, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: utilds.MakeCodedError(ConnErrCode_ProxyParse, err)}
 		}
 
 		// ensure no overflow (this will likely never happen)
@@ -1054,23 +1103,23 @@ func ConnectToClient(connCtx context.Context, opts *SSHOpts, currentClient *ssh.
 		}
 
 		// do not apply supplied keywords to proxies - ssh config must be used for that
-		debugInfo.CurrentClient, jumpNum, _, err = ConnectToClient(connCtx, proxyOpts, debugInfo.CurrentClient, jumpNum, &wconfig.ConnKeywords{})
+		debugInfo.CurrentClient, jumpNum, _, _, err = ConnectToClient(connCtx, proxyOpts, debugInfo.CurrentClient, jumpNum, &wconfig.ConnKeywords{})
 		if err != nil {
 			// do not add a context on a recursive call
 			// (this can cause a recursive nested context that's arbitrarily deep)
-			return nil, jumpNum, nil, err
+			return nil, jumpNum, nil, nil, err
 		}
 	}
-	clientConfig, err := createClientConfig(connCtx, sshKeywords, debugInfo)
+	clientConfig, err := createClientConfig(connCtx, sshKeywords, debugInfo, pwTracker)
 	if err != nil {
-		return nil, debugInfo.JumpNum, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
+		return nil, debugInfo.JumpNum, nil, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
 	}
 	networkAddr := utilfn.SafeDeref(sshKeywords.SshHostName) + ":" + utilfn.SafeDeref(sshKeywords.SshPort)
 	client, err := connectInternal(connCtx, networkAddr, clientConfig, debugInfo.CurrentClient)
 	if err != nil {
-		return client, debugInfo.JumpNum, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
+		return client, debugInfo.JumpNum, nil, nil, ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
 	}
-	return client, debugInfo.JumpNum, sshKeywords, nil
+	return client, debugInfo.JumpNum, sshKeywords, pwTracker, nil
 }
 
 // note that a `var == "yes"` will default to false

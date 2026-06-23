@@ -189,7 +189,16 @@ func StartupReconnectDurableShells(ctx context.Context) {
 			defer func() {
 				panichandler.PanicHandler("jobcontroller:StartupReconnectDurableShells-conn", recover())
 			}()
-			connCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// Connections that need interactive auth (password prompt) must NOT
+			// use a timeout context — the password prompt needs to stay up until
+			// the user responds. Only use a timeout for key-based connections.
+			var connCtx context.Context
+			var cancel context.CancelFunc
+			if conncontroller.NeedsInteractiveAuth(connName) {
+				connCtx, cancel = context.WithCancel(context.Background())
+			} else {
+				connCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+			}
 			defer cancel()
 			err := conncontroller.EnsureConnection(connCtx, connName)
 			if err != nil {

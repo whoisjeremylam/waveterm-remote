@@ -70,8 +70,12 @@ function initGlobalWaveEventSubs(initOpts: WaveInitOpts) {
     waveEventSubscribeSingle({
         eventType: "userinput",
         handler: (event) => {
-            // console.log("userinput event handler", event);
-            modalsModel.pushModal("UserInputModal", { ...event.data });
+            const connName = event.data?.connname;
+            if (connName) {
+                modalsModel.upsertUserInputPrompt(connName, "UserInputPrompt", { ...event.data });
+            } else {
+                modalsModel.pushModal("UserInputPrompt", { ...event.data });
+            }
         },
         scope: initOpts.windowId,
     });
@@ -320,6 +324,28 @@ function getBlockTermDurableAtom(blockId: string): Atom<null | boolean> {
     return durableAtom;
 }
 
+export interface BlockUploadState {
+    active: boolean;
+    fileName: string;
+    fileSize: number;
+}
+
+const uploadStateAtoms = new Map<string, PrimitiveAtom<BlockUploadState | null>>();
+
+function getBlockUploadStateAtom(blockId: string): PrimitiveAtom<BlockUploadState | null> {
+    let uploadAtom = uploadStateAtoms.get(blockId);
+    if (uploadAtom == null) {
+        uploadAtom = atom<BlockUploadState | null>(null) as PrimitiveAtom<BlockUploadState | null>;
+        uploadStateAtoms.set(blockId, uploadAtom);
+    }
+    return uploadAtom;
+}
+
+function setBlockUploadState(blockId: string, state: BlockUploadState | null) {
+    const uploadAtom = getBlockUploadStateAtom(blockId);
+    globalStore.set(uploadAtom, state);
+}
+
 function useBlockAtom<T>(blockId: string, name: string, makeFn: () => Atom<T>): Atom<T> {
     const blockCache = getSingleBlockAtomCache(blockId);
     let atom = blockCache.get(name);
@@ -558,6 +584,37 @@ function getFocusedBlockId(): string {
     return focusedLayoutNode?.data?.blockId;
 }
 
+function getFocusedTerminalConnection(): string | null {
+    const layoutModel = getLayoutModelForStaticTab();
+    if (layoutModel == null) {
+        return null;
+    }
+    const focusedNode = globalStore.get(layoutModel.focusedNode);
+    if (focusedNode != null) {
+        const blockId = focusedNode.data?.blockId;
+        if (blockId) {
+            const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+            if (blockData?.meta?.connection) {
+                return blockData.meta.connection;
+            }
+        }
+    }
+    // Fallback: find most recently focused terminal using focus history
+    const focusHistory = layoutModel.focusHistory;
+    for (const nodeId of focusHistory) {
+        const node = layoutModel.getNodeById(nodeId);
+        if (node == null) continue;
+        const blockId = node.data?.blockId;
+        if (blockId) {
+            const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+            if (blockData?.meta?.view === "term" && blockData?.meta?.connection) {
+                return blockData.meta.connection;
+            }
+        }
+    }
+    return null;
+}
+
 // pass null to refocus the currently focused block
 function refocusNode(blockId: string) {
     if (blockId == null) {
@@ -600,7 +657,24 @@ function subscribeToConnEvents() {
                 if (connStatus == null || isBlank(connStatus.connection)) {
                     return;
                 }
-                console.log("connstatus update", connStatus);
+                if (connStatus.connected) {
+                    // Auto-dismiss user input prompts for this connection on successful connect
+                    const userInputPrompts = globalStore.get(modalsModel.activeUserInputPromptsAtom);
+                    const promptEntry = userInputPrompts[connStatus.connection];
+                    console.log(`[PW-CONN] connected: conn=${connStatus.connection} hasPrompt=${!!promptEntry}`);
+                    if (promptEntry) {
+                        modalsModel.dismissUserInputPrompt(connStatus.connection);
+                    }
+                } else if (connStatus.status === "error") {
+                    // On auth failure, DON'T dismiss the prompt — keep it visible for retry.
+                    // Clear per-tab dismissed state so all tabs re-show the prompt.
+                    if (connStatus.errorcode === "auth-failed") {
+                        modalsModel.resetDismissedUserInputPrompts(connStatus.connection);
+                    } else {
+                        // Non-auth errors: dismiss stale prompts (backend gave up)
+                        modalsModel.dismissUserInputPrompt(connStatus.connection);
+                    }
+                }
                 const curAtom = getConnStatusAtom(connStatus.connection);
                 globalStore.set(curAtom, connStatus);
             } catch (e) {
@@ -620,6 +694,7 @@ function makeDefaultConnStatus(conn: string): ConnStatus {
             hasconnected: true,
             activeconnnum: 0,
             wshenabled: false,
+            canautoreconnect: false,
         };
     }
     return {
@@ -630,6 +705,7 @@ function makeDefaultConnStatus(conn: string): ConnStatus {
         hasconnected: false,
         activeconnnum: 0,
         wshenabled: false,
+        canautoreconnect: false,
     };
 }
 
@@ -665,11 +741,14 @@ export {
     getBlockComponentModel,
     getBlockMetaKeyAtom,
     getBlockTermDurableAtom,
+    getBlockUploadStateAtom,
+    setBlockUploadState,
     getTabMetaKeyAtom,
     getConfigBackgroundAtom,
     getConnConfigKeyAtom,
     getConnStatusAtom,
     getFocusedBlockId,
+    getFocusedTerminalConnection,
     getHostName,
     getLocalHostDisplayNameAtom,
     getObjectId,

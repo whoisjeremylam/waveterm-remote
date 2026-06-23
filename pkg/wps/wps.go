@@ -7,6 +7,7 @@ package wps
 import (
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wavetermdev/waveterm/pkg/util/utilfn"
 	"github.com/wavetermdev/waveterm/pkg/waveobj"
@@ -16,6 +17,10 @@ import (
 // strong typing and event types can be defined elsewhere
 
 const MaxPersist = 4096
+
+// PendingEventTTL is how long an event stays in the pending buffer.
+// After this, it's assumed all subscribers have registered and it's safe to drop.
+const PendingEventTTL = 5 * time.Minute
 
 type Client interface {
 	SendEvent(routeId string, event WaveEvent)
@@ -36,17 +41,24 @@ type persistEventWrap struct {
 	Events []*WaveEvent
 }
 
+type pendingEvent struct {
+	Event     *WaveEvent
+	PublishedAt time.Time
+}
+
 type BrokerType struct {
-	Lock       *sync.Mutex
-	Client     Client
-	SubMap     map[string]*BrokerSubscription
-	PersistMap map[persistKey]*persistEventWrap
+	Lock          *sync.Mutex
+	Client        Client
+	SubMap        map[string]*BrokerSubscription
+	PersistMap    map[persistKey]*persistEventWrap
+	PendingEvents map[string][]*pendingEvent // events published before any subscriber registered
 }
 
 var Broker = &BrokerType{
-	Lock:       &sync.Mutex{},
-	SubMap:     make(map[string]*BrokerSubscription),
-	PersistMap: make(map[persistKey]*persistEventWrap),
+	Lock:          &sync.Mutex{},
+	SubMap:        make(map[string]*BrokerSubscription),
+	PersistMap:    make(map[persistKey]*persistEventWrap),
+	PendingEvents: make(map[string][]*pendingEvent),
 }
 
 func scopeHasStarMatch(scope string) bool {
@@ -73,12 +85,10 @@ func (b *BrokerType) GetClient() Client {
 
 // if already subscribed, this will *resubscribe* with the new subscription (remove the old one, and replace with this one)
 func (b *BrokerType) Subscribe(subRouteId string, sub SubscriptionRequest) {
-	// log.Printf("[wps] sub %s %s\n", subRouteId, sub.Event)
 	if sub.Event == "" {
 		return
 	}
 	b.Lock.Lock()
-	defer b.Lock.Unlock()
 	b.unsubscribe_nolock(subRouteId, sub.Event)
 	bs := b.SubMap[sub.Event]
 	if bs == nil {
@@ -91,6 +101,8 @@ func (b *BrokerType) Subscribe(subRouteId string, sub SubscriptionRequest) {
 	}
 	if sub.AllScopes {
 		bs.AllSubs = utilfn.AddElemToSliceUniq(bs.AllSubs, subRouteId)
+		b.Lock.Unlock()
+		b.deliverPendingEvent(sub.Event, subRouteId, nil) // nil scopes = allscopes subscriber
 		return
 	}
 	for _, scope := range sub.Scopes {
@@ -101,6 +113,60 @@ func (b *BrokerType) Subscribe(subRouteId string, sub SubscriptionRequest) {
 			addStrToScopeMap(bs.ScopeSubs, scope, subRouteId)
 		}
 	}
+	b.Lock.Unlock()
+	b.deliverPendingEvent(sub.Event, subRouteId, sub.Scopes)
+}
+
+// deliverPendingEvent checks if there are pending events for the given event type
+// and delivers all matching ones to the newly registered subscriber, if scopes match.
+// Events are kept in the buffer so that later subscribers (e.g., other windows) also receive them.
+// Expired events (older than PendingEventTTL) are cleaned up during delivery.
+func (b *BrokerType) deliverPendingEvent(eventType string, routeId string, scopes []string) {
+	b.Lock.Lock()
+	events := b.PendingEvents[eventType]
+	if len(events) == 0 {
+		b.Lock.Unlock()
+		return
+	}
+	now := time.Now()
+	var filtered []*pendingEvent
+	var toDeliver []*WaveEvent
+	for _, pe := range events {
+		if now.Sub(pe.PublishedAt) > PendingEventTTL {
+			continue // expired, drop it
+		}
+		filtered = append(filtered, pe)
+		if pendingEventMatchesScopes(pe.Event, scopes) {
+			toDeliver = append(toDeliver, pe.Event)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(b.PendingEvents, eventType)
+	} else {
+		b.PendingEvents[eventType] = filtered
+	}
+	b.Lock.Unlock()
+	client := b.GetClient()
+	for _, event := range toDeliver {
+		if client != nil {
+			client.SendEvent(routeId, *event)
+		}
+	}
+}
+
+// pendingEventMatchesScopes checks if a pending event's scopes overlap with the subscriber's scopes.
+func pendingEventMatchesScopes(event *WaveEvent, subScopes []string) bool {
+	if len(event.Scopes) == 0 || len(subScopes) == 0 {
+		return true
+	}
+	for _, eventScope := range event.Scopes {
+		for _, subScope := range subScopes {
+			if eventScope == subScope {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (bs *BrokerSubscription) IsEmpty() bool {
@@ -223,16 +289,44 @@ func (b *BrokerType) persistEvent(event WaveEvent) {
 	}
 }
 
+// shouldBufferEvent returns true for event types that must survive the
+// startup window before the frontend connects (e.g. userinput password prompts).
+func shouldBufferEvent(eventType string) bool {
+	return eventType == Event_UserInput
+}
+
 func (b *BrokerType) Publish(event WaveEvent) {
-	// log.Printf("BrokerType.Publish: %v\n", event)
 	if event.Persist > 0 {
 		b.persistEvent(event)
 	}
-	client := b.GetClient()
-	if client == nil {
+	b.Lock.Lock()
+	routeIds := b.getMatchingRouteIds_nolock(event)
+	if len(routeIds) == 0 {
+		if shouldBufferEvent(event.Event) {
+			b.PendingEvents[event.Event] = append(b.PendingEvents[event.Event], &pendingEvent{
+				Event:       &event,
+				PublishedAt: time.Now(),
+			})
+		b.Lock.Unlock()
 		return
 	}
-	routeIds := b.getMatchingRouteIds(event)
+	b.Lock.Unlock()
+	return
+}
+client := b.Client
+b.Lock.Unlock()
+if client == nil {
+	if shouldBufferEvent(event.Event) {
+		b.Lock.Lock()
+		b.PendingEvents[event.Event] = append(b.PendingEvents[event.Event], &pendingEvent{
+			Event:       &event,
+			PublishedAt: time.Now(),
+		})
+		b.Lock.Unlock()
+		return
+	}
+		return
+	}
 	for _, routeId := range routeIds {
 		client.SendEvent(routeId, event)
 	}
@@ -251,6 +345,11 @@ func (b *BrokerType) SendUpdateEvents(updates waveobj.UpdatesRtnType) {
 func (b *BrokerType) getMatchingRouteIds(event WaveEvent) []string {
 	b.Lock.Lock()
 	defer b.Lock.Unlock()
+	return b.getMatchingRouteIds_nolock(event)
+}
+
+// getMatchingRouteIds_nolock must be called with b.Lock held.
+func (b *BrokerType) getMatchingRouteIds_nolock(event WaveEvent) []string {
 	bs := b.SubMap[event.Event]
 	if bs == nil {
 		return nil

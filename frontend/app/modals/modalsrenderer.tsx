@@ -18,6 +18,7 @@ const ModalsRenderer = () => {
     const [newInstallOnboardingOpen, setNewInstallOnboardingOpen] = jotai.useAtom(modalsModel.newInstallOnboardingOpen);
     const [upgradeOnboardingOpen, setUpgradeOnboardingOpen] = jotai.useAtom(modalsModel.upgradeOnboardingOpen);
     const [modals] = jotai.useAtom(modalsModel.modalsAtom);
+
     const rtn: React.ReactElement[] = [];
     for (const modal of modals) {
         const ModalComponent = getModalComponent(modal.displayName);
@@ -25,6 +26,7 @@ const ModalsRenderer = () => {
             rtn.push(<ModalComponent key={modal.displayName} {...modal.props} />);
         }
     }
+    // User input prompts are now rendered per-block in UserInputPromptOverlay
     if (newInstallOnboardingOpen) {
         rtn.push(<NewInstallOnboardingModal key={NewInstallOnboardingModal.displayName} />);
     }
@@ -50,7 +52,8 @@ const ModalsRenderer = () => {
         }
     }, []);
     useEffect(() => {
-        globalStore.set(atoms.modalOpen, rtn.length > 0);
+        const hasBlockingModals = rtn.length > 0;
+        globalStore.set(atoms.modalOpen, hasBlockingModals);
     }, [rtn]);
 
     return <>{rtn}</>;

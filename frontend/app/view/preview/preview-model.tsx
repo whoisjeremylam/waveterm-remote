@@ -6,12 +6,12 @@ import { ContextMenuModel } from "@/app/store/contextmenu";
 import { globalStore } from "@/app/store/jotaiStore";
 import type { TabModel } from "@/app/store/tab-model";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
-import { getOverrideConfigAtom, refocusNode } from "@/store/global";
+import { getOverrideConfigAtom, refocusNode, getApi } from "@/store/global";
 import * as WOS from "@/store/wos";
 import { goHistory, goHistoryBack, goHistoryForward } from "@/util/historyutil";
 import { checkKeyPressed } from "@/util/keyutil";
 import { addOpenMenuItems } from "@/util/previewutil";
-import { base64ToString, fireAndForget, isBlank, jotaiLoadableValue, stringToBase64 } from "@/util/util";
+import { arrayToBase64, base64ToString, fireAndForget, isBlank, jotaiLoadableValue, stringToBase64 } from "@/util/util";
 import { formatRemoteUri } from "@/util/waveutil";
 import clsx from "clsx";
 import { Atom, atom, Getter, PrimitiveAtom, WritableAtom } from "jotai";
@@ -391,7 +391,7 @@ export class PreviewModel implements ViewModel {
         this.connection = atom<Promise<string>>(async (get) => {
             const connName = get(this.blockAtom)?.meta?.connection;
             try {
-                await this.env.rpc.ConnEnsureCommand(TabRpcClient, { connname: connName }, { timeout: 60000 });
+                await this.env.rpc.ConnEnsureCommand(TabRpcClient, { connname: connName, logblockid: this.blockId }, { timeout: 60000 });
                 globalStore.set(this.connectionError, "");
             } catch (e) {
                 globalStore.set(this.connectionError, e as string);
@@ -857,6 +857,56 @@ export class PreviewModel implements ViewModel {
             }
         }
         return false;
+    }
+
+    async uploadFiles(files: File[], targetDir: string) {
+        const MaxUploadSize = 50 * 1024 * 1024; // 50MB
+        const cleanTargetDir = targetDir.replace(/\/+$/, "");
+        const remoteDir = await this.formatRemoteUri(cleanTargetDir, globalStore.get);
+        let successCount = 0;
+        for (const file of files) {
+            if (file.size > MaxUploadSize) {
+                const errorStatus: ErrorMsg = {
+                    status: "Upload Failed",
+                    text: `File "${file.name}" exceeds 50MB size limit`,
+                };
+                globalStore.set(this.errorMsgAtom, errorStatus);
+                continue;
+            }
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const bytes = new Uint8Array(arrayBuffer);
+                const data64 = arrayToBase64(bytes);
+                await this.env.rpc.FileWriteCommand(TabRpcClient, {
+                    info: {
+                        path: `${remoteDir}/${file.name}`,
+                    },
+                    data64,
+                });
+                successCount++;
+            } catch (e) {
+                const errorStatus: ErrorMsg = {
+                    status: "Upload Failed",
+                    text: `Failed to upload "${file.name}": ${e}`,
+                };
+                globalStore.set(this.errorMsgAtom, errorStatus);
+            }
+        }
+        if (successCount > 0) {
+            this.refreshCallback?.();
+        }
+    }
+
+    downloadFile(remoteUri: string) {
+        try {
+            getApi().downloadFile(remoteUri);
+        } catch (e) {
+            const errorStatus: ErrorMsg = {
+                status: "Download Failed",
+                text: `Failed to download: ${e}`,
+            };
+            globalStore.set(this.errorMsgAtom, errorStatus);
+        }
     }
 
     async formatRemoteUri(path: string, get: Getter): Promise<string> {

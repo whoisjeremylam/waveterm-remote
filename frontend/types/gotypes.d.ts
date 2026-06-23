@@ -214,6 +214,7 @@ declare global {
         forcerestart?: boolean;
         tabid: string;
         blockid: string;
+        connname?: string;
         rtopts?: RuntimeOpts;
     };
 
@@ -527,6 +528,12 @@ declare global {
         jobmanagerstartts: number;
     };
 
+    // wshrpc.CommandRemoteWriteTempFileData
+    type CommandRemoteWriteTempFileData = {
+        filename: string;
+        data64: string;
+    };
+
     // wshrpc.CommandRenameAppFileData
     type CommandRenameAppFileData = {
         appid: string;
@@ -766,6 +773,7 @@ declare global {
         hasconnected: boolean;
         activeconnnum: number;
         error?: string;
+        errorcode?: string;
         wsherror?: string;
         nowshreason?: string;
         wshversion?: string;
@@ -775,6 +783,7 @@ declare global {
         reconnectnextattempt?: number;
         reconnecterror?: string;
         forwardingrules?: string[];
+        canautoreconnect: boolean;
     };
 
     // wshrpc.CpuDataRequest
@@ -1451,6 +1460,8 @@ declare global {
         publictext: boolean;
         oklabel?: string;
         cancellabel?: string;
+        connname?: string;
+        prompttype?: string;
     };
 
     // userinput.UserInputResponse
@@ -1461,6 +1472,7 @@ declare global {
         confirm?: boolean;
         errormsg?: string;
         checkboxstat?: boolean;
+        connname?: string;
     };
 
     // vdom.VDomAsyncInitiationRequest

@@ -417,3 +417,19 @@ func DBFindWindowForWorkspaceId(ctx context.Context, workspaceId string) (string
 		return tx.GetString(query, workspaceId), nil
 	})
 }
+
+func DBFindBlocksByConnection(ctx context.Context, connName string) ([]string, error) {
+	return WithTxRtn(ctx, func(tx *TxWrap) ([]string, error) {
+		query := `
+			SELECT b.oid
+			FROM db_block b
+			WHERE json_extract(b.data, '$.meta.connection') = ?`
+		var rows []idDataType
+		tx.Select(&rows, query, connName)
+		rtn := make([]string, 0, len(rows))
+		for _, row := range rows {
+			rtn = append(rtn, row.OId)
+		}
+		return rtn, nil
+	})
+}

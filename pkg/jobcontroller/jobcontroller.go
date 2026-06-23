@@ -614,6 +614,11 @@ func HandleSystemResume(ctx context.Context) {
 // keyboard-interactive authentication. When true, automatic reconnect
 // cannot succeed without user involvement, so the scheduler should skip it.
 func needsInteractiveAuth(connName string) bool {
+	// If a password is cached from a previous session, no interactive prompt is needed
+	if conncontroller.HasCachedPassword(connName) {
+		return false
+	}
+
 	config := wconfig.GetWatcher().GetFullConfig()
 	connConfig, ok := config.Connections[connName]
 	if !ok {
@@ -646,9 +651,10 @@ func needsInteractiveAuth(connName string) bool {
 		}
 	}
 
-	// Check if password or keyboard-interactive auth is enabled (both default true)
-	passwordAuth := utilfn.SafeDeref(connConfig.SshPasswordAuthentication)
-	kbdAuth := utilfn.SafeDeref(connConfig.SshKbdInteractiveAuthentication)
+	// Check if password or keyboard-interactive auth is enabled (both default true).
+	// When nil (not explicitly set in config), treat as enabled per SSH defaults.
+	passwordAuth := connConfig.SshPasswordAuthentication == nil || utilfn.SafeDeref(connConfig.SshPasswordAuthentication)
+	kbdAuth := connConfig.SshKbdInteractiveAuthentication == nil || utilfn.SafeDeref(connConfig.SshKbdInteractiveAuthentication)
 	return passwordAuth || kbdAuth
 }
 
@@ -660,11 +666,32 @@ func onConnectionDown(connName string) {
 		return
 	}
 
-	// Skip auto-reconnect for connections that might need password input.
-	// The scheduler can't type a password — the user must reconnect manually.
+	// Check if connection requires interactive auth
 	if needsInteractiveAuth(connName) {
-		log.Printf("[conn:%s] connection may require interactive auth (password/keyboard-interactive), skipping auto-reconnect scheduler", connName)
-		return
+		// Special case: if the last error was auth-failed (wrong cached password),
+		// start the scheduler so the user gets re-prompted on all tabs.
+		connOpts, err := remote.ParseOpts(connName)
+		if err == nil {
+			conn := conncontroller.MaybeGetConn(connOpts)
+			if conn != nil {
+				status := conn.GetStatus()
+				// Only start scheduler if we're in error state (auth failed)
+				// and the error was specifically auth-failed
+				if status == conncontroller.Status_Error && conn.GetLastErrorCode() == "auth-failed" {
+					log.Printf("[conn:%s] auth failed with cached password, starting scheduler for retry", connName)
+					// Fall through to scheduler start below
+				} else {
+					log.Printf("[conn:%s] connection may require interactive auth (password/keyboard-interactive), skipping auto-reconnect scheduler", connName)
+					return
+				}
+			} else {
+				log.Printf("[conn:%s] connection may require interactive auth (password/keyboard-interactive), skipping auto-reconnect scheduler", connName)
+				return
+			}
+		} else {
+			log.Printf("[conn:%s] connection may require interactive auth (password/keyboard-interactive), skipping auto-reconnect scheduler", connName)
+			return
+		}
 	}
 
 	// Deduplicate: only one scheduler per connection at a time

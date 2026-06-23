@@ -1,0 +1,46 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import { UserInputPrompt } from "@/app/modals/userinputprompt";
+import { modalsModel } from "@/app/store/modalmodel";
+import { NodeModel } from "@/layout/index";
+import * as jotai from "jotai";
+import * as React from "react";
+import { BlockEnv } from "./blockenv";
+import { useWaveEnv } from "@/app/waveenv/waveenv";
+
+export const UserInputPromptOverlay = React.memo(
+    ({
+        nodeModel,
+    }: {
+        nodeModel: NodeModel;
+    }) => {
+        const waveEnv = useWaveEnv<BlockEnv>();
+        const connName = jotai.useAtomValue(waveEnv.getBlockMetaKeyAtom(nodeModel.blockId, "connection"));
+        const activeUserInputPrompts = jotai.useAtomValue(modalsModel.activeUserInputPromptsAtom);
+
+        if (!connName) {
+            return null;
+        }
+
+        const promptEntry = activeUserInputPrompts[connName];
+        const isDismissed = modalsModel.isUserInputPromptDismissedForTab(connName, nodeModel.blockId);
+        console.log(`[PW-OVERLAY] block=${nodeModel.blockId} conn=${connName} found=${!!promptEntry} dismissed=${isDismissed}`);
+        if (!promptEntry || isDismissed) {
+            return null;
+        }
+        return (
+            <div
+                className="@container absolute inset-0 z-[calc(var(--zindex-block-mask-inner)+1)] flex items-center justify-center"
+            >
+                <div className="p-3">
+                    <UserInputPrompt
+                        {...promptEntry.props}
+                        blockId={nodeModel.blockId}
+                    />
+                </div>
+            </div>
+        );
+    }
+);
+UserInputPromptOverlay.displayName = "UserInputPromptOverlay";

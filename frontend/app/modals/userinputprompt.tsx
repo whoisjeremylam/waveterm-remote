@@ -1,18 +1,34 @@
 // Copyright 2025, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Modal } from "@/app/modals/modal";
+import { Button } from "@/app/element/button";
 import { Markdown } from "@/element/markdown";
 import { modalsModel } from "@/store/modalmodel";
 import * as keyutil from "@/util/keyutil";
 import { fireAndForget } from "@/util/util";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { UserInputService } from "../store/services";
+import "./userinputprompt.scss";
 
-const UserInputModal = (userInputRequest: UserInputRequest) => {
+interface UserInputPromptProps extends UserInputRequest {
+    blockId?: string;
+}
+
+const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
     const [responseText, setResponseText] = useState("");
-    const [countdown, setCountdown] = useState(Math.floor(userInputRequest.timeoutms / 1000));
     const checkboxRef = useRef<HTMLInputElement>(null);
+    const inputRef = useRef<HTMLInputElement>(null);
+    const connName = userInputRequest.connname;
+    const blockId = userInputRequest.blockId;
+
+    const handleDismiss = useCallback(() => {
+        console.log(`[PW-RESP] handleDismiss: connName=${connName} requestId=${userInputRequest.requestid}`);
+        if (connName) {
+            modalsModel.dismissUserInputPrompt(connName);
+        } else {
+            modalsModel.popModal();
+        }
+    }, [connName]);
 
     const handleSendErrResponse = useCallback(() => {
         fireAndForget(() =>
@@ -22,10 +38,11 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
                 errormsg: "Canceled by the user",
             })
         );
-        modalsModel.popModal();
-    }, [responseText, userInputRequest]);
+        handleDismiss();
+    }, [userInputRequest, handleDismiss]);
 
     const handleSendText = useCallback(() => {
+        console.log(`[PW-RESP] handleSendText: connName=${connName} requestId=${userInputRequest.requestid}`);
         fireAndForget(() =>
             UserInputService.SendUserInputResponse({
                 type: "userinputresp",
@@ -34,8 +51,8 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
                 checkboxstat: checkboxRef?.current?.checked ?? false,
             })
         );
-        modalsModel.popModal();
-    }, [responseText, userInputRequest]);
+        handleDismiss();
+    }, [responseText, userInputRequest, handleDismiss]);
 
     const handleSendConfirm = useCallback(
         (response: boolean) => {
@@ -47,9 +64,9 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
                     checkboxstat: checkboxRef?.current?.checked ?? false,
                 })
             );
-            modalsModel.popModal();
+            handleDismiss();
         },
-        [userInputRequest]
+        [userInputRequest, handleDismiss]
     );
 
     const handleSubmit = useCallback(() => {
@@ -64,16 +81,15 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
     }, [handleSendConfirm, handleSendText, userInputRequest.responsetype]);
 
     const handleKeyDown = useCallback(
-        (waveEvent: WaveKeyboardEvent): boolean => {
+        (e: React.KeyboardEvent) => {
+            const waveEvent = keyutil.adaptFromReactOrNativeKeyEvent(e);
             if (keyutil.checkKeyPressed(waveEvent, "Escape")) {
                 handleSendErrResponse();
-                return true;
+                return;
             }
             if (keyutil.checkKeyPressed(waveEvent, "Enter")) {
                 handleSubmit();
-                return true;
             }
-			return false;
         },
         [handleSendErrResponse, handleSubmit]
     );
@@ -91,13 +107,14 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
         }
         return (
             <input
+                ref={inputRef}
                 type={userInputRequest.publictext ? "text" : "password"}
                 onChange={(e) => setResponseText(e.target.value)}
                 value={responseText}
                 maxLength={400}
                 className="resize-none bg-panel rounded-md border border-border py-1.5 pl-4 min-h-[30px] text-inherit cursor-text focus:ring-2 focus:ring-accent focus:outline-none"
                 autoFocus={true}
-                onKeyDown={(e) => keyutil.keydownWrapper(handleKeyDown)(e)}
+                onKeyDown={handleKeyDown}
             />
         );
     }, [userInputRequest.responsetype, userInputRequest.publictext, responseText, handleKeyDown, setResponseText]);
@@ -121,20 +138,6 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
         );
     }, []);
 
-    useEffect(() => {
-        let timeout: ReturnType<typeof setTimeout>;
-        if (countdown <= 0) {
-            timeout = setTimeout(() => {
-                handleSendErrResponse();
-            }, 300);
-        } else {
-            timeout = setTimeout(() => {
-                setCountdown(countdown - 1);
-            }, 1000);
-        }
-        return () => clearTimeout(timeout);
-    }, [countdown]);
-
     const handleNegativeResponse = useCallback(() => {
         switch (userInputRequest.responsetype) {
             case "text":
@@ -146,25 +149,32 @@ const UserInputModal = (userInputRequest: UserInputRequest) => {
         }
     }, [userInputRequest.responsetype, handleSendErrResponse, handleSendConfirm]);
 
-    return (
-        <Modal
-            className="pt-6 pb-4 px-5"
-            onOk={() => handleSubmit()}
-            onCancel={() => handleNegativeResponse()}
-            onClose={() => handleSendErrResponse()}
-            okLabel={userInputRequest.oklabel}
-            cancelLabel={userInputRequest.cancellabel}
-        >
-            <div className="font-bold text-primary mx-4 pb-2.5">{userInputRequest.title + ` (${countdown}s)`}</div>
-            <div className="flex flex-col justify-between gap-4 mx-4 mb-4 max-w-[500px] font-mono text-primary">
-                {queryText}
-                {inputBox}
-                {optionalCheckbox}
+    const renderPrompt = () => (
+        <div className="userinput-prompt-wrapper">
+            <div className="userinput-prompt" onKeyDown={handleKeyDown}>
+                <div className="userinput-prompt-header">
+                    <div className="font-bold text-primary">{userInputRequest.title}</div>
+                </div>
+                <div className="userinput-prompt-body">
+                    {queryText}
+                    {inputBox}
+                    {optionalCheckbox}
+                </div>
+                <div className="userinput-prompt-footer">
+                    <Button className="grey ghost" onClick={handleNegativeResponse}>
+                        {userInputRequest.cancellabel || "Cancel"}
+                    </Button>
+                    <Button onClick={() => handleSubmit()}>
+                        {userInputRequest.oklabel || "Ok"}
+                    </Button>
+                </div>
             </div>
-        </Modal>
+        </div>
     );
+
+    return renderPrompt();
 };
 
-UserInputModal.displayName = "UserInputModal";
+UserInputPrompt.displayName = "UserInputPrompt";
 
-export { UserInputModal };
+export { UserInputPrompt };

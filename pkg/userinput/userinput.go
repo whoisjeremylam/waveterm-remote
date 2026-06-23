@@ -38,6 +38,8 @@ type UserInputRequest struct {
 	PublicText   bool   `json:"publictext"`
 	OkLabel      string `json:"oklabel,omitempty"`
 	CancelLabel  string `json:"cancellabel,omitempty"`
+	ConnName     string `json:"connname,omitempty"`
+	PromptType   string `json:"prompttype,omitempty"` // "password", "confirm", etc.
 }
 
 type UserInputResponse struct {
@@ -47,6 +49,7 @@ type UserInputResponse struct {
 	Confirm      bool   `json:"confirm,omitempty"`
 	ErrorMsg     string `json:"errormsg,omitempty"`
 	CheckboxStat bool   `json:"checkboxstat,omitempty"`
+	ConnName     string `json:"connname,omitempty"`
 }
 
 type UserInputHandler struct {
@@ -104,22 +107,66 @@ func determineScopes(ctx context.Context) ([]string, error) {
 	return []string{windowId}, nil
 }
 
+// findWindowsForConnection finds all windows that contain blocks using the given connection.
+// Used as a fallback when determineScopes fails (e.g., during reconnect without BlockId in context).
+func findWindowsForConnection(ctx context.Context, connName string) []string {
+	blockIds, err := wstore.DBFindBlocksByConnection(ctx, connName)
+	if err != nil || len(blockIds) == 0 {
+		return nil
+	}
+	windowSet := make(map[string]bool)
+	for _, blockId := range blockIds {
+		tabId, err := wstore.DBFindTabForBlockId(ctx, blockId)
+		if err != nil {
+			continue
+		}
+		workspaceId, err := wstore.DBFindWorkspaceForTabId(ctx, tabId)
+		if err != nil {
+			continue
+		}
+		windowId, err := wstore.DBFindWindowForWorkspaceId(ctx, workspaceId)
+		if err != nil {
+			continue
+		}
+		if windowId != "" {
+			windowSet[windowId] = true
+		}
+	}
+	windows := make([]string, 0, len(windowSet))
+	for w := range windowSet {
+		windows = append(windows, w)
+	}
+	return windows
+}
+
 func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputRequest) (*UserInputResponse, error) {
 	id, uiCh := MainUserInputHandler.registerChannel()
 	defer MainUserInputHandler.unregisterChannel(id)
 	request.RequestId = id
 	request.TimeoutMs = int(utilfn.TimeoutFromContext(ctx, 30*time.Second).Milliseconds())
 
+	connData := genconn.GetConnData(ctx)
+	if connData != nil && request.ConnName == "" {
+		request.ConnName = connData.GetConnName()
+	}
+
+	log.Printf("[PW-PROMPT] GetUserInput: connName=%q requestId=%q", request.ConnName, request.RequestId)
+
 	scopes, scopesErr := determineScopes(ctx)
 	if scopesErr != nil {
-		log.Printf("user input scopes could not be found: %v", scopesErr)
 		blocklogger.Infof(ctx, "user input scopes could not be found: %v", scopesErr)
-		allWindows, err := wstore.DBGetAllOIDsByType(ctx, "window")
-		if err != nil {
-			blocklogger.Infof(ctx, "unable to find windows for user input: %v", err)
-			return nil, fmt.Errorf("unable to find windows for user input: %v", err)
+		// Try to find windows by connection name (used during reconnect)
+		if request.ConnName != "" {
+			scopes = findWindowsForConnection(ctx, request.ConnName)
 		}
-		scopes = allWindows
+		if len(scopes) == 0 {
+			allWindows, err := wstore.DBGetAllOIDsByType(ctx, "window")
+			if err != nil {
+				blocklogger.Infof(ctx, "unable to find windows for user input: %v", err)
+				return nil, fmt.Errorf("unable to find windows for user input: %v", err)
+			}
+			scopes = allWindows
+		}
 	}
 
 	MainUserInputHandler.sendRequestToFrontend(request, scopes)
@@ -128,7 +175,6 @@ func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputR
 	var err error
 	select {
 	case resp := <-uiCh:
-		log.Printf("checking received: %v", resp.RequestId)
 		response = resp
 	case <-ctx.Done():
 		return nil, fmt.Errorf("timed out waiting for user input")
