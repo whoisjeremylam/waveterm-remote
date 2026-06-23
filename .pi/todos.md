@@ -134,24 +134,30 @@
     - [x] Add `SaveTerminalImages` RPC + `cache:term:images` file
     - [x] Modify `processAndCacheData()` and `loadInitialTerminalData()` in termwrap.ts
     - [ ] Atomic manifest write: crash during WriteFile could leave truncated JSON, losing all images. Fix: write to temp file then rename. Depends on filestore API supporting rename.
-- [ ] **Remote file paste** — image paste + drag-drop for remote sessions
+- [x] **Remote file paste** — image paste + drag-drop for remote sessions (completed 2026-06-23)
   - Primary use case: pasting screenshots and dragging files when using pi or Claude Code's TUI over SSH
-  - Currently pastes local file paths that don't exist on the remote server
-  - Need: upload file to remote (SSH exec with stdin, SFTP, or SCP), then paste remote path
+  - Cherry-picked from `feature/remote-image-paste` branch
   - Sub-tasks:
-    - [ ] Go backend: `RemoteWriteTempFileCommand` RPC + types + client
-    - [ ] Frontend: `createRemoteTempFileFromBlob()` utility
-    - [ ] Frontend: Wire image paste (`termwrap.ts` `pasteHandler`) to use remote upload for SSH sessions
-    - [ ] Frontend: Wire drag-drop (`termwrap.ts` `dropHandler`) to use remote upload for SSH sessions
-    - [ ] Frontend: Extract generic `BlockOverlay` component from `ConnStatusOverlay` pattern
-    - [ ] Frontend: Add `uploadState` atom to `TermViewModel` and `UploadOverlay` component
-    - [ ] Frontend: Add input suppression (`handleTermData` guard) during upload
-    - [ ] Frontend: Mount `UploadOverlay` in `blockframe.tsx`
+    - [x] Go backend: `RemoteWriteTempFileCommand` RPC + types + client
+    - [x] Frontend: `createRemoteTempFileFromBlob()` utility
+    - [x] Frontend: Wire image paste (`termwrap.ts` `pasteHandler`) to use remote upload for SSH sessions
+    - [x] Frontend: Wire drag-drop (`termwrap.ts` `dropHandler`) to use remote upload for SSH sessions
+    - [x] Frontend: Extract generic `BlockOverlay` component from `ConnStatusOverlay` pattern
+    - [x] Frontend: Add `uploadState` atom to `TermViewModel` and `UploadOverlay` component
+    - [x] Frontend: Add input suppression (`handleTermData` guard) during upload
+    - [x] Frontend: Mount `UploadOverlay` in `blockframe.tsx`
     - [ ] Tests
+  - Known issues:
+    - [ ] **Multi-file drag-drop UX:** Each file in a batch triggers its own upload overlay cycle (on/off/on/off). Should show a single overlay with file count or progress across all files.
+    - [ ] **No upload progress:** Overlay shows spinner + filename but no bytes transferred or percentage. On slow connections the user has no feedback on how long the upload will take.
+    - [ ] **50MB file size limit:** Hardcoded in `termutil.ts`. Base64 encoding adds ~33% overhead, so a 50MB file becomes ~67MB in the RPC payload. Increasing the limit risks renderer memory pressure (~3x file size peak).
+    - [ ] **No temp file cleanup:** Remote temp files written to `/tmp/waveterm-*` are never deleted. Large files accumulate until remote reboots or manual cleanup.
+    - [ ] **Base64-in-JSON transport:** Entire file is base64-encoded into a single JSON field. Not efficient for large files — a streaming/chunked approach would be better but is a larger architectural change.
+    - [ ] **`ConnStatusOverlay` not refactored to use `BlockOverlay`:** Both use identical CSS classes but `ConnStatusOverlay` duplicates the styling instead of composing `BlockOverlay`. Low priority — cosmetic only.
 
 - [ ] **System widgets follow terminal focus** (spec: [[.pi/specs/widget-follow-focus.md]])
   - When opening Process Viewer, File Browser, etc., inherit connection from focused terminal
-  - [ ] Add `getFocusedTerminalConnection()` helper in `global.ts`
+  - [x] Add `getFocusedTerminalConnection()` helper in `global.ts` (completed in `ui-improvements`)
   - [ ] Add `createWidgetBlock()` wrapper that injects connection meta
   - [ ] Update widgets bar (`widgets.tsx`) to use `createWidgetBlock`
   - [ ] Add `inheritconnection` field to widget config schema
