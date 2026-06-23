@@ -5,7 +5,6 @@
 package wps
 
 import (
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -150,9 +149,6 @@ func (b *BrokerType) deliverPendingEvent(eventType string, routeId string, scope
 	client := b.GetClient()
 	for _, event := range toDeliver {
 		if client != nil {
-			if event.Event == Event_UserInput {
-				log.Printf("[DEBUG] wps.deliverPendingEvent: delivering buffered userinput to %s", routeId)
-			}
 			client.SendEvent(routeId, *event)
 		}
 	}
@@ -311,27 +307,24 @@ func (b *BrokerType) Publish(event WaveEvent) {
 				Event:       &event,
 				PublishedAt: time.Now(),
 			})
-			buffered := len(b.PendingEvents[event.Event])
-			b.Lock.Unlock()
-			log.Printf("[DEBUG] wps.Publish: buffered %s (total=%d)", event.Event, buffered)
-			return
-		}
 		b.Lock.Unlock()
 		return
 	}
-	client := b.Client
 	b.Lock.Unlock()
-	if client == nil {
-		if shouldBufferEvent(event.Event) {
-			b.Lock.Lock()
-			b.PendingEvents[event.Event] = append(b.PendingEvents[event.Event], &pendingEvent{
-				Event:       &event,
-				PublishedAt: time.Now(),
-			})
-			b.Lock.Unlock()
-			log.Printf("[DEBUG] wps.Publish: buffered %s (no client)", event.Event)
-			return
-		}
+	return
+}
+client := b.Client
+b.Lock.Unlock()
+if client == nil {
+	if shouldBufferEvent(event.Event) {
+		b.Lock.Lock()
+		b.PendingEvents[event.Event] = append(b.PendingEvents[event.Event], &pendingEvent{
+			Event:       &event,
+			PublishedAt: time.Now(),
+		})
+		b.Lock.Unlock()
+		return
+	}
 		return
 	}
 	for _, routeId := range routeIds {

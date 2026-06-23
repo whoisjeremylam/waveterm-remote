@@ -1511,15 +1511,11 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 	cachedPw := conn.getCachedPassword()
 	if cachedPw != nil {
 		ctx = remote.ContextWithCachedPassword(ctx, cachedPw)
-		log.Printf("[DEBUG] connectInternal %s: injecting cached password into context", conn.GetName())
-	} else {
-		log.Printf("[DEBUG] connectInternal %s: no cached password", conn.GetName())
 	}
 	client, _, sshKeywords, pwTracker, err := remote.ConnectToClient(ctx, conn.Opts, nil, 0, connFlags)
 	if err != nil {
 		errorCode, _ := remote.ClassifyConnError(err)
 		conn.Infof(ctx, "ERROR ConnectToClient [%s]: %s\n", errorCode, remote.SimpleMessageFromPossibleConnectionError(err))
-		log.Printf("[DEBUG] connectInternal %s: ConnectToClient failed [%s]: %v", conn.GetName(), errorCode, err)
 		// Cache password even on non-auth failure (timeout, network error)
 		// so retry works without re-prompting. Only skip on auth-failed (wrong password).
 		if errorCode != "auth-failed" && pwTracker != nil && pwTracker.Used && pwTracker.Password != "" {
@@ -1528,7 +1524,6 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 		}
 		return err
 	}
-	log.Printf("[DEBUG] connectInternal %s: ConnectToClient succeeded, pwTracker.Used=%v", conn.GetName(), pwTracker != nil && pwTracker.Used)
 	// Cache the password that was used during the handshake (if user entered one)
 	if pwTracker != nil && pwTracker.Used && pwTracker.Password != "" {
 		conn.cachePassword(pwTracker.Password)

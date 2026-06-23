@@ -22,6 +22,7 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
     const blockId = userInputRequest.blockId;
 
     const handleDismiss = useCallback(() => {
+        console.log(`[PW-RESP] handleDismiss: connName=${connName} requestId=${userInputRequest.requestid}`);
         if (connName) {
             modalsModel.dismissUserInputPrompt(connName);
         } else {
@@ -41,6 +42,7 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
     }, [userInputRequest, handleDismiss]);
 
     const handleSendText = useCallback(() => {
+        console.log(`[PW-RESP] handleSendText: connName=${connName} requestId=${userInputRequest.requestid}`);
         fireAndForget(() =>
             UserInputService.SendUserInputResponse({
                 type: "userinputresp",

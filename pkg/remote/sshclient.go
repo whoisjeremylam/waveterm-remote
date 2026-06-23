@@ -418,11 +418,10 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 				outErr = panicErr
 			}
 		}()
-		log.Printf("[DEBUG] password-callback fired for %s", remoteDisplayName)
+		log.Printf("[PW-PROMPT] password-callback: %s (secret=%v cached=%v)", remoteDisplayName, password != nil, GetCachedPassword(connCtx) != nil)
 		blocklogger.Infof(connCtx, "[conndebug] Password Authentication requested from connection %s...\n", remoteDisplayName)
 
 		if password != nil {
-			log.Printf("[DEBUG] password-callback: using password from secret store")
 			blocklogger.Infof(connCtx, "[conndebug] using password from secret store, sending to ssh\n")
 			if pwTracker != nil {
 				pwTracker.Password = *password
@@ -433,7 +432,6 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 
 		// Check for cached password from reconnect
 		if cachedPw := GetCachedPassword(connCtx); cachedPw != nil {
-			log.Printf("[DEBUG] password-callback: using cached password from reconnect")
 			blocklogger.Infof(connCtx, "[conndebug] using cached password from reconnect, sending to ssh\n")
 			if pwTracker != nil {
 				pwTracker.Password = *cachedPw
@@ -441,8 +439,6 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 			}
 			return *cachedPw, nil
 		}
-
-		log.Printf("[DEBUG] password-callback: no cached password, will prompt user")
 		ctx, cancelFn := context.WithTimeout(connCtx, 60*time.Second)
 		defer cancelFn()
 		queryText := fmt.Sprintf(

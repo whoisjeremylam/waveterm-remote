@@ -142,7 +142,6 @@ const BlockFrame_Default_Component = (props: BlockFrameProps) => {
             return;
         }
         if (!util.isLocalConnName(connName)) {
-            console.log("ensure conn", nodeModel.blockId, connName);
             waveEnv.rpc
                 .ConnEnsureCommand(
                     TabRpcClient,

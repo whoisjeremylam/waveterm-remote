@@ -24,12 +24,9 @@ export const UserInputPromptOverlay = React.memo(
         }
 
         const promptEntry = activeUserInputPrompts[connName];
-        if (!promptEntry) {
-            return null;
-        }
-
-        // Check if this tab has dismissed the prompt
-        if (modalsModel.isUserInputPromptDismissedForTab(connName, nodeModel.blockId)) {
+        const isDismissed = modalsModel.isUserInputPromptDismissedForTab(connName, nodeModel.blockId);
+        console.log(`[PW-OVERLAY] block=${nodeModel.blockId} conn=${connName} found=${!!promptEntry} dismissed=${isDismissed}`);
+        if (!promptEntry || isDismissed) {
             return null;
         }
         return (

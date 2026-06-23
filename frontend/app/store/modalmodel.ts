@@ -45,6 +45,7 @@ class ModalsModel {
     }
 
     upsertUserInputPrompt(connName: string, displayName: string, props: any) {
+        console.log(`[PW-MODEL] upsert: connName=${connName}, requestId=${props?.requestid}`);
         globalStore.set(this.activeUserInputPromptsAtom, (prev) => ({
             ...prev,
             [connName]: { displayName, props },
@@ -61,6 +62,7 @@ class ModalsModel {
     }
 
     dismissUserInputPrompt(connName: string) {
+        console.log(`[PW-MODEL] dismiss: connName=${connName}`);
         globalStore.set(this.activeUserInputPromptsAtom, (prev) => {
             const next = { ...prev };
             delete next[connName];

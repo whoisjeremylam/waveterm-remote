@@ -346,7 +346,7 @@ export class TermWrap {
             // patches. This intercept handles TIFF rendering directly.
             const iipH = (this.imageAddon as any)._handlers?.get("iip");
             if (iipH && !iipH.__iipFixed) {
-                console.log("[IIP-FIX] Intercept installed on IIP handler");
+                
                 const origPut = iipH.put?.bind(iipH);
                 const origEnd = iipH.end?.bind(iipH);
                 let rawChunks: Uint8Array[] = [];
@@ -375,7 +375,7 @@ export class TermWrap {
                             // Find colon (0x3A) — separates header from base64 payload
                             const colonIdx = rawBytes.indexOf(0x3A);
                             if (colonIdx < 0 || colonIdx >= rawBytes.length - 1) {
-                                console.log("[IIP-FIX] No colon found in payload, falling through");
+                                
                                 rawChunks = []; rawTotal = 0;
                                 return origEnd?.(success);
                             }
@@ -440,8 +440,7 @@ export class TermWrap {
 
                                     const cols = Math.ceil(canvas.width / cw);
                                     const rows = Math.ceil(canvas.height / ch);
-                                    console.log(`[IIP-FIX] TIFF ${tiffResult.width}x${tiffResult.height} → canvas ${tw}x${th} (${cols}x${rows} cells, cw=${cw} ch=${ch})`);
-
+                                    
                                     storage.addImage(canvas);
                                     rawChunks = [];
                                     rawTotal = 0;
@@ -454,7 +453,7 @@ export class TermWrap {
                     }
                     rawChunks = [];
                     rawTotal = 0;
-                    console.log("[IIP-FIX] Not TIFF, falling through to addon");
+                    
                     return origEnd?.(success);
                 };
                 iipH.__iipFixed = true;
@@ -467,93 +466,8 @@ export class TermWrap {
 
             (window as any).__imageAddon = this.imageAddon;
             (window as any).__term = this.terminal;
-            // ── Manual IIP test helpers (call from browser console) ──
-            const tinyPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
-            const tinyPngSize = Math.ceil(tinyPng.length * 3 / 4);
-
-            // Quick test: write IIP with tiny PNG
-            (window as any).__testIIP = () => {
-                const term = (window as any).__term;
-                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
-                const seq = `\x1b]1337;File=inline=1;size=${tinyPngSize}:${tinyPng}\x07`;
-                console.log("[IIP-DEBUG] Writing IIP with PNG, length:", seq.length);
-                term.write(seq);
-            };
-            // Test header parsing with minimal payload
-            (window as any).__testIIPHeader = () => {
-                const term = (window as any).__term;
-                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
-                const seq = `\x1b]1337;File=inline=1;size=8:dGVzdGRhdGE=\x07`;
-                console.log("[IIP-DEBUG] Writing IIP header test, length:", seq.length);
-                term.write(seq);
-            };
-            // Test empty OSC 1337
-            (window as any).__testOsc1337 = () => {
-                const term = (window as any).__term;
-                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
-                const seq = `\x1b]1337;File=inline=1;size=0:\x07`;
-                console.log("[IIP-DEBUG] Writing empty OSC 1337, length:", seq.length);
-                term.write(seq);
-            };
-            // Write IIP as Uint8Array (like WaveTerm's base64ToArray path)
-            (window as any).__testIIPUint8 = () => {
-                const term = (window as any).__term;
-                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
-                const str = `\x1b]1337;File=inline=1;size=${tinyPngSize}:${tinyPng}\x07`;
-                const bytes = new Uint8Array(str.length);
-                for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
-                console.log("[IIP-DEBUG] Writing IIP as Uint8Array, length:", bytes.length);
-                term.write(bytes);
-            };
-            // Write IIP in chunks (simulating PTY delivery)
-            (window as any).__testIIPChunked = () => {
-                const term = (window as any).__term;
-                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
-                const header = `\x1b]1337;File=inline=1;size=${tinyPngSize}:`;
-                console.log("[IIP-DEBUG] Writing chunked IIP: header(", header.length, ") + payload(", tinyPng.length, ") + BEL");
-                term.write(header);
-                setTimeout(() => term.write(tinyPng), 10);
-                setTimeout(() => term.write("\x07"), 20);
-            };
-            // Check parser state
-            (window as any).__testIIPParserState = () => {
-                const term = (window as any).__term;
-                if (!term) { console.error("[IIP-DEBUG] No terminal"); return; }
-                const parser = (term as any)._core?._inputHandler?._parser;
-                console.log("[IIP-DEBUG] Parser state:", {
-                    currentState: parser?.currentState,
-                    initialState: parser?.initialState,
-                    stuck: parser?.currentState !== parser?.initialState,
-                });
-                const oscParser = parser?._oscParser;
-                if (oscParser) {
-                    const ids = Object.keys(oscParser._handlers || {}).filter(k => !isNaN(Number(k))).map(Number);
-                    console.log("[IIP-DEBUG] Registered OSC IDs:", ids);
-                    const h = oscParser._handlers[1337];
-                    console.log("[IIP-DEBUG] OSC 1337 handlers:", h?.length ?? 0, h?.map((x: any) => x?.constructor?.name));
-                }
-            };
-            // Run all tests in sequence
-            (window as any).__testIIPAll = async () => {
-                console.log("[IIP-DEBUG] === Running all IIP tests ===");
-                (window as any).__testIIPParserState();
-                console.log("[IIP-DEBUG] --- Test: minimal OSC 1337 ---");
-                (window as any).__testOsc1337();
-                await new Promise(r => setTimeout(r, 300));
-                (window as any).__testIIPParserState();
-                console.log("[IIP-DEBUG] --- Test: IIP with PNG ---");
-                (window as any).__testIIP();
-                await new Promise(r => setTimeout(r, 300));
-                (window as any).__testIIPParserState();
-                console.log("[IIP-DEBUG] --- Test: Uint8Array ---");
-                (window as any).__testIIPUint8();
-                await new Promise(r => setTimeout(r, 300));
-                (window as any).__testIIPParserState();
-                console.log("[IIP-DEBUG] === All tests done. Check [IIP-DEBUG] logs above ===");
-            };
-            console.log("[IIP-DEBUG] Test helpers: __testIIP() __testIIPHeader() __testOsc1337() __testIIPUint8() __testIIPChunked() __testIIPParserState() __testIIPAll()");
         } catch (e) {
-            console.error("[IIP-DEBUG] ImageAddon failed to load", e);
+            console.error("[termwrap] ImageAddon failed to load", e);
         }
         // Register OSC handlers
         this.terminal.parser.registerOscHandler(7, (data: string) => {
@@ -588,7 +502,6 @@ export class TermWrap {
                 if (params[0] === 3) {
                     this.lastClearScrollbackTs = Date.now();
                     if (this.inSyncTransaction) {
-                        console.log("[termwrap] repaint transaction starting");
                         this.inRepaintTransaction = true;
                     }
                 }
@@ -623,7 +536,7 @@ export class TermWrap {
                         this.inRepaintTransaction = false;
                         if (wasRepaint && Date.now() - this.lastClearScrollbackTs <= MaxRepaintTransactionMs) {
                             setTimeout(() => {
-                                console.log("[termwrap] repaint transaction complete, scrolling to bottom");
+                                
                                 this.terminal.scrollToBottom();
                             }, 20);
                         }
@@ -640,7 +553,7 @@ export class TermWrap {
                         this.inRepaintTransaction = false;
                         if (wasRepaint && Date.now() - this.lastClearScrollbackTs <= MaxRepaintTransactionMs) {
                             setTimeout(() => {
-                                console.log("[termwrap] repaint transaction complete, scrolling to bottom");
+                                
                                 this.terminal.scrollToBottom();
                             }, 20);
                         }
@@ -762,7 +675,6 @@ export class TermWrap {
             this.webglAddon = addon;
             globalStore.set(this.webglEnabledAtom, true);
             if (!loggedWebGL) {
-                console.log("loaded webgl!");
                 loggedWebGL = true;
             }
         }
@@ -827,7 +739,7 @@ export class TermWrap {
             globalStore.set(this.lastCommandAtom, lastCmd || null);
             globalStore.set(this.claudeCodeActiveAtom, isCC);
         } catch (e) {
-            console.log("Error loading runtime info:", e);
+            console.error("Error loading runtime info:", e);
         }
 
         try {
@@ -886,7 +798,6 @@ export class TermWrap {
                 this.heldData.push(decodedData);
             }
         } else {
-            console.log("bad fileop for terminal", msg);
             return;
         }
     }
@@ -1034,7 +945,6 @@ export class TermWrap {
                                 }
                             }
                         }
-                        console.log(`[IIP-FIX] Placed scrollback image at row ${entry.row} (${cols}x${rows} tiles)`);
                     }
                 }
             } finally {
@@ -1044,7 +954,6 @@ export class TermWrap {
             // Restore cursor position
             buffer.x = 0;
             buffer.y = this.terminal.rows - 1;
-            console.log(`[IIP-FIX] Restored ${manifest.images.length} images from cache`);
         } catch (e) {
             console.warn("[IIP-FIX] Failed to restore images:", e);
         }
@@ -1112,7 +1021,6 @@ export class TermWrap {
         for (const mode of modes) {
             seq += `\x1b[?${mode}h`;
         }
-        console.log("[termwrap] replaying DEC private modes", modes);
         this.terminal.write(seq);
     }
 
@@ -1123,7 +1031,6 @@ export class TermWrap {
         const serializedOutput = this.serializeAddon.serialize();
         const termSize: TermSize = { rows: this.terminal.rows, cols: this.terminal.cols };
         const decModes = this.serializeDecModes();
-        console.log("idle timeout term", this.dataBytesProcessed, serializedOutput.length, termSize, "decmodes:", decModes);
         fireAndForget(() =>
             services.BlockService.SaveTerminalState(this.blockId, serializedOutput, "full", this.ptyOffset, termSize, decModes)
         );
@@ -1211,7 +1118,6 @@ export class TermWrap {
             }
 
             const manifest = { version: 1, images };
-            console.log(`[IIP-FIX] Manifest: ${images.length} images, hashes: ${images.map(i => i.hash).join(', ')}`);
             fireAndForget(() =>
                 services.BlockService.SaveTerminalImages(this.blockId, JSON.stringify(manifest))
             );
