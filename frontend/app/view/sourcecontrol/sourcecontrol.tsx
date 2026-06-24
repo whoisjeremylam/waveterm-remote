@@ -254,6 +254,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                     onSelect={handleDirectorySelect}
                     onClose={handleDirectoryDropdownClose}
                     anchorRef={pathRef}
+                    dirsOnly
                 />
             )}
 

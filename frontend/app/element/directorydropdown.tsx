@@ -14,6 +14,7 @@ type DirectoryDropdownProps = {
     onSelect: (path: string) => void;
     onClose: () => void;
     anchorRef: React.RefObject<HTMLElement>;
+    dirsOnly?: boolean;
 };
 
 type DirEntry = {
@@ -28,6 +29,7 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
     onSelect,
     onClose,
     anchorRef,
+    dirsOnly = false,
 }: DirectoryDropdownProps) {
     const [entries, setEntries] = useState<DirEntry[]>([]);
     const [loading, setLoading] = useState(true);
@@ -80,11 +82,12 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
 
                 if (result) {
                     for (const item of result) {
-                        if (item.isdir && item.name !== "." && item.name !== "..") {
+                        if (item.name !== "." && item.name !== "..") {
+                            if (dirsOnly && !item.isdir) continue;
                             dirs.push({
                                 name: item.name,
                                 path: item.path,
-                                isdir: true,
+                                isdir: item.isdir,
                             });
                         }
                     }
@@ -93,6 +96,7 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
                 dirs.sort((a, b) => {
                     if (a.name === "..") return -1;
                     if (b.name === "..") return 1;
+                    if (a.isdir !== b.isdir) return a.isdir ? -1 : 1;
                     return a.name.localeCompare(b.name);
                 });
 
@@ -104,7 +108,7 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
                 setLoading(false);
             }
         },
-        [connection]
+        [connection, dirsOnly]
     );
 
     useEffect(() => {
@@ -136,7 +140,7 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
                 </div>
             ) : entries.length === 0 ? (
                 <div className="directory-dropdown-item">
-                    <span className="directory-item-name">No directories</span>
+                    <span className="directory-item-name">Empty directory</span>
                 </div>
             ) : (
                 entries.map((entry) => (
@@ -146,7 +150,7 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
                         onClick={() => handleItemClick(entry)}
                     >
                         <span className="directory-item-name">
-                            <i className={`fa-solid ${entry.name === ".." ? "fa-arrow-up" : "fa-folder"}`} />
+                            <i className={`fa-solid ${entry.name === ".." ? "fa-arrow-up" : entry.isdir ? "fa-folder" : "fa-file"}`} />
                             {entry.name === ".." ? " Parent directory" : ` ${entry.name}`}
                         </span>
                     </div>

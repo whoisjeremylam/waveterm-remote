@@ -587,7 +587,6 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
     const directoryDropdownOpen = useAtomValue(model.directoryDropdownOpen);
-    const pathRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         model.refreshCallback = () => {
@@ -965,7 +964,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     connection={conn === "local" ? "" : conn}
                     onSelect={(path) => model.goHistory(path)}
                     onClose={() => globalStore.set(model.directoryDropdownOpen, false)}
-                    anchorRef={pathRef}
+                    anchorRef={model.previewTextRef}
                 />
             )}
         </Fragment>

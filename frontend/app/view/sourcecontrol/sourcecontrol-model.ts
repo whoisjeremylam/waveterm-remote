@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { globalStore } from "@/app/store/jotaiStore";
+import { getFocusedTerminalCwd } from "@/store/global";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { WaveEnv } from "@/app/waveenv/waveenv";
 import { makeConnRoute, isBlank } from "@/util/util";
@@ -66,13 +67,14 @@ export class SourceControlViewModel implements ViewModel {
             return connValue as string;
         });
 
-        // Terminal CWD from block metadata (set by terminal's OSC 7)
+        // Terminal CWD from focused terminal block (SCM blocks don't have their own cmd:cwd)
         this.terminalCwd = jotai.atom((get) => {
             const cwdValue = get(this.env.getBlockMetaKeyAtom(blockId, "cmd:cwd"));
-            if (isBlank(cwdValue as string)) {
-                return "~";
+            if (!isBlank(cwdValue as string)) {
+                return cwdValue as string;
             }
-            return cwdValue as string;
+            const focusedCwd = getFocusedTerminalCwd();
+            return focusedCwd || "~";
         });
 
         // User-selected CWD (overrides terminal CWD when set)

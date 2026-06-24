@@ -615,6 +615,37 @@ function getFocusedTerminalConnection(): string | null {
     return null;
 }
 
+function getFocusedTerminalCwd(): string | null {
+    const layoutModel = getLayoutModelForStaticTab();
+    if (layoutModel == null) {
+        return null;
+    }
+    const focusedNode = globalStore.get(layoutModel.focusedNode);
+    if (focusedNode != null) {
+        const blockId = focusedNode.data?.blockId;
+        if (blockId) {
+            const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+            if (blockData?.meta?.["cmd:cwd"]) {
+                return blockData.meta["cmd:cwd"];
+            }
+        }
+    }
+    // Fallback: find most recently focused terminal using focus history
+    const focusHistory = layoutModel.focusHistory;
+    for (const nodeId of focusHistory) {
+        const node = layoutModel.getNodeById(nodeId);
+        if (node == null) continue;
+        const blockId = node.data?.blockId;
+        if (blockId) {
+            const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+            if (blockData?.meta?.view === "term" && blockData?.meta?.["cmd:cwd"]) {
+                return blockData.meta["cmd:cwd"];
+            }
+        }
+    }
+    return null;
+}
+
 // pass null to refocus the currently focused block
 function refocusNode(blockId: string) {
     if (blockId == null) {
@@ -749,6 +780,7 @@ export {
     getConnStatusAtom,
     getFocusedBlockId,
     getFocusedTerminalConnection,
+    getFocusedTerminalCwd,
     getHostName,
     getLocalHostDisplayNameAtom,
     getObjectId,
