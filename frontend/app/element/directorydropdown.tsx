@@ -54,14 +54,10 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
     }, [anchorRef]);
 
     useEffect(() => {
-        // Use rAF to ensure layout is computed before measuring
-        const raf = requestAnimationFrame(() => {
-            updatePosition();
-        });
+        updatePosition();
         window.addEventListener("resize", updatePosition);
         window.addEventListener("scroll", updatePosition, true);
         return () => {
-            cancelAnimationFrame(raf);
             window.removeEventListener("resize", updatePosition);
             window.removeEventListener("scroll", updatePosition);
         };
