@@ -125,6 +125,7 @@ const DiffPanel = memo(({ diff, fileName, viewMode }: { diff: GitDiffResponse | 
             </div>
             <div className="flex-1 overflow-hidden">
                 <MonacoDiffViewer
+                    key={viewMode}
                     original={diff.original}
                     modified={diff.modified}
                     language={diff.language}
