@@ -7,7 +7,7 @@ import { Tooltip } from "@/app/element/tooltip";
 import { makeIconClass } from "@/util/util";
 import * as jotai from "jotai";
 import { memo, useCallback, useMemo, useState } from "react";
-import { SourceControlViewModel } from "./sourcecontrol-model";
+import type { SourceControlViewModel } from "./sourcecontrol-model";
 import type { FileTreeNode, SelectedFile } from "./types";
 
 type SourceControlViewProps = ViewComponentProps<SourceControlViewModel>;

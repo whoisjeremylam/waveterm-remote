@@ -8,8 +8,7 @@ import { makeConnRoute, isBlank } from "@/util/util";
 import * as jotai from "jotai";
 import type { SelectedFile } from "./types";
 
-// Forward declaration - will be defined in sourcecontrol.tsx
-declare const SourceControlView: ViewComponent;
+import { SourceControlView } from "./sourcecontrol";
 
 export class SourceControlViewModel implements ViewModel {
     viewType: string;
