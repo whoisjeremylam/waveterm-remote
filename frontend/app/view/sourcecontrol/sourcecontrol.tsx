@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { globalStore } from "@/app/store/jotaiStore";
+import { DirectoryDropdown } from "@/app/element/directorydropdown";
 import { MonacoDiffViewer } from "@/app/monaco/monaco-react";
 import { Tooltip } from "@/app/element/tooltip";
 import { makeIconClass } from "@/util/util";
 import * as jotai from "jotai";
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import type { SourceControlViewModel } from "./sourcecontrol-model";
 import type { FileTreeNode, SelectedFile } from "./types";
 
@@ -78,18 +79,33 @@ const LoadingState = memo(() => (
 LoadingState.displayName = "LoadingState";
 
 // Error state component
-const ErrorState = memo(({ error, onRetry }: { error: string; onRetry: () => void }) => (
-    <div className="flex flex-col items-center justify-center h-full text-error text-sm">
-        <i className="fa-solid fa-circle-exclamation text-2xl mb-2" />
-        <span className="mb-2">{error}</span>
-        <button
-            className="px-3 py-1 text-xs bg-surface rounded hover:bg-hoverbg transition-colors"
-            onClick={onRetry}
-        >
-            Retry
-        </button>
-    </div>
-));
+const ErrorState = memo(({ error, onRetry }: { error: string; onRetry: () => void }) => {
+    const isNotGitRepo = error.includes("not a git repository");
+
+    return (
+        <div className="flex flex-col items-center justify-center h-full text-muted text-sm p-8">
+            <i className="fa-solid fa-code-branch text-3xl mb-3 opacity-50" />
+            {isNotGitRepo ? (
+                <>
+                    <span className="text-center mb-2">This directory is not a git repository</span>
+                    <span className="text-xs text-muted text-center">
+                        Select a directory containing a git repository to view source control status
+                    </span>
+                </>
+            ) : (
+                <>
+                    <span className="text-center mb-2">{error}</span>
+                    <button
+                        className="px-3 py-1 text-xs bg-surface rounded hover:bg-hoverbg transition-colors mt-2"
+                        onClick={onRetry}
+                    >
+                        Retry
+                    </button>
+                </>
+            )}
+        </div>
+    );
+});
 ErrorState.displayName = "ErrorState";
 
 // Diff panel component
@@ -134,11 +150,15 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     const error = jotai.useAtomValue(model.errorAtom);
     const viewMode = jotai.useAtomValue(model.viewModeAtom);
     const diff = jotai.useAtomValue(model.diffAtom);
+    const cwd = jotai.useAtomValue(model.cwd);
+    const connection = jotai.useAtomValue(model.connection);
+    const directoryDropdownOpen = jotai.useAtomValue(model.directoryDropdownOpen);
 
     const [stagedExpanded, setStagedExpanded] = useState(true);
     const [unstagedExpanded, setUnstagedExpanded] = useState(true);
     const [untrackedExpanded, setUntrackedExpanded] = useState(true);
     const [filter, setFilter] = useState("");
+    const pathRef = useRef<HTMLDivElement>(null);
 
     const handleFileSelect = useCallback((file: SelectedFile) => {
         globalStore.set(model.selectedFileAtom, file);
@@ -152,6 +172,15 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
         const newMode = viewMode === "side-by-side" ? "inline" : "side-by-side";
         globalStore.set(model.viewModeAtom, newMode);
     }, [model, viewMode]);
+
+    const handleDirectorySelect = useCallback((path: string) => {
+        globalStore.set(model.cwd, path);
+        globalStore.set(model.directoryDropdownOpen, false);
+    }, [model]);
+
+    const handleDirectoryDropdownClose = useCallback(() => {
+        globalStore.set(model.directoryDropdownOpen, false);
+    }, [model]);
 
     // Filter files
     const filteredStaged = useMemo(() => {
@@ -192,7 +221,9 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
             <div className="flex items-center justify-between px-3 py-2 border-b border-border">
                 <div className="flex items-center gap-2 text-sm">
                     <i className="fa-solid fa-code-branch text-muted" />
-                    <span className="font-medium">{status.branch}</span>
+                    <div ref={pathRef} className="cursor-pointer hover:text-white transition-colors">
+                        {cwd}
+                    </div>
                     <span className="text-muted text-xs">({totalChanges} changes)</span>
                 </div>
                 <div className="flex items-center gap-1">
@@ -214,6 +245,17 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                     </Tooltip>
                 </div>
             </div>
+
+            {/* Directory Dropdown */}
+            {directoryDropdownOpen && (
+                <DirectoryDropdown
+                    currentPath={cwd}
+                    connection={connection === "local" ? "" : connection}
+                    onSelect={handleDirectorySelect}
+                    onClose={handleDirectoryDropdownClose}
+                    anchorRef={pathRef}
+                />
+            )}
 
             {/* Search */}
             <div className="px-3 py-2 border-b border-border">

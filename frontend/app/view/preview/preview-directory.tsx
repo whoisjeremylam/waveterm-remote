@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { DirectoryDropdown } from "@/app/element/directorydropdown";
 import { ContextMenuModel } from "@/app/store/contextmenu";
 import { globalStore } from "@/app/store/jotaiStore";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
@@ -578,13 +579,15 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const showHiddenFiles = useAtomValue(model.showHiddenFiles);
     const [selectedPath, setSelectedPath] = useState("");
     const [refreshVersion, setRefreshVersion] = useAtom(model.refreshVersion);
-    const conn = useAtomValue(model.connection);
+    const conn = useAtomValue(model.connectionImmediate);
     const blockData = useAtomValue(model.blockAtom);
     const finfo = useAtomValue(model.statFile);
     const dirPath = finfo?.path;
     const setErrorMsg = useSetAtom(model.errorMsgAtom);
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
+    const directoryDropdownOpen = useAtomValue(model.directoryDropdownOpen);
+    const pathRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         model.refreshCallback = () => {
@@ -954,6 +957,15 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     style={floatingStyles}
                     getReferenceProps={getFloatingProps}
                     onCancel={() => setEntryManagerProps(undefined)}
+                />
+            )}
+            {directoryDropdownOpen && (
+                <DirectoryDropdown
+                    currentPath={dirPath || "/"}
+                    connection={conn === "local" ? "" : conn}
+                    onSelect={(path) => model.goHistory(path)}
+                    onClose={() => globalStore.set(model.directoryDropdownOpen, false)}
+                    anchorRef={pathRef}
                 />
             )}
         </Fragment>

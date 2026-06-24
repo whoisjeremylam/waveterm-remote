@@ -165,6 +165,7 @@ export class PreviewModel implements ViewModel {
     showHiddenFiles: PrimitiveAtom<boolean>;
     refreshVersion: PrimitiveAtom<number>;
     directorySearchActive: PrimitiveAtom<boolean>;
+    directoryDropdownOpen: PrimitiveAtom<boolean>;
     refreshCallback: () => void;
     directoryKeyDownHandler: (waveEvent: WaveKeyboardEvent) => boolean;
     codeEditKeyDownHandler: (waveEvent: WaveKeyboardEvent) => boolean;
@@ -180,6 +181,7 @@ export class PreviewModel implements ViewModel {
         this.showHiddenFiles = atom<boolean>(showHiddenFiles);
         this.refreshVersion = atom(0);
         this.directorySearchActive = atom(false);
+        this.directoryDropdownOpen = atom(false);
         this.previewTextRef = createRef();
         this.openFileModal = atom(false);
         this.openFileModalDelay = atom(false);
@@ -239,6 +241,7 @@ export class PreviewModel implements ViewModel {
             const loadableSV = get(this.loadableSpecializedView);
             const isCeView = loadableSV.state == "hasData" && loadableSV.data.specializedView == "codeedit";
             const loadableFileInfo = get(this.loadableFileInfo);
+            const isDirectory = loadableFileInfo.state == "hasData" && loadableFileInfo.data?.mimetype === "directory";
             if (loadableFileInfo.state == "hasData") {
                 headerPath = loadableFileInfo.data?.path;
                 if (headerPath == "~") {
@@ -254,7 +257,14 @@ export class PreviewModel implements ViewModel {
                     text: headerPath,
                     ref: this.previewTextRef,
                     className: "preview-filename",
-                    onClick: () => this.toggleOpenFileModal(),
+                    onClick: () => {
+                        if (isDirectory) {
+                            const current = globalStore.get(this.directoryDropdownOpen);
+                            globalStore.set(this.directoryDropdownOpen, !current);
+                        } else {
+                            this.toggleOpenFileModal();
+                        }
+                    },
                 },
             ];
             let saveClassName = "grey";

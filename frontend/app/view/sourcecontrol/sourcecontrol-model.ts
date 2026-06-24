@@ -17,8 +17,10 @@ export class SourceControlViewModel implements ViewModel {
 
     viewIcon = jotai.atom<string>("code-branch");
     viewName = jotai.atom<string>("Source Control");
+    hideViewName = jotai.atom<boolean>(true);
     noPadding = jotai.atom<boolean>(true);
     manageConnection = jotai.atom<boolean>(true);
+    viewText: jotai.Atom<HeaderElem[]>;
 
     // State atoms
     statusAtom: jotai.PrimitiveAtom<GitStatusResponse | null>;
@@ -27,10 +29,12 @@ export class SourceControlViewModel implements ViewModel {
     errorAtom: jotai.PrimitiveAtom<string | null>;
     viewModeAtom: jotai.PrimitiveAtom<"side-by-side" | "inline">;
     diffAtom: jotai.PrimitiveAtom<GitDiffResponse | null>;
+    directoryDropdownOpen: jotai.PrimitiveAtom<boolean>;
 
     // Connection
     connection: jotai.Atom<string>;
-    cwd: jotai.Atom<string>;
+    cwd: jotai.PrimitiveAtom<string>;
+    terminalCwd: jotai.Atom<string>;
     connStatus: jotai.Atom<ConnStatus>;
 
     // Polling
@@ -51,6 +55,7 @@ export class SourceControlViewModel implements ViewModel {
         this.errorAtom = jotai.atom<string | null>(null) as jotai.PrimitiveAtom<string | null>;
         this.viewModeAtom = jotai.atom<"side-by-side" | "inline">("side-by-side") as jotai.PrimitiveAtom<"side-by-side" | "inline">;
         this.diffAtom = jotai.atom<GitDiffResponse | null>(null) as jotai.PrimitiveAtom<GitDiffResponse | null>;
+        this.directoryDropdownOpen = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
 
         // Connection from block metadata
         this.connection = jotai.atom((get) => {
@@ -61,13 +66,52 @@ export class SourceControlViewModel implements ViewModel {
             return connValue as string;
         });
 
-        // CWD from block metadata (set by terminal's OSC 7)
-        this.cwd = jotai.atom((get) => {
+        // Terminal CWD from block metadata (set by terminal's OSC 7)
+        this.terminalCwd = jotai.atom((get) => {
             const cwdValue = get(this.env.getBlockMetaKeyAtom(blockId, "cmd:cwd"));
             if (isBlank(cwdValue as string)) {
                 return "~";
             }
             return cwdValue as string;
+        });
+
+        // User-selected CWD (overrides terminal CWD when set)
+        const userCwdAtom = jotai.atom<string | null, [string], void>(
+            null,
+            (_get, set, value: string) => {
+                set(userCwdAtom, value);
+            }
+        );
+
+        // CWD - writable, user selection takes priority over terminal CWD
+        this.cwd = jotai.atom(
+            (get) => {
+                const userCwd = get(userCwdAtom);
+                if (userCwd !== null) {
+                    return userCwd;
+                }
+                const terminalCwd = get(this.terminalCwd);
+                return terminalCwd || "~";
+            },
+            (_get, set, value: string) => {
+                set(userCwdAtom, value);
+            }
+        ) as jotai.PrimitiveAtom<string>;
+
+        // View text for header - shows current directory
+        this.viewText = jotai.atom((get) => {
+            const cwd = get(this.cwd);
+            return [
+                {
+                    elemtype: "text",
+                    text: cwd,
+                    className: "preview-filename",
+                    onClick: () => {
+                        const current = globalStore.get(this.directoryDropdownOpen);
+                        globalStore.set(this.directoryDropdownOpen, !current);
+                    },
+                },
+            ];
         });
 
         this.connStatus = jotai.atom((get) => {
