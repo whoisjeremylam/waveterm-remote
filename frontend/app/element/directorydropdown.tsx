@@ -4,6 +4,7 @@
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { makeConnRoute } from "@/util/util";
+import { formatRemoteUri } from "@/util/waveutil";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./directorydropdown.scss";
@@ -53,10 +54,14 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
     }, [anchorRef]);
 
     useEffect(() => {
-        updatePosition();
+        // Use rAF to ensure layout is computed before measuring
+        const raf = requestAnimationFrame(() => {
+            updatePosition();
+        });
         window.addEventListener("resize", updatePosition);
         window.addEventListener("scroll", updatePosition, true);
         return () => {
+            cancelAnimationFrame(raf);
             window.removeEventListener("resize", updatePosition);
             window.removeEventListener("scroll", updatePosition);
         };
@@ -67,10 +72,11 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
             setLoading(true);
             try {
                 const route = connection ? makeConnRoute(connection) : undefined;
+                const remotePath = formatRemoteUri(dirPath, connection || "local");
                 const result = await RpcApi.FileListCommand(
                     TabRpcClient,
-                    { path: dirPath },
-                    { route, timeout: 5000 }
+                    { path: remotePath },
+                    { route }
                 );
 
                 const dirs: DirEntry[] = [];

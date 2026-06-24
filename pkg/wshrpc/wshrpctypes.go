@@ -873,9 +873,10 @@ type GitStatusResponse struct {
 }
 
 type CommandGitDiffData struct {
-	Dir   string `json:"dir,omitempty"`   // working directory
-	Path  string `json:"path"`            // file path
-	Staged bool   `json:"staged,omitempty"` // true for staged diff (git diff --cached)
+	Dir       string `json:"dir,omitempty"`       // working directory
+	Path      string `json:"path"`                // file path
+	Staged    bool   `json:"staged,omitempty"`    // true for staged diff (git diff --cached)
+	Untracked bool   `json:"untracked,omitempty"` // true for untracked files (read content directly)
 }
 
 type GitDiffResponse struct {

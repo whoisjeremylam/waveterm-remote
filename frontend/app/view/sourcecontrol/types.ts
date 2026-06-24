@@ -4,6 +4,7 @@
 export type SelectedFile = {
     path: string;
     staged: boolean;
+    untracked?: boolean;
 };
 
 export type FileTreeNode = {

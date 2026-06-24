@@ -35,6 +35,8 @@
     --color-highlightbg: rgba(255, 255, 255, 0.2);
     --color-accent: rgb(88, 193, 66);
     --color-accenthover: rgb(118, 223, 96);
+    --color-surface: rgba(255, 255, 255, 0.05);
+    --color-activebg: rgba(88, 193, 66, 0.15);
 
     --font-sans: "Inter", sans-serif;
     --font-mono: "Hack", monospace;

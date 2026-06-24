@@ -8,6 +8,7 @@ import { Tooltip } from "@/app/element/tooltip";
 import { makeIconClass } from "@/util/util";
 import * as jotai from "jotai";
 import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import type { SourceControlViewModel } from "./sourcecontrol-model";
 import type { FileTreeNode, SelectedFile } from "./types";
 
@@ -133,6 +134,7 @@ const DiffPanel = memo(({ diff, fileName, viewMode }: { diff: GitDiffResponse | 
                         readOnly: true,
                         scrollBeyondLastLine: false,
                         fontSize: 12,
+                        fontFamily: "Hack",
                         minimap: { enabled: false },
                     }}
                 />
@@ -281,79 +283,83 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
             </div>
 
             {/* Content */}
-            <div className="flex flex-1 overflow-hidden">
+            <PanelGroup direction="horizontal" className="flex-1 overflow-hidden">
                 {/* File List */}
-                <div className="w-1/3 border-r border-border overflow-y-auto">
-                    {/* Staged */}
-                    {filteredStaged.length > 0 && (
-                        <div>
-                            <SectionHeader
-                                label="Staged"
-                                count={filteredStaged.length}
-                                expanded={stagedExpanded}
-                                onToggle={() => setStagedExpanded(!stagedExpanded)}
-                            />
-                            {stagedExpanded && filteredStaged.map((file) => (
-                                <FileRow
-                                    key={`staged-${file.path}`}
-                                    data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
-                                    isSelected={selectedFile?.path === file.path && selectedFile?.staged === true}
-                                    onClick={() => handleFileSelect({ path: file.path, staged: true })}
+                <Panel defaultSize={33} minSize={15} maxSize={60}>
+                    <div className="h-full overflow-y-auto border-r border-border">
+                        {/* Staged */}
+                        {filteredStaged.length > 0 && (
+                            <div>
+                                <SectionHeader
+                                    label="Staged"
+                                    count={filteredStaged.length}
+                                    expanded={stagedExpanded}
+                                    onToggle={() => setStagedExpanded(!stagedExpanded)}
                                 />
-                            ))}
-                        </div>
-                    )}
+                                {stagedExpanded && filteredStaged.map((file) => (
+                                    <FileRow
+                                        key={`staged-${file.path}`}
+                                        data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
+                                        isSelected={selectedFile?.path === file.path && selectedFile?.staged === true}
+                                        onClick={() => handleFileSelect({ path: file.path, staged: true })}
+                                    />
+                                ))}
+                            </div>
+                        )}
 
-                    {/* Unstaged */}
-                    {filteredUnstaged.length > 0 && (
-                        <div>
-                            <SectionHeader
-                                label="Changes"
-                                count={filteredUnstaged.length}
-                                expanded={unstagedExpanded}
-                                onToggle={() => setUnstagedExpanded(!unstagedExpanded)}
-                            />
-                            {unstagedExpanded && filteredUnstaged.map((file) => (
-                                <FileRow
-                                    key={`unstaged-${file.path}`}
-                                    data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
-                                    isSelected={selectedFile?.path === file.path && selectedFile?.staged === false}
-                                    onClick={() => handleFileSelect({ path: file.path, staged: false })}
+                        {/* Unstaged */}
+                        {filteredUnstaged.length > 0 && (
+                            <div>
+                                <SectionHeader
+                                    label="Changes"
+                                    count={filteredUnstaged.length}
+                                    expanded={unstagedExpanded}
+                                    onToggle={() => setUnstagedExpanded(!unstagedExpanded)}
                                 />
-                            ))}
-                        </div>
-                    )}
+                                {unstagedExpanded && filteredUnstaged.map((file) => (
+                                    <FileRow
+                                        key={`unstaged-${file.path}`}
+                                        data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
+                                        isSelected={selectedFile?.path === file.path && selectedFile?.staged === false}
+                                        onClick={() => handleFileSelect({ path: file.path, staged: false })}
+                                    />
+                                ))}
+                            </div>
+                        )}
 
-                    {/* Untracked */}
-                    {filteredUntracked.length > 0 && (
-                        <div>
-                            <SectionHeader
-                                label="Untracked"
-                                count={filteredUntracked.length}
-                                expanded={untrackedExpanded}
-                                onToggle={() => setUntrackedExpanded(!untrackedExpanded)}
-                            />
-                            {untrackedExpanded && filteredUntracked.map((file) => (
-                                <FileRow
-                                    key={`untracked-${file.path}`}
-                                    data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
-                                    isSelected={selectedFile?.path === file.path && selectedFile?.staged === false}
-                                    onClick={() => handleFileSelect({ path: file.path, staged: false })}
+                        {/* Untracked */}
+                        {filteredUntracked.length > 0 && (
+                            <div>
+                                <SectionHeader
+                                    label="Untracked"
+                                    count={filteredUntracked.length}
+                                    expanded={untrackedExpanded}
+                                    onToggle={() => setUntrackedExpanded(!untrackedExpanded)}
                                 />
-                            ))}
-                        </div>
-                    )}
-                </div>
-
+                                {untrackedExpanded && filteredUntracked.map((file) => (
+                                    <FileRow
+                                        key={`untracked-${file.path}`}
+                                        data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
+                                        isSelected={selectedFile?.path === file.path && selectedFile?.untracked === true}
+                                        onClick={() => handleFileSelect({ path: file.path, staged: false, untracked: true })}
+                                    />
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </Panel>
+                <PanelResizeHandle className="w-0.5 bg-transparent hover:bg-zinc-500/20 transition-colors" />
                 {/* Diff Panel */}
-                <div className="flex-1 overflow-hidden">
-                    <DiffPanel
-                        diff={diff}
-                        fileName={selectedFile?.path || ""}
-                        viewMode={viewMode}
-                    />
-                </div>
-            </div>
+                <Panel defaultSize={67} minSize={30}>
+                    <div className="h-full overflow-hidden">
+                        <DiffPanel
+                            diff={diff}
+                            fileName={selectedFile?.path || ""}
+                            viewMode={viewMode}
+                        />
+                    </div>
+                </Panel>
+            </PanelGroup>
         </div>
     );
 });

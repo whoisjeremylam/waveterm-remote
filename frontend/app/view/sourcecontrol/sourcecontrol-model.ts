@@ -184,7 +184,7 @@ export class SourceControlViewModel implements ViewModel {
         }
     }
 
-    async fetchDiff(dir: string, path: string, staged: boolean): Promise<GitDiffResponse | null> {
+    async fetchDiff(dir: string, path: string, staged: boolean, untracked: boolean = false): Promise<GitDiffResponse | null> {
         const connStatus = globalStore.get(this.connStatus);
         if (!connStatus?.connected) {
             return null;
@@ -194,7 +194,7 @@ export class SourceControlViewModel implements ViewModel {
         try {
             return await this.env.rpc.GitDiffCommand(
                 TabRpcClient,
-                { dir, path, staged },
+                { dir, path, staged, untracked },
                 { route }
             );
         } catch (e) {
@@ -212,7 +212,7 @@ export class SourceControlViewModel implements ViewModel {
             return;
         }
 
-        const diff = await this.fetchDiff(cwd, selected.path, selected.staged);
+        const diff = await this.fetchDiff(cwd, selected.path, selected.staged, selected.untracked ?? false);
         if (!this.disposed) {
             globalStore.set(this.diffAtom, diff);
         }

@@ -1901,6 +1901,7 @@ declare global {
         dir?: string;
         path: string;
         staged?: boolean;
+        untracked?: boolean;
     };
 
     // wshrpc.GitDiffResponse

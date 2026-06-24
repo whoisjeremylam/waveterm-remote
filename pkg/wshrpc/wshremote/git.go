@@ -6,6 +6,7 @@ package wshremote
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -87,6 +88,21 @@ func (impl *ServerImpl) GitDiffCommand(ctx context.Context, data wshrpc.CommandG
 	path := data.Path
 	if path == "" {
 		return nil, fmt.Errorf("file path is required")
+	}
+
+	// For untracked files, read the file content directly since git diff produces empty output
+	if data.Untracked {
+		fullPath := filepath.Join(dir, path)
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read file: %w", err)
+		}
+		language := detectLanguage(path)
+		return &wshrpc.GitDiffResponse{
+			Original: "",
+			Modified: string(content),
+			Language: language,
+		}, nil
 	}
 
 	var args []string

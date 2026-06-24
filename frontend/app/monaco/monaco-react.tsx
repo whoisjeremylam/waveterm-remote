@@ -192,6 +192,7 @@ export function MonacoDiffViewer({ original, modified, language, path, options }
         const diff = diffRef.current;
         if (!diff) return;
         diff.updateOptions(options);
+        diff.layout();
     }, [options]);
 
     return <div className="flex flex-col h-full w-full" ref={divRef} />;
