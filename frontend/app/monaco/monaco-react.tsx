@@ -135,23 +135,28 @@ export function MonacoDiffViewer({ original, modified, language, path, options }
         const el = divRef.current;
         if (!el) return;
 
-        const origUri = monaco.Uri.parse(`wave://diff/${encodeURIComponent(path)}.orig`);
-        const modUri = monaco.Uri.parse(`wave://diff/${encodeURIComponent(path)}.mod`);
+        try {
+            const origUri = monaco.Uri.parse(`wave://diff/${encodeURIComponent(path)}.orig`);
+            const modUri = monaco.Uri.parse(`wave://diff/${encodeURIComponent(path)}.mod`);
 
-        const originalModel = monaco.editor.createModel(original, language, origUri);
-        const modifiedModel = monaco.editor.createModel(modified, language, modUri);
+            const originalModel = monaco.editor.createModel(original, language, origUri);
+            const modifiedModel = monaco.editor.createModel(modified, language, modUri);
 
-        const diff = monaco.editor.createDiffEditor(el, options);
-        diffRef.current = diff;
+            const diff = monaco.editor.createDiffEditor(el, options);
+            diffRef.current = diff;
 
-        diff.setModel({ original: originalModel, modified: modifiedModel });
+            diff.setModel({ original: originalModel, modified: modifiedModel });
+        } catch (e) {
+            console.error("Failed to create Monaco diff editor:", e);
+        }
 
         return () => {
-            diff.setModel(null);
-            diff.dispose();
-            originalModel.dispose();
-            modifiedModel.dispose();
-            diffRef.current = null;
+            const diff = diffRef.current;
+            if (diff) {
+                diff.setModel(null);
+                diff.dispose();
+                diffRef.current = null;
+            }
         };
     }, []);
 

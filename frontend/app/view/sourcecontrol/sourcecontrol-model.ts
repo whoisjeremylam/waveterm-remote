@@ -212,7 +212,9 @@ export class SourceControlViewModel implements ViewModel {
             return;
         }
 
+        console.log("Fetching diff for:", selected.path, "staged:", selected.staged, "untracked:", selected.untracked);
         const diff = await this.fetchDiff(cwd, selected.path, selected.staged, selected.untracked ?? false);
+        console.log("Diff result:", diff ? { original: diff.original.substring(0, 50), modified: diff.modified.substring(0, 50), language: diff.language } : null);
         if (!this.disposed) {
             globalStore.set(this.diffAtom, diff);
         }

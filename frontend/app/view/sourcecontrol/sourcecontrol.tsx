@@ -111,6 +111,15 @@ ErrorState.displayName = "ErrorState";
 
 // Diff panel component
 const DiffPanel = memo(({ diff, fileName, viewMode }: { diff: GitDiffResponse | null; fileName: string; viewMode: "side-by-side" | "inline" }) => {
+    const diffViewerOptions = useMemo(() => ({
+        renderSideBySide: viewMode === "side-by-side",
+        readOnly: true,
+        scrollBeyondLastLine: false,
+        fontSize: 12,
+        fontFamily: "Hack",
+        minimap: { enabled: false },
+    }), [viewMode]);
+
     if (!diff) {
         return (
             <EmptyState message="Select a file to view changes" />
@@ -130,14 +139,7 @@ const DiffPanel = memo(({ diff, fileName, viewMode }: { diff: GitDiffResponse | 
                     modified={diff.modified}
                     language={diff.language}
                     path={fileName}
-                    options={{
-                        renderSideBySide: viewMode === "side-by-side",
-                        readOnly: true,
-                        scrollBeyondLastLine: false,
-                        fontSize: 12,
-                        fontFamily: "Hack",
-                        minimap: { enabled: false },
-                    }}
+                    options={diffViewerOptions}
                 />
             </div>
         </div>
