@@ -617,7 +617,7 @@ export class TermWrap {
                     this.uploadActive = true;
                     setBlockUploadState(this.blockId, { active: true, fileName: file.name, fileSize: file.size });
                     try {
-                        const tempPath = await createRemoteTempFileFromBlob(file);
+                        const tempPath = await createRemoteTempFileFromBlob(file, undefined, connName);
                         paths.push(quoteForPosixShell(tempPath));
                     } catch (err) {
                         console.error("Failed to transfer file to remote:", err);
@@ -1179,7 +1179,7 @@ export class TermWrap {
                         const fileName = `screenshot_${Date.now()}.png`;
                         setBlockUploadState(this.blockId, { active: true, fileName, fileSize: data.image.size });
                         try {
-                            tempPath = await createRemoteTempFileFromBlob(data.image);
+                            tempPath = await createRemoteTempFileFromBlob(data.image, undefined, connName);
                         } finally {
                             this.uploadActive = false;
                             setBlockUploadState(this.blockId, null);
