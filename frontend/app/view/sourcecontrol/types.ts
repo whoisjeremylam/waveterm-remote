@@ -15,3 +15,11 @@ export type FileTreeNode = {
     isDirectory: boolean;
     children?: FileTreeNode[];
 };
+
+export type DiffHunk = {
+    header: string;
+    modifiedStart: number;
+    modifiedCount: number;
+    originalStart: number;
+    originalCount: number;
+};

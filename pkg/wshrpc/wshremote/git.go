@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
@@ -90,13 +91,18 @@ func (impl *ServerImpl) GitDiffCommand(ctx context.Context, data wshrpc.CommandG
 		return nil, fmt.Errorf("file path is required")
 	}
 
+	fmt.Printf("[SCM] GitDiffCommand: dir=%s, path=%s, staged=%v, untracked=%v\n", dir, path, data.Staged, data.Untracked)
+
 	// For untracked files, read the file content directly since git diff produces empty output
 	if data.Untracked {
 		fullPath := filepath.Join(dir, path)
+		fmt.Printf("[SCM] Reading untracked file: %s\n", fullPath)
 		content, err := os.ReadFile(fullPath)
 		if err != nil {
+			fmt.Printf("[SCM] Failed to read file: %v\n", err)
 			return nil, fmt.Errorf("failed to read file: %w", err)
 		}
+		fmt.Printf("[SCM] File content length: %d bytes\n", len(content))
 		language := detectLanguage(path)
 		return &wshrpc.GitDiffResponse{
 			Original: "",
@@ -120,6 +126,9 @@ func (impl *ServerImpl) GitDiffCommand(ctx context.Context, data wshrpc.CommandG
 	// Parse unified diff into original/modified
 	original, modified := parseUnifiedDiff(diffOutput)
 
+	// Parse hunks for gutter toolbar
+	hunks := parseDiffHunks(diffOutput)
+
 	// Detect language from file extension
 	language := detectLanguage(path)
 
@@ -127,7 +136,79 @@ func (impl *ServerImpl) GitDiffCommand(ctx context.Context, data wshrpc.CommandG
 		Original: original,
 		Modified: modified,
 		Language: language,
+		Hunks:    hunks,
 	}, nil
+}
+
+// GitStageCommand stages files: git add -A -- <paths>
+func (impl *ServerImpl) GitStageCommand(ctx context.Context, data wshrpc.CommandGitStageData) error {
+	if data.Dir == "" {
+		return fmt.Errorf("directory is required")
+	}
+	if len(data.Paths) == 0 {
+		return nil
+	}
+	args := append([]string{"add", "-A", "--"}, data.Paths...)
+	_, err := runGitCommand(ctx, data.Dir, args...)
+	return err
+}
+
+// GitUnstageCommand unstages files: git reset -q HEAD -- <paths>
+func (impl *ServerImpl) GitUnstageCommand(ctx context.Context, data wshrpc.CommandGitUnstageData) error {
+	if data.Dir == "" {
+		return fmt.Errorf("directory is required")
+	}
+	if len(data.Paths) == 0 {
+		return nil
+	}
+	args := append([]string{"reset", "-q", "HEAD", "--"}, data.Paths...)
+	_, err := runGitCommand(ctx, data.Dir, args...)
+	return err
+}
+
+// GitStageHunkCommand stages a single hunk using git apply --cached
+func (impl *ServerImpl) GitStageHunkCommand(ctx context.Context, data wshrpc.CommandGitStageHunkData) error {
+	if data.Dir == "" {
+		return fmt.Errorf("directory is required")
+	}
+	// Get full diff for unstaged changes
+	diffOutput, err := runGitCommand(ctx, data.Dir, "diff", "--", data.Path)
+	if err != nil {
+		return fmt.Errorf("git diff failed: %w", err)
+	}
+	// Parse hunks and extract the target hunk
+	hunks := parseDiffHunks(diffOutput)
+	if data.HunkIndex < 0 || data.HunkIndex >= len(hunks) {
+		return fmt.Errorf("hunk index %d out of range (0-%d)", data.HunkIndex, len(hunks)-1)
+	}
+	// Build a minimal patch for just that hunk
+	patch := extractHunkPatch(diffOutput, data.Path, data.HunkIndex)
+	// Apply via stdin to git apply --cached
+	return applyPatchCached(ctx, data.Dir, patch)
+}
+
+// GitRevertHunkCommand discards a hunk's changes
+func (impl *ServerImpl) GitRevertHunkCommand(ctx context.Context, data wshrpc.CommandGitRevertHunkData) error {
+	if data.Dir == "" {
+		return fmt.Errorf("directory is required")
+	}
+	var diffOutput string
+	var err error
+	if data.Staged {
+		diffOutput, err = runGitCommand(ctx, data.Dir, "diff", "--cached", "--", data.Path)
+	} else {
+		diffOutput, err = runGitCommand(ctx, data.Dir, "diff", "--", data.Path)
+	}
+	if err != nil {
+		return fmt.Errorf("git diff failed: %w", err)
+	}
+	hunks := parseDiffHunks(diffOutput)
+	if data.HunkIndex < 0 || data.HunkIndex >= len(hunks) {
+		return fmt.Errorf("hunk index %d out of range", data.HunkIndex)
+	}
+	// Build inverse patch (swap + and - lines)
+	patch := extractHunkInversePatch(diffOutput, data.Path, data.HunkIndex)
+	return applyPatch(ctx, data.Dir, patch)
 }
 
 // runGitCommand runs a git command in the specified directory
@@ -329,4 +410,185 @@ func detectLanguage(path string) string {
 	default:
 		return "plaintext"
 	}
+}
+
+// DiffHunk represents a parsed hunk from unified diff output
+type DiffHunk struct {
+	Header   string
+	StartLine int
+	Lines    []string
+}
+
+// parseDiffHunks extracts individual hunks from unified diff output
+func parseDiffHunks(diff string) []wshrpc.GitDiffHunk {
+	var hunks []wshrpc.GitDiffHunk
+	lines := strings.Split(diff, "\n")
+
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "@@") {
+			continue
+		}
+		// Parse @@ -a,b +c,d @@ header
+		hunk := parseHunkHeader(line)
+		if hunk != nil {
+			hunks = append(hunks, *hunk)
+		}
+	}
+	return hunks
+}
+
+// parseHunkHeader parses a @@ -a,b +c,d @@ line into a GitDiffHunk
+func parseHunkHeader(header string) *wshrpc.GitDiffHunk {
+	// Find the first @@ and extract the range spec
+	idx := strings.Index(header, "@@")
+	if idx < 0 {
+		return nil
+	}
+	rest := header[idx+2:]
+	endIdx := strings.Index(rest, "@@")
+	if endIdx < 0 {
+		return nil
+	}
+	rangeSpec := strings.TrimSpace(rest[:endIdx])
+
+	// Parse "-a,b +c,d"
+	hunk := &wshrpc.GitDiffHunk{Header: header}
+
+	// Parse original range: -a,b
+	if len(rangeSpec) > 0 && rangeSpec[0] == '-' {
+		rangeSpec = rangeSpec[1:]
+		commaIdx := strings.Index(rangeSpec, ",")
+		spaceIdx := strings.Index(rangeSpec, " ")
+		endIdx := commaIdx
+		if endIdx < 0 || (spaceIdx >= 0 && spaceIdx < endIdx) {
+			endIdx = spaceIdx
+		}
+		if endIdx < 0 {
+			endIdx = len(rangeSpec)
+		}
+		n, err := strconv.Atoi(rangeSpec[:endIdx])
+		if err == nil {
+			hunk.OriginalStart = n
+		}
+		if commaIdx >= 0 {
+			rangeSpec = rangeSpec[commaIdx+1:]
+			spaceIdx = strings.Index(rangeSpec, " ")
+			if spaceIdx < 0 {
+				spaceIdx = len(rangeSpec)
+			}
+			n, err := strconv.Atoi(rangeSpec[:spaceIdx])
+			if err == nil {
+				hunk.OriginalCount = n
+			}
+			if spaceIdx < len(rangeSpec) {
+				rangeSpec = rangeSpec[spaceIdx:]
+			} else {
+				rangeSpec = ""
+			}
+		}
+	}
+
+	// Parse modified range: +c,d
+	rangeSpec = strings.TrimSpace(rangeSpec)
+	if len(rangeSpec) > 0 && rangeSpec[0] == '+' {
+		rangeSpec = rangeSpec[1:]
+		commaIdx := strings.Index(rangeSpec, ",")
+		endIdx := commaIdx
+		if endIdx < 0 {
+			endIdx = len(rangeSpec)
+		}
+		n, err := strconv.Atoi(rangeSpec[:endIdx])
+		if err == nil {
+			hunk.ModifiedStart = n
+		}
+		if commaIdx >= 0 {
+			rangeSpec = rangeSpec[commaIdx+1:]
+			n, err := strconv.Atoi(rangeSpec)
+			if err == nil {
+				hunk.ModifiedCount = n
+			}
+		}
+	}
+
+	return hunk
+}
+
+// extractHunkPatch extracts a single hunk from raw diff output and builds a patch
+func extractHunkPatch(diff string, path string, hunkIndex int) string {
+	lines := strings.Split(diff, "\n")
+	hunkLines := extractHunkLines(lines, hunkIndex)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("--- a/%s\n", path))
+	b.WriteString(fmt.Sprintf("+++ b/%s\n", path))
+	for _, line := range hunkLines {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// extractHunkInversePatch extracts a single hunk and builds an inverse patch (revert)
+func extractHunkInversePatch(diff string, path string, hunkIndex int) string {
+	lines := strings.Split(diff, "\n")
+	hunkLines := extractHunkLines(lines, hunkIndex)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("--- a/%s\n", path))
+	b.WriteString(fmt.Sprintf("+++ b/%s\n", path))
+	for _, line := range hunkLines {
+		if strings.HasPrefix(line, "+") {
+			b.WriteString("-" + line[1:])
+		} else if strings.HasPrefix(line, "-") {
+			b.WriteString("+" + line[1:])
+		} else {
+			b.WriteString(line)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// extractHunkLines extracts the lines of a specific hunk from diff output
+func extractHunkLines(lines []string, hunkIndex int) []string {
+	currentHunk := -1
+	var result []string
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "@@") {
+			currentHunk++
+			if currentHunk == hunkIndex {
+				result = append(result, line)
+				continue
+			}
+		}
+		if currentHunk == hunkIndex && currentHunk >= 0 {
+			result = append(result, line)
+		}
+	}
+	return result
+}
+
+// applyPatchCached applies a patch to the git index via stdin
+func applyPatchCached(ctx context.Context, dir string, patch string) error {
+	cmd := exec.CommandContext(ctx, "git", "apply", "--cached")
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(patch)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git apply --cached failed: %s %w", string(output), err)
+	}
+	return nil
+}
+
+// applyPatch applies a patch to the working tree via stdin
+func applyPatch(ctx context.Context, dir string, patch string) error {
+	cmd := exec.CommandContext(ctx, "git", "apply")
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(patch)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git apply failed: %s %w", string(output), err)
+	}
+	return nil
 }

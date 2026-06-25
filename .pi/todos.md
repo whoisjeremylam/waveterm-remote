@@ -167,6 +167,78 @@
 - [ ] Paste screenshots into terminal (local sessions — polish)
   - [ ] Consider implementing paste-as-image in Pi directly for tighter integration (avoid SCP+filename pattern, inject binary data or use OSC52/terminal-native paste)
 
+## Phase 4: SCM Widget — VS Code Feature Parity (MVP Priority)
+
+### Analysis Complete (2026-06-25)
+
+Full VS Code SCM diff view feature analysis done on `~/project/vscode`. Source files examined:
+- `src/vs/workbench/contrib/scm/browser/scmViewPane.ts` (main panel)
+- `src/vs/editor/browser/widget/diffEditor/diffEditorWidget.ts` (diff editor)
+- `src/vs/editor/browser/widget/diffEditor/commands.ts` (diff commands)
+- `src/vs/workbench/contrib/multiDiffEditor/browser/multiDiffEditor.ts` (multi-file diff)
+- `extensions/git/src/commands.ts` (git commands)
+
+### MVP Priority — Must Have
+
+- [ ] **Stage/Unstage individual files** — `git.stage`, `git.unstage`, `git.stageAll`, `git.unstageAll` (resource-level actions in scmViewPane)
+- [ ] **Stage/Unstage individual hunks** — `git.diff.stageHunk`, `git.diff.stageSelection` (inline actions from gutter toolbar in diff editor)
+- [ ] **Commit with message input** — `git.commit` with configurable input widget (auto-growing height, history nav)
+- [ ] **Discard/revert changes** — `git.revertChange` (per-file), `RevertHunkOrSelection` (per-hunk from diff gutter)
+- [ ] **Next/prev change navigation** — `GoToNextChangeAction` (`F7`), `GoToPreviousChangeAction` (`Shift+F7`) in diff editor
+- [ ] **Multi-file diff view** — `git.openAllChanges` opens all changed files in single editor; middle-click in SCM panel triggers this
+
+### Should Have
+
+- [ ] **Collapse unchanged regions** — `diffEditor.hideUnchangedRegions.enabled` (auto-collapse unchanged code blocks)
+- [ ] **Compact mode** — `diffEditor.compactMode` (hides original line numbers, auto-selects inline for simple diffs)
+- [ ] **Stage individual hunks from diff view gutter** — Gutter toolbar with per-hunk actions (stage, revert)
+- [ ] **Commit amend** — `git.commitAmend`
+- [ ] **Stage all / Unstage all** — `git.stageAll`, `git.unstageAll`
+- [ ] **Open file from diff** — `git.openFile`
+
+### Nice-to-Have (Next Stage)
+
+- [ ] **Push/Pull/Fetch** — `git.push`, `git.pull`, `git.fetch` (full set)
+- [ ] **Branch management** — `git.checkout`, `git.branch`, `git.deleteBranch`
+- [ ] **Stash operations** — `git.stash`, `git.stashPop`, `git.stashApply`
+- [ ] **Merge/Rebase** — `git.merge`, `git.rebase` (with abort)
+- [ ] **Gutter decorations** — Line-level insert/delete icons, configurable width (1-5px)
+- [ ] **Overview ruler** — Shows change locations in editor scrollbar
+- [ ] **Word-level diff highlighting** — Already inherited from Monaco ✅
+- [ ] **Collapse unchanged regions** — `ToggleCollapseUnchangedRegions` in diff editor
+- [ ] **Compact mode** — Hides original line numbers, auto-selects inline for simple diffs
+- [ ] **Diff algorithm selection** — `legacy`, `advanced`, `advanced-external`
+- [ ] **True inline diff** — `diffEditor.experimental.useTrueInlineView`
+
+### VS Code Settings Reference (for future implementation)
+
+- `scm.defaultViewMode`: `tree` or `list` (tree = hierarchical folders, list = flat)
+- `scm.defaultViewSortKey`: `path`, `name`, or `status`
+- `scm.countBadge`: `all`, `focused`, or `off`
+- `scm.compactFolders`: Compress single-child folders in tree view
+- `scm.autoReveal`: Auto-reveal active file in SCM view
+- `scm.diffDecorations`: Where to show decorations (`all`, `gutter`, `overview`, `minimap`, `none`)
+- `diffEditor.renderSideBySide`: Side-by-side vs inline
+- `diffEditor.hideUnchangedRegions.enabled`: Auto-collapse unchanged regions
+- `diffEditor.ignoreTrimWhitespace`: Ignore whitespace changes
+- `diffEditor.diffAlgorithm`: `legacy` or `advanced`
+
+### Key Keyboard Shortcuts (VS Code)
+
+- `F7` / `Shift+F7`: Next/previous difference in diff editor
+- `Ctrl+Enter`: Commit (accept input)
+- `Up/Down Arrow`: Navigate commit history in input
+- `Alt+F5` / `Alt+Shift+F5`: Next/previous file change in multi-diff
+
+### Key Source Files (VS Code)
+
+- `src/vs/workbench/contrib/scm/browser/scmViewPane.ts` — Main SCM panel tree view
+- `src/vs/workbench/contrib/scm/browser/scmInput.ts` — Commit message input widget
+- `src/vs/editor/browser/widget/diffEditor/diffEditorWidget.ts` — Core diff editor
+- `src/vs/editor/browser/widget/diffEditor/commands.ts` — Diff editor commands
+- `src/vs/workbench/contrib/multiDiffEditor/browser/multiDiffEditor.ts` — Multi-file diff
+- `extensions/git/src/commands.ts` — All git commands
+
 ## Backlog / Ideas
 
 ### Features to Add (discuss, spec, scope later)

@@ -7,8 +7,10 @@ import { MonacoDiffViewer } from "@/app/monaco/monaco-react";
 import { Tooltip } from "@/app/element/tooltip";
 import { makeIconClass } from "@/util/util";
 import * as jotai from "jotai";
+import * as monaco from "monaco-editor";
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { DiffGutter } from "./DiffGutter";
 import type { SourceControlViewModel } from "./sourcecontrol-model";
 import type { FileTreeNode, SelectedFile } from "./types";
 
@@ -32,31 +34,62 @@ const FileIcon = memo(({ icon, color }: { icon: string; color: string }) => (
 FileIcon.displayName = "FileIcon";
 
 // Single file row component
-const FileRow = memo(({ data, isSelected, onClick }: { data: FileTreeNode; isSelected: boolean; onClick: () => void }) => {
+const FileRow = memo(({ data, isSelected, onClick, stageLabel, onStage }: {
+    data: FileTreeNode;
+    isSelected: boolean;
+    onClick: () => void;
+    stageLabel?: string;
+    onStage?: () => void;
+}) => {
     return (
         <div
-            className={`flex items-center gap-2 px-2 py-1 cursor-pointer text-xs ${
+            className={`flex items-center gap-2 px-2 py-1 cursor-pointer text-xs group ${
                 isSelected ? "bg-activebg text-white" : "hover:bg-hoverbg text-secondary"
             }`}
             onClick={onClick}
         >
             <StatusBadge status={data.status.status} color={data.status.color} />
             <FileIcon icon={data.status.icon} color={data.status.color} />
-            <span className="truncate">{data.name}</span>
+            <span className="truncate flex-1">{data.name}</span>
+            {onStage && stageLabel && (
+                <Tooltip content={stageLabel} placement="right">
+                    <button
+                        className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-hoverbg transition-opacity"
+                        onClick={(e) => { e.stopPropagation(); onStage(); }}
+                    >
+                        <i className={`fa-solid ${stageLabel === "Stage" ? "fa-plus" : "fa-minus"} text-[10px]`} />
+                    </button>
+                </Tooltip>
+            )}
         </div>
     );
 });
 FileRow.displayName = "FileRow";
 
 // Section header component
-const SectionHeader = memo(({ label, count, expanded, onToggle }: { label: string; count: number; expanded: boolean; onToggle: () => void }) => (
+const SectionHeader = memo(({ label, count, expanded, onToggle, actionLabel, onAction }: {
+    label: string;
+    count: number;
+    expanded: boolean;
+    onToggle: () => void;
+    actionLabel?: string;
+    onAction?: () => void;
+}) => (
     <div
-        className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-muted hover:text-secondary"
+        className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-muted hover:text-secondary group"
         onClick={onToggle}
     >
         <i className={`fa-solid fa-chevron-${expanded ? "down" : "right"} text-[10px]`} />
         <span>{label}</span>
         <span className="text-[10px] bg-surface rounded px-1.5 py-0.5">{count}</span>
+        {actionLabel && onAction && count > 0 && (
+            <button
+                className="ml-auto opacity-0 group-hover:opacity-100 text-[10px] px-1.5 py-0.5 rounded hover:bg-hoverbg transition-opacity"
+                onClick={(e) => { e.stopPropagation(); onAction(); }}
+            >
+                {actionLabel}
+            </button>
+        )}
     </div>
 ));
 SectionHeader.displayName = "SectionHeader";
@@ -110,7 +143,16 @@ const ErrorState = memo(({ error, onRetry }: { error: string; onRetry: () => voi
 ErrorState.displayName = "ErrorState";
 
 // Diff panel component
-const DiffPanel = memo(({ diff, fileName, viewMode }: { diff: GitDiffResponse | null; fileName: string; viewMode: "side-by-side" | "inline" }) => {
+const DiffPanel = memo(({ diff, fileName, viewMode, isStaged, onStageHunk, onRevertHunk }: {
+    diff: GitDiffResponse | null;
+    fileName: string;
+    viewMode: "side-by-side" | "inline";
+    isStaged: boolean;
+    onStageHunk: (hunkIndex: number) => void;
+    onRevertHunk: (hunkIndex: number) => void;
+}) => {
+    const [diffEditor, setDiffEditor] = useState<monaco.editor.IStandaloneDiffEditor | null>(null);
+
     const diffViewerOptions = useMemo(() => ({
         renderSideBySide: viewMode === "side-by-side",
         readOnly: true,
@@ -119,6 +161,10 @@ const DiffPanel = memo(({ diff, fileName, viewMode }: { diff: GitDiffResponse | 
         fontFamily: "Hack",
         minimap: { enabled: false },
     }), [viewMode]);
+
+    const handleMount = useCallback((editor: monaco.editor.IStandaloneDiffEditor) => {
+        setDiffEditor(editor);
+    }, []);
 
     if (!diff) {
         return (
@@ -132,7 +178,7 @@ const DiffPanel = memo(({ diff, fileName, viewMode }: { diff: GitDiffResponse | 
                 <i className="fa-solid fa-file-code" />
                 <span className="truncate">{fileName}</span>
             </div>
-            <div className="flex-1 overflow-hidden">
+            <div className="flex-1 overflow-hidden relative">
                 <MonacoDiffViewer
                     key={viewMode}
                     original={diff.original}
@@ -140,7 +186,23 @@ const DiffPanel = memo(({ diff, fileName, viewMode }: { diff: GitDiffResponse | 
                     language={diff.language}
                     path={fileName}
                     options={diffViewerOptions}
+                    onMount={handleMount}
                 />
+                {diffEditor && diff.hunks && diff.hunks.length > 0 && (
+                    <DiffGutter
+                        diffEditor={diffEditor}
+                        hunks={diff.hunks.map(h => ({
+                            header: h.header,
+                            modifiedStart: h.modifiedStart,
+                            modifiedCount: h.modifiedCount,
+                            originalStart: h.originalStart,
+                            originalCount: h.originalCount,
+                        }))}
+                        isStaged={isStaged}
+                        onStageHunk={onStageHunk}
+                        onRevertHunk={onRevertHunk}
+                    />
+                )}
             </div>
         </div>
     );
@@ -186,6 +248,25 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     const handleDirectoryDropdownClose = useCallback(() => {
         globalStore.set(model.directoryDropdownOpen, false);
     }, [model]);
+
+    const handleStageFile = useCallback((path: string) => {
+        model.stageFiles([path]);
+    }, [model]);
+
+    const handleUnstageFile = useCallback((path: string) => {
+        model.unstageFiles([path]);
+    }, [model]);
+
+    const handleStageAll = useCallback(() => {
+        const unstaged = status?.unstaged?.map(f => f.path) ?? [];
+        const untracked = status?.untracked?.map(f => f.path) ?? [];
+        model.stageFiles([...unstaged, ...untracked]);
+    }, [model, status]);
+
+    const handleUnstageAll = useCallback(() => {
+        const staged = status?.staged?.map(f => f.path) ?? [];
+        model.unstageFiles(staged);
+    }, [model, status]);
 
     // Filter files
     const filteredStaged = useMemo(() => {
@@ -298,6 +379,8 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                                     count={filteredStaged.length}
                                     expanded={stagedExpanded}
                                     onToggle={() => setStagedExpanded(!stagedExpanded)}
+                                    actionLabel="Unstage All"
+                                    onAction={handleUnstageAll}
                                 />
                                 {stagedExpanded && filteredStaged.map((file) => (
                                     <FileRow
@@ -305,6 +388,8 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                                         data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
                                         isSelected={selectedFile?.path === file.path && selectedFile?.staged === true}
                                         onClick={() => handleFileSelect({ path: file.path, staged: true })}
+                                        stageLabel="Unstage"
+                                        onStage={() => handleUnstageFile(file.path)}
                                     />
                                 ))}
                             </div>
@@ -318,6 +403,8 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                                     count={filteredUnstaged.length}
                                     expanded={unstagedExpanded}
                                     onToggle={() => setUnstagedExpanded(!unstagedExpanded)}
+                                    actionLabel="Stage All"
+                                    onAction={handleStageAll}
                                 />
                                 {unstagedExpanded && filteredUnstaged.map((file) => (
                                     <FileRow
@@ -325,6 +412,8 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                                         data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
                                         isSelected={selectedFile?.path === file.path && selectedFile?.staged === false}
                                         onClick={() => handleFileSelect({ path: file.path, staged: false })}
+                                        stageLabel="Stage"
+                                        onStage={() => handleStageFile(file.path)}
                                     />
                                 ))}
                             </div>
@@ -338,6 +427,8 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                                     count={filteredUntracked.length}
                                     expanded={untrackedExpanded}
                                     onToggle={() => setUntrackedExpanded(!untrackedExpanded)}
+                                    actionLabel="Stage All"
+                                    onAction={handleStageAll}
                                 />
                                 {untrackedExpanded && filteredUntracked.map((file) => (
                                     <FileRow
@@ -345,6 +436,8 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                                         data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
                                         isSelected={selectedFile?.path === file.path && selectedFile?.untracked === true}
                                         onClick={() => handleFileSelect({ path: file.path, staged: false, untracked: true })}
+                                        stageLabel="Stage"
+                                        onStage={() => handleStageFile(file.path)}
                                     />
                                 ))}
                             </div>
@@ -359,6 +452,9 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                             diff={diff}
                             fileName={selectedFile?.path || ""}
                             viewMode={viewMode}
+                            isStaged={selectedFile?.staged ?? false}
+                            onStageHunk={(hunkIndex) => model.stageHunk(selectedFile?.path || "", hunkIndex)}
+                            onRevertHunk={(hunkIndex) => model.revertHunk(selectedFile?.path || "", hunkIndex, selectedFile?.staged ?? false)}
                         />
                     </div>
                 </Panel>

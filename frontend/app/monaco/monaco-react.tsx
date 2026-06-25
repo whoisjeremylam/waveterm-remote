@@ -122,9 +122,10 @@ type DiffViewerProps = {
     language?: string;
     path: string;
     options: MonacoTypes.editor.IDiffEditorOptions;
+    onMount?: (editor: MonacoTypes.editor.IStandaloneDiffEditor) => void;
 };
 
-export function MonacoDiffViewer({ original, modified, language, path, options }: DiffViewerProps) {
+export function MonacoDiffViewer({ original, modified, language, path, options, onMount }: DiffViewerProps) {
     const divRef = useRef<HTMLDivElement>(null);
     const diffRef = useRef<MonacoTypes.editor.IStandaloneDiffEditor | null>(null);
 
@@ -146,6 +147,7 @@ export function MonacoDiffViewer({ original, modified, language, path, options }
             diffRef.current = diff;
 
             diff.setModel({ original: originalModel, modified: modifiedModel });
+            onMount?.(diff);
         } catch (e) {
             console.error("Failed to create Monaco diff editor:", e);
         }

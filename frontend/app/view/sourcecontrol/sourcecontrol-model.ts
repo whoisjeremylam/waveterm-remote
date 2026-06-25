@@ -31,6 +31,7 @@ export class SourceControlViewModel implements ViewModel {
     viewModeAtom: jotai.PrimitiveAtom<"side-by-side" | "inline">;
     diffAtom: jotai.PrimitiveAtom<GitDiffResponse | null>;
     directoryDropdownOpen: jotai.PrimitiveAtom<boolean>;
+    stagingAtom: jotai.PrimitiveAtom<boolean>;
 
     // Connection
     connection: jotai.Atom<string>;
@@ -57,6 +58,7 @@ export class SourceControlViewModel implements ViewModel {
         this.viewModeAtom = jotai.atom<"side-by-side" | "inline">("side-by-side") as jotai.PrimitiveAtom<"side-by-side" | "inline">;
         this.diffAtom = jotai.atom<GitDiffResponse | null>(null) as jotai.PrimitiveAtom<GitDiffResponse | null>;
         this.directoryDropdownOpen = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
+        this.stagingAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
 
         // Connection from block metadata
         this.connection = jotai.atom((get) => {
@@ -212,11 +214,89 @@ export class SourceControlViewModel implements ViewModel {
             return;
         }
 
-        console.log("Fetching diff for:", selected.path, "staged:", selected.staged, "untracked:", selected.untracked);
-        const diff = await this.fetchDiff(cwd, selected.path, selected.staged, selected.untracked ?? false);
-        console.log("Diff result:", diff ? { original: diff.original.substring(0, 50), modified: diff.modified.substring(0, 50), language: diff.language } : null);
+        const untracked = selected.untracked ?? false;
+        console.log("[SCM] fetchDiffForSelected:", {
+            path: selected.path,
+            staged: selected.staged,
+            untracked,
+            cwd,
+        });
+        const diff = await this.fetchDiff(cwd, selected.path, selected.staged, untracked);
+        console.log("[SCM] diff result:", diff ? {
+            hasOriginal: diff.original.length > 0,
+            hasModified: diff.modified.length > 0,
+            originalLen: diff.original.length,
+            modifiedLen: diff.modified.length,
+            language: diff.language,
+        } : null);
         if (!this.disposed) {
             globalStore.set(this.diffAtom, diff);
+        }
+    }
+
+    async stageFiles(paths: string[]) {
+        if (paths.length === 0) return;
+        const cwd = globalStore.get(this.cwd);
+        const route = makeConnRoute(globalStore.get(this.connection));
+        globalStore.set(this.stagingAtom, true);
+        try {
+            await this.env.rpc.GitStageCommand(TabRpcClient, { dir: cwd, paths }, { route });
+            await this.fetchStatus();
+            await this.fetchDiffForSelected();
+        } catch (e) {
+            console.error("Failed to stage files:", e);
+            await this.fetchStatus();
+        } finally {
+            globalStore.set(this.stagingAtom, false);
+        }
+    }
+
+    async unstageFiles(paths: string[]) {
+        if (paths.length === 0) return;
+        const cwd = globalStore.get(this.cwd);
+        const route = makeConnRoute(globalStore.get(this.connection));
+        globalStore.set(this.stagingAtom, true);
+        try {
+            await this.env.rpc.GitUnstageCommand(TabRpcClient, { dir: cwd, paths }, { route });
+            await this.fetchStatus();
+            await this.fetchDiffForSelected();
+        } catch (e) {
+            console.error("Failed to unstage files:", e);
+            await this.fetchStatus();
+        } finally {
+            globalStore.set(this.stagingAtom, false);
+        }
+    }
+
+    async stageHunk(path: string, hunkIndex: number) {
+        const cwd = globalStore.get(this.cwd);
+        const route = makeConnRoute(globalStore.get(this.connection));
+        globalStore.set(this.stagingAtom, true);
+        try {
+            await this.env.rpc.GitStageHunkCommand(TabRpcClient, { dir: cwd, path, hunkIndex }, { route });
+            await this.fetchStatus();
+            await this.fetchDiffForSelected();
+        } catch (e) {
+            console.error("Failed to stage hunk:", e);
+            await this.fetchStatus();
+        } finally {
+            globalStore.set(this.stagingAtom, false);
+        }
+    }
+
+    async revertHunk(path: string, hunkIndex: number, staged: boolean) {
+        const cwd = globalStore.get(this.cwd);
+        const route = makeConnRoute(globalStore.get(this.connection));
+        globalStore.set(this.stagingAtom, true);
+        try {
+            await this.env.rpc.GitRevertHunkCommand(TabRpcClient, { dir: cwd, path, hunkIndex, staged }, { route });
+            await this.fetchStatus();
+            await this.fetchDiffForSelected();
+        } catch (e) {
+            console.error("Failed to revert hunk:", e);
+            await this.fetchStatus();
+        } finally {
+            globalStore.set(this.stagingAtom, false);
         }
     }
 

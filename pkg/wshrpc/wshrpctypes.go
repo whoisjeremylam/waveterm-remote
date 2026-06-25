@@ -126,6 +126,10 @@ type WshRpcInterface interface {
 	// git/source control
 	GitStatusCommand(ctx context.Context, data CommandGitStatusData) (*GitStatusResponse, error)
 	GitDiffCommand(ctx context.Context, data CommandGitDiffData) (*GitDiffResponse, error)
+	GitStageCommand(ctx context.Context, data CommandGitStageData) error
+	GitUnstageCommand(ctx context.Context, data CommandGitUnstageData) error
+	GitStageHunkCommand(ctx context.Context, data CommandGitStageHunkData) error
+	GitRevertHunkCommand(ctx context.Context, data CommandGitRevertHunkData) error
 
 	// emain
 	WebSelectorCommand(ctx context.Context, data CommandWebSelectorData) ([]string, error)
@@ -880,7 +884,41 @@ type CommandGitDiffData struct {
 }
 
 type GitDiffResponse struct {
-	Original string `json:"original"`
-	Modified string `json:"modified"`
-	Language string `json:"language"` // detected from file extension
+	Original string        `json:"original"`
+	Modified string        `json:"modified"`
+	Language string        `json:"language"` // detected from file extension
+	Hunks    []GitDiffHunk `json:"hunks,omitempty"`
+}
+
+// Git staging operations
+type CommandGitStageData struct {
+	Dir   string   `json:"dir,omitempty"` // working directory
+	Paths []string `json:"paths"`        // file paths to stage
+}
+
+type CommandGitUnstageData struct {
+	Dir   string   `json:"dir,omitempty"` // working directory
+	Paths []string `json:"paths"`        // file paths to unstage
+}
+
+type CommandGitStageHunkData struct {
+	Dir       string `json:"dir"`       // working directory
+	Path      string `json:"path"`      // file path
+	HunkIndex int    `json:"hunkIndex"` // 0-based index of the hunk to stage
+}
+
+type CommandGitRevertHunkData struct {
+	Dir       string `json:"dir"`       // working directory
+	Path      string `json:"path"`      // file path
+	HunkIndex int    `json:"hunkIndex"` // 0-based index of the hunk to revert
+	Staged    bool   `json:"staged"`    // true if reverting a staged hunk
+}
+
+// GitDiffHunk represents a single hunk in a unified diff
+type GitDiffHunk struct {
+	Header        string `json:"header"`        // the @@ ... @@ line
+	ModifiedStart int    `json:"modifiedStart"` // 1-based start line in modified file
+	ModifiedCount int    `json:"modifiedCount"` // number of lines in modified
+	OriginalStart int    `json:"originalStart"` // 1-based start line in original
+	OriginalCount int    `json:"originalCount"` // number of lines in original
 }
