@@ -238,13 +238,15 @@ export class SourceControlViewModel implements ViewModel {
         if (paths.length === 0) return;
         const cwd = globalStore.get(this.cwd);
         const route = makeConnRoute(globalStore.get(this.connection));
+        console.log("[SCM] stageFiles:", { paths, cwd });
         globalStore.set(this.stagingAtom, true);
         try {
             await this.env.rpc.GitStageCommand(TabRpcClient, { dir: cwd, paths }, { route });
+            console.log("[SCM] stageFiles RPC succeeded, fetching status...");
             await this.fetchStatus();
             await this.fetchDiffForSelected();
         } catch (e) {
-            console.error("Failed to stage files:", e);
+            console.error("[SCM] stageFiles failed:", e);
             await this.fetchStatus();
         } finally {
             globalStore.set(this.stagingAtom, false);

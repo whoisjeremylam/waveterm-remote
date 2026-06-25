@@ -8,7 +8,7 @@ import { Tooltip } from "@/app/element/tooltip";
 import { makeIconClass } from "@/util/util";
 import * as jotai from "jotai";
 import * as monaco from "monaco-editor";
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { DiffGutter } from "./DiffGutter";
 import type { SourceControlViewModel } from "./sourcecontrol-model";
@@ -52,14 +52,13 @@ const FileRow = memo(({ data, isSelected, onClick, stageLabel, onStage }: {
             <FileIcon icon={data.status.icon} color={data.status.color} />
             <span className="truncate flex-1">{data.name}</span>
             {onStage && stageLabel && (
-                <Tooltip content={stageLabel} placement="right">
-                    <button
-                        className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-hoverbg transition-opacity"
-                        onClick={(e) => { e.stopPropagation(); onStage(); }}
-                    >
-                        <i className={`fa-solid ${stageLabel === "Stage" ? "fa-plus" : "fa-minus"} text-[10px]`} />
-                    </button>
-                </Tooltip>
+                <button
+                    className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-hoverbg transition-opacity"
+                    title={stageLabel}
+                    onClick={(e) => { e.stopPropagation(); console.log("[SCM] stage button clicked"); onStage(); }}
+                >
+                    <i className={`fa-solid ${stageLabel === "Stage" ? "fa-plus" : "fa-minus"} text-[10px]`} />
+                </button>
             )}
         </div>
     );
@@ -152,6 +151,7 @@ const DiffPanel = memo(({ diff, fileName, viewMode, isStaged, onStageHunk, onRev
     onRevertHunk: (hunkIndex: number) => void;
 }) => {
     const [diffEditor, setDiffEditor] = useState<monaco.editor.IStandaloneDiffEditor | null>(null);
+    const [wordWrap, setWordWrap] = useState(false);
 
     const diffViewerOptions = useMemo(() => ({
         renderSideBySide: viewMode === "side-by-side",
@@ -160,11 +160,26 @@ const DiffPanel = memo(({ diff, fileName, viewMode, isStaged, onStageHunk, onRev
         fontSize: 12,
         fontFamily: "Hack",
         minimap: { enabled: false },
-    }), [viewMode]);
+        wordWrap: wordWrap ? "on" as const : "off" as const,
+    }), [viewMode, wordWrap]);
 
     const handleMount = useCallback((editor: monaco.editor.IStandaloneDiffEditor) => {
         setDiffEditor(editor);
     }, []);
+
+    // Update renderSideBySide when viewMode changes without remounting
+    useEffect(() => {
+        if (diffEditor) {
+            diffEditor.updateOptions({ renderSideBySide: viewMode === "side-by-side" });
+        }
+    }, [diffEditor, viewMode]);
+
+    const handleWordWrapToggle = useCallback(() => {
+        if (diffEditor) {
+            diffEditor.updateOptions({ wordWrap: wordWrap ? "off" : "on" });
+        }
+        setWordWrap(!wordWrap);
+    }, [diffEditor, wordWrap]);
 
     if (!diff) {
         return (
@@ -176,11 +191,17 @@ const DiffPanel = memo(({ diff, fileName, viewMode, isStaged, onStageHunk, onRev
         <div className="flex flex-col h-full w-full">
             <div className="flex items-center gap-2 px-3 py-2 border-b border-border text-xs text-secondary">
                 <i className="fa-solid fa-file-code" />
-                <span className="truncate">{fileName}</span>
+                <span className="truncate flex-1">{fileName}</span>
+                <button
+                    className={`p-1 rounded hover:bg-hoverbg transition-colors ${wordWrap ? "text-white" : "text-muted"}`}
+                    title={wordWrap ? "Disable word wrap" : "Enable word wrap"}
+                    onClick={handleWordWrapToggle}
+                >
+                    <i className="fa-solid fa-text-width text-[11px]" />
+                </button>
             </div>
             <div className="flex-1 overflow-hidden relative">
                 <MonacoDiffViewer
-                    key={viewMode}
                     original={diff.original}
                     modified={diff.modified}
                     language={diff.language}
@@ -250,10 +271,12 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     }, [model]);
 
     const handleStageFile = useCallback((path: string) => {
+        console.log("[SCM] handleStageFile clicked:", path);
         model.stageFiles([path]);
     }, [model]);
 
     const handleUnstageFile = useCallback((path: string) => {
+        console.log("[SCM] handleUnstageFile clicked:", path);
         model.unstageFiles([path]);
     }, [model]);
 

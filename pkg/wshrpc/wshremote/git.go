@@ -150,8 +150,12 @@ func (impl *ServerImpl) GitStageCommand(ctx context.Context, data wshrpc.Command
 	if len(data.Paths) == 0 {
 		return nil
 	}
+	fmt.Printf("[SCM] GitStageCommand: dir=%s, paths=%v\n", data.Dir, data.Paths)
 	args := append([]string{"add", "-A", "--"}, data.Paths...)
-	_, err := runGitCommand(ctx, data.Dir, args...)
+	output, err := runGitCommand(ctx, data.Dir, args...)
+	if err != nil {
+		fmt.Printf("[SCM] GitStageCommand failed: %v, output: %s\n", err, output)
+	}
 	return err
 }
 
