@@ -27,7 +27,7 @@ StatusBadge.displayName = "StatusBadge";
 
 // File icon component
 const FileIcon = memo(({ icon, color }: { icon: string; color: string }) => (
-    <i className={makeIconClass(icon, false)} style={{ color, fontSize: "12px" }} />
+    <i className={makeIconClass(icon, false)} style={{ color, fontSize: "11px" }} />
 ));
 FileIcon.displayName = "FileIcon";
 
@@ -35,7 +35,7 @@ FileIcon.displayName = "FileIcon";
 const FileRow = memo(({ data, isSelected, onClick }: { data: FileTreeNode; isSelected: boolean; onClick: () => void }) => {
     return (
         <div
-            className={`flex items-center gap-2 px-2 py-1 cursor-pointer text-sm ${
+            className={`flex items-center gap-2 px-2 py-1 cursor-pointer text-xs ${
                 isSelected ? "bg-activebg text-white" : "hover:bg-hoverbg text-secondary"
             }`}
             onClick={onClick}
@@ -51,7 +51,7 @@ FileRow.displayName = "FileRow";
 // Section header component
 const SectionHeader = memo(({ label, count, expanded, onToggle }: { label: string; count: number; expanded: boolean; onToggle: () => void }) => (
     <div
-        className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-xs font-semibold uppercase tracking-wider text-muted hover:text-secondary"
+        className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-muted hover:text-secondary"
         onClick={onToggle}
     >
         <i className={`fa-solid fa-chevron-${expanded ? "down" : "right"} text-[10px]`} />
@@ -63,8 +63,8 @@ SectionHeader.displayName = "SectionHeader";
 
 // Empty state component
 const EmptyState = memo(({ message }: { message: string }) => (
-    <div className="flex flex-col items-center justify-center h-full text-muted text-sm">
-        <i className="fa-solid fa-code-branch text-2xl mb-2 opacity-50" />
+    <div className="flex flex-col items-center justify-center h-full text-muted text-xs">
+        <i className="fa-solid fa-code-branch text-xl mb-2 opacity-50" />
         <span>{message}</span>
     </div>
 ));
@@ -72,8 +72,8 @@ EmptyState.displayName = "EmptyState";
 
 // Loading state component
 const LoadingState = memo(() => (
-    <div className="flex flex-col items-center justify-center h-full text-muted text-sm">
-        <i className="fa-solid fa-spinner fa-spin text-2xl mb-2" />
+    <div className="flex flex-col items-center justify-center h-full text-muted text-xs">
+        <i className="fa-solid fa-spinner fa-spin text-xl mb-2" />
         <span>Loading git status...</span>
     </div>
 ));
@@ -84,12 +84,12 @@ const ErrorState = memo(({ error, onRetry }: { error: string; onRetry: () => voi
     const isNotGitRepo = error.includes("not a git repository");
 
     return (
-        <div className="flex flex-col items-center justify-center h-full text-muted text-sm p-8">
-            <i className="fa-solid fa-code-branch text-3xl mb-3 opacity-50" />
+        <div className="flex flex-col items-center justify-center h-full text-muted text-xs p-8">
+            <i className="fa-solid fa-code-branch text-2xl mb-3 opacity-50" />
             {isNotGitRepo ? (
                 <>
-                    <span className="text-center mb-2">This directory is not a git repository</span>
-                    <span className="text-xs text-muted text-center">
+                    <span className="text-center mb-2 text-xs">This directory is not a git repository</span>
+                    <span className="text-[10px] text-muted text-center">
                         Select a directory containing a git repository to view source control status
                     </span>
                 </>
@@ -97,7 +97,7 @@ const ErrorState = memo(({ error, onRetry }: { error: string; onRetry: () => voi
                 <>
                     <span className="text-center mb-2">{error}</span>
                     <button
-                        className="px-3 py-1 text-xs bg-surface rounded hover:bg-hoverbg transition-colors mt-2"
+                        className="px-3 py-1 text-[10px] bg-surface rounded hover:bg-hoverbg transition-colors mt-2"
                         onClick={onRetry}
                     >
                         Retry
@@ -119,7 +119,7 @@ const DiffPanel = memo(({ diff, fileName, viewMode }: { diff: GitDiffResponse | 
 
     return (
         <div className="flex flex-col h-full w-full">
-            <div className="flex items-center gap-2 px-3 py-2 border-b border-border text-sm text-secondary">
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-border text-xs text-secondary">
                 <i className="fa-solid fa-file-code" />
                 <span className="truncate">{fileName}</span>
             </div>
@@ -222,12 +222,12 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
         <div className="flex flex-col h-full w-full overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-                <div className="flex items-center gap-2 text-sm">
+                <div className="flex items-center gap-2 text-xs">
                     <i className="fa-solid fa-code-branch text-muted" />
                     <div ref={pathRef} className="cursor-pointer hover:text-white transition-colors">
                         {cwd}
                     </div>
-                    <span className="text-muted text-xs">({totalChanges} changes)</span>
+                    <span className="text-muted text-[10px]">({totalChanges} changes)</span>
                 </div>
                 <div className="flex items-center gap-1">
                     <Tooltip content={viewMode === "side-by-side" ? "Switch to inline" : "Switch to side-by-side"} placement="bottom">
@@ -263,12 +263,12 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
 
             {/* Search */}
             <div className="px-3 py-2 border-b border-border">
-                <div className="flex items-center gap-2 px-2 py-1 bg-surface rounded text-sm">
-                    <i className="fa-solid fa-search text-muted text-xs" />
+                <div className="flex items-center gap-2 px-2 py-1 bg-surface rounded text-xs">
+                    <i className="fa-solid fa-search text-muted text-[10px]" />
                     <input
                         type="text"
                         placeholder="Filter files..."
-                        className="flex-1 bg-transparent outline-none text-sm"
+                        className="flex-1 bg-transparent outline-none text-xs"
                         value={filter}
                         onChange={(e) => setFilter(e.target.value)}
                     />
