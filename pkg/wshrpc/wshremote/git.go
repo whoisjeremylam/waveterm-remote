@@ -82,6 +82,8 @@ func (impl *ServerImpl) GitStatusCommand(ctx context.Context, data wshrpc.Comman
 
 // GitDiffCommand returns the diff for a single file
 func (impl *ServerImpl) GitDiffCommand(ctx context.Context, data wshrpc.CommandGitDiffData) (*wshrpc.GitDiffResponse, error) {
+	impl.Log("[SCM-DIFF] RECEIVED: dir=%q path=%q staged=%v untracked=%v\n",
+		data.Dir, data.Path, data.Staged, data.Untracked)
 	dir := data.Dir
 	if dir == "" {
 		return nil, fmt.Errorf("directory is required")
