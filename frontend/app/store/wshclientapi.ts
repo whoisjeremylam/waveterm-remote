@@ -486,6 +486,12 @@ export class RpcApiType {
         return client.wshRpcCall("gitdiff", data, opts);
     }
 
+    // command "gitpush" [call]
+    GitPushCommand(client: WshClient, data: CommandGitPushData, opts?: RpcOpts): Promise<GitPushResponse> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitpush", data, opts);
+        return client.wshRpcCall("gitpush", data, opts);
+    }
+
     // command "gitreverthunk" [call]
     GitRevertHunkCommand(client: WshClient, data: CommandGitRevertHunkData, opts?: RpcOpts): Promise<void> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitreverthunk", data, opts);

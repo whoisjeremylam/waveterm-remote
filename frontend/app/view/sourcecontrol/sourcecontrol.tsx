@@ -217,12 +217,14 @@ const DiffPanel = memo(({ diff, fileName, viewMode, wordWrap, isStaged, onStageH
 DiffPanel.displayName = "DiffPanel";
 
 // Commit message input component
-const CommitInput = memo(({ model, hasStagedChanges }: {
+const CommitInput = memo(({ model, hasStagedChanges, hasUnpushedCommits }: {
     model: SourceControlViewModel;
     hasStagedChanges: boolean;
+    hasUnpushedCommits: boolean;
 }) => {
     const commitMessage = jotai.useAtomValue(model.commitMessageAtom);
     const committing = jotai.useAtomValue(model.committingAtom);
+    const pushing = jotai.useAtomValue(model.pushingAtom);
 
     const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
         globalStore.set(model.commitMessageAtom, e.target.value);
@@ -246,6 +248,15 @@ const CommitInput = memo(({ model, hasStagedChanges }: {
         }
     }, [model, commitMessage, hasStagedChanges, committing]);
 
+    const handlePush = useCallback(async () => {
+        if (pushing || committing) return;
+        const result = await model.push();
+        if (result.authNeeded) {
+            // TODO: prompt for credentials via UserInput
+            console.log("[SCM] Auth needed for push:", result.authError);
+        }
+    }, [model, pushing, committing]);
+
     return (
         <div className="flex flex-col gap-2">
             <textarea
@@ -255,26 +266,44 @@ const CommitInput = memo(({ model, hasStagedChanges }: {
                 value={commitMessage}
                 onChange={handleChange}
                 onKeyDown={handleKeyDown}
-                disabled={committing}
+                disabled={committing || pushing}
             />
-            <button
-                className={`w-full px-3 py-1.5 text-xs rounded font-medium transition-colors ${
-                    commitMessage.trim() && hasStagedChanges && !committing
-                        ? "bg-zinc-600 hover:bg-zinc-500 text-white"
-                        : "bg-surface text-muted cursor-not-allowed"
-                }`}
-                onClick={handleCommit}
-                disabled={!commitMessage.trim() || !hasStagedChanges || committing}
-            >
-                {committing ? (
-                    <span className="flex items-center justify-center gap-2">
+            <div className="flex gap-2">
+                <button
+                    className={`flex-1 px-3 py-1.5 text-xs rounded font-medium transition-colors ${
+                        commitMessage.trim() && hasStagedChanges && !committing && !pushing
+                            ? "bg-zinc-600 hover:bg-zinc-500 text-white"
+                            : "bg-surface text-muted cursor-not-allowed"
+                    }`}
+                    onClick={handleCommit}
+                    disabled={!commitMessage.trim() || !hasStagedChanges || committing || pushing}
+                >
+                    {committing ? (
+                        <span className="flex items-center justify-center gap-2">
+                            <i className="fa-solid fa-spinner fa-spin" />
+                            Committing...
+                        </span>
+                    ) : (
+                        "Commit"
+                    )}
+                </button>
+                <button
+                    className={`px-3 py-1.5 text-xs rounded font-medium transition-colors ${
+                        hasUnpushedCommits && !pushing && !committing
+                            ? "bg-zinc-600 hover:bg-zinc-500 text-white"
+                            : "bg-surface text-muted cursor-not-allowed"
+                    }`}
+                    onClick={handlePush}
+                    disabled={!hasUnpushedCommits || pushing || committing}
+                    title="Push to remote"
+                >
+                    {pushing ? (
                         <i className="fa-solid fa-spinner fa-spin" />
-                        Committing...
-                    </span>
-                ) : (
-                    "Commit"
-                )}
-            </button>
+                    ) : (
+                        <i className="fa-solid fa-arrow-up" />
+                    )}
+                </button>
+            </div>
         </div>
     );
 });
@@ -462,6 +491,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                             <CommitInput
                                 model={model}
                                 hasStagedChanges={filteredStaged.length > 0}
+                                hasUnpushedCommits={true}
                             />
                         </div>
 

@@ -349,6 +349,17 @@ declare global {
         untracked?: boolean;
     };
 
+    // wshrpc.CommandGitPushData
+    type CommandGitPushData = {
+        dir?: string;
+        remote?: string;
+        branch?: string;
+        username?: string;
+        password?: string;
+        force?: boolean;
+        setUpstream?: boolean;
+    };
+
     // wshrpc.CommandGitRevertHunkData
     type CommandGitRevertHunkData = {
         dir: string;
@@ -1006,6 +1017,14 @@ declare global {
         oldPath: string;
         icon: string;
         color: string;
+    };
+
+    // wshrpc.GitPushResponse
+    type GitPushResponse = {
+        success: boolean;
+        output: string;
+        authNeeded: boolean;
+        authError: string;
     };
 
     // wshrpc.GitStatusResponse

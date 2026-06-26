@@ -482,6 +482,12 @@ func GitDiffCommand(w *wshutil.WshRpc, data wshrpc.CommandGitDiffData, opts *wsh
 	return resp, err
 }
 
+// command "gitpush", wshserver.GitPushCommand
+func GitPushCommand(w *wshutil.WshRpc, data wshrpc.CommandGitPushData, opts *wshrpc.RpcOpts) (*wshrpc.GitPushResponse, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GitPushResponse](w, "gitpush", data, opts)
+	return resp, err
+}
+
 // command "gitreverthunk", wshserver.GitRevertHunkCommand
 func GitRevertHunkCommand(w *wshutil.WshRpc, data wshrpc.CommandGitRevertHunkData, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "gitreverthunk", data, opts)

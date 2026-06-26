@@ -247,6 +247,103 @@ func (impl *ServerImpl) GitCommitCommand(ctx context.Context, data wshrpc.Comman
 	}, nil
 }
 
+// GitPushCommand pushes changes to remote
+func (impl *ServerImpl) GitPushCommand(ctx context.Context, data wshrpc.CommandGitPushData) (*wshrpc.GitPushResponse, error) {
+	if data.Dir == "" {
+		return nil, fmt.Errorf("directory is required")
+	}
+
+	args := []string{"push"}
+
+	if data.Force {
+		args = append(args, "--force")
+	}
+	if data.SetUpstream {
+		args = append(args, "--set-upstream")
+	}
+
+	remote := data.Remote
+	if remote == "" {
+		remote = "origin"
+	}
+	args = append(args, remote)
+
+	branch := data.Branch
+	if branch == "" {
+		// Get current branch
+		branchOutput, err := runGitCommand(ctx, data.Dir, "branch", "--show-current")
+		if err != nil {
+			return &wshrpc.GitPushResponse{
+				Success: false,
+				Output:  "Failed to get current branch: " + err.Error(),
+			}, nil
+		}
+		branch = strings.TrimSpace(branchOutput)
+	}
+	if branch != "" {
+		args = append(args, branch)
+	}
+
+	// If credentials provided, use GIT_ASKPASS
+	var cmd *exec.Cmd
+	if data.Username != "" || data.Password != "" {
+		// Create a credential script
+		credScript := fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\n*Username*) echo %q;;\n*Password*) echo %q;;\nesac\n", data.Username, data.Password)
+		scriptPath := "/tmp/.wave-git-askpass.sh"
+		if err := os.WriteFile(scriptPath, []byte(credScript), 0700); err != nil {
+			return &wshrpc.GitPushResponse{
+				Success: false,
+				Output:  "Failed to create credential script: " + err.Error(),
+			}, nil
+		}
+		defer os.Remove(scriptPath)
+
+		cmd = exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = data.Dir
+		cmd.Env = append(os.Environ(), "GIT_ASKPASS="+scriptPath)
+	} else {
+		cmd = exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = data.Dir
+	}
+
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+
+	if err != nil {
+		// Check if this is an auth error
+		authNeeded := isGitAuthError(outputStr)
+		return &wshrpc.GitPushResponse{
+			Success:    false,
+			Output:     outputStr,
+			AuthNeeded: authNeeded,
+			AuthError:  outputStr,
+		}, nil
+	}
+
+	return &wshrpc.GitPushResponse{
+		Success: true,
+		Output:  outputStr,
+	}, nil
+}
+
+// isGitAuthError checks if the git output indicates an auth error
+func isGitAuthError(output string) bool {
+	authIndicators := []string{
+		"Username for",
+		"Password for",
+		"Authentication failed",
+		"Could not read from remote repository",
+		"Permission denied",
+		"fatal: Authentication failed",
+	}
+	for _, indicator := range authIndicators {
+		if strings.Contains(output, indicator) {
+			return true
+		}
+	}
+	return false
+}
+
 // runGitCommand runs a git command in the specified directory
 func runGitCommand(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)

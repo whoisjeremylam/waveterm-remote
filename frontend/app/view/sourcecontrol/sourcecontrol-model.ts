@@ -34,6 +34,7 @@ export class SourceControlViewModel implements ViewModel {
     stagingAtom: jotai.PrimitiveAtom<boolean>;
     commitMessageAtom: jotai.PrimitiveAtom<string>;
     committingAtom: jotai.PrimitiveAtom<boolean>;
+    pushingAtom: jotai.PrimitiveAtom<boolean>;
 
     // Connection
     connection: jotai.Atom<string>;
@@ -63,6 +64,7 @@ export class SourceControlViewModel implements ViewModel {
         this.stagingAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
         this.commitMessageAtom = jotai.atom<string>("") as jotai.PrimitiveAtom<string>;
         this.committingAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
+        this.pushingAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
 
         // Connection from block metadata
         this.connection = jotai.atom((get) => {
@@ -332,6 +334,25 @@ export class SourceControlViewModel implements ViewModel {
             return { success: false, output: String(e) };
         } finally {
             globalStore.set(this.committingAtom, false);
+        }
+    }
+
+    async push(username?: string, password?: string): Promise<GitPushResponse> {
+        const cwd = globalStore.get(this.cwd);
+        const route = makeConnRoute(globalStore.get(this.connection));
+        globalStore.set(this.pushingAtom, true);
+        try {
+            const result = await this.env.rpc.GitPushCommand(
+                TabRpcClient,
+                { dir: cwd, username, password },
+                { route }
+            );
+            return result;
+        } catch (e) {
+            console.error("Failed to push:", e);
+            return { success: false, output: String(e), authNeeded: false, authError: "" };
+        } finally {
+            globalStore.set(this.pushingAtom, false);
         }
     }
 

@@ -131,6 +131,7 @@ type WshRpcInterface interface {
 	GitStageHunkCommand(ctx context.Context, data CommandGitStageHunkData) error
 	GitRevertHunkCommand(ctx context.Context, data CommandGitRevertHunkData) error
 	GitCommitCommand(ctx context.Context, data CommandGitCommitData) (*GitCommitResponse, error)
+	GitPushCommand(ctx context.Context, data CommandGitPushData) (*GitPushResponse, error)
 
 	// emain
 	WebSelectorCommand(ctx context.Context, data CommandWebSelectorData) ([]string, error)
@@ -933,4 +934,21 @@ type CommandGitCommitData struct {
 type GitCommitResponse struct {
 	Success bool   `json:"success"`
 	Output  string `json:"output"` // git commit output
+}
+
+type CommandGitPushData struct {
+	Dir      string `json:"dir,omitempty"`       // working directory
+	Remote   string `json:"remote,omitempty"`    // remote name (default: origin)
+	Branch   string `json:"branch,omitempty"`    // branch name (default: current branch)
+	Username string `json:"username,omitempty"`  // for HTTPS auth
+	Password string `json:"password,omitempty"`  // for HTTPS auth
+	Force    bool   `json:"force,omitempty"`     // force push
+	SetUpstream bool `json:"setUpstream,omitempty"` // set upstream branch
+}
+
+type GitPushResponse struct {
+	Success    bool   `json:"success"`
+	Output     string `json:"output"`
+	AuthNeeded bool   `json:"authNeeded"` // true if auth is required
+	AuthError  string `json:"authError"`  // the auth error message
 }
