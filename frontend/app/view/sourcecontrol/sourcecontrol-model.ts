@@ -86,12 +86,7 @@ export class SourceControlViewModel implements ViewModel {
         });
 
         // User-selected CWD (overrides terminal CWD when set)
-        const userCwdAtom = jotai.atom<string | null, [string], void>(
-            null,
-            (_get, set, value: string) => {
-                set(userCwdAtom, value);
-            }
-        );
+        const userCwdAtom = jotai.atom<string | null>(null);
 
         // CWD - writable, user selection takes priority over terminal CWD
         this.cwd = jotai.atom(
@@ -109,9 +104,17 @@ export class SourceControlViewModel implements ViewModel {
         ) as jotai.PrimitiveAtom<string>;
 
         // View text for header - shows current directory
+        // Memoize to avoid creating new object references when cwd hasn't changed,
+        // which would cause unnecessary re-renders of the header.
+        let prevCwd: string | undefined;
+        let prevViewText: HeaderElem[] | undefined;
         this.viewText = jotai.atom((get) => {
             const cwd = get(this.cwd);
-            return [
+            if (prevCwd === cwd && prevViewText !== undefined) {
+                return prevViewText;
+            }
+            prevCwd = cwd;
+            prevViewText = [
                 {
                     elemtype: "text",
                     text: cwd,
@@ -122,6 +125,7 @@ export class SourceControlViewModel implements ViewModel {
                     },
                 },
             ];
+            return prevViewText;
         });
 
         this.connStatus = jotai.atom((get) => {
@@ -140,8 +144,8 @@ export class SourceControlViewModel implements ViewModel {
             }
         });
 
-        // Start polling when view is visible
-        this.startPolling();
+        // Defer polling start to avoid running during React render phase
+        setTimeout(() => this.startPolling(), 0);
     }
 
     get viewComponent(): ViewComponent {
