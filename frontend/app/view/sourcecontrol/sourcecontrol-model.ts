@@ -32,6 +32,8 @@ export class SourceControlViewModel implements ViewModel {
     diffAtom: jotai.PrimitiveAtom<GitDiffResponse | null>;
     directoryDropdownOpen: jotai.PrimitiveAtom<boolean>;
     stagingAtom: jotai.PrimitiveAtom<boolean>;
+    commitMessageAtom: jotai.PrimitiveAtom<string>;
+    committingAtom: jotai.PrimitiveAtom<boolean>;
 
     // Connection
     connection: jotai.Atom<string>;
@@ -59,6 +61,8 @@ export class SourceControlViewModel implements ViewModel {
         this.diffAtom = jotai.atom<GitDiffResponse | null>(null) as jotai.PrimitiveAtom<GitDiffResponse | null>;
         this.directoryDropdownOpen = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
         this.stagingAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
+        this.commitMessageAtom = jotai.atom<string>("") as jotai.PrimitiveAtom<string>;
+        this.committingAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
 
         // Connection from block metadata
         this.connection = jotai.atom((get) => {
@@ -299,6 +303,35 @@ export class SourceControlViewModel implements ViewModel {
             await this.fetchStatus();
         } finally {
             globalStore.set(this.stagingAtom, false);
+        }
+    }
+
+    async commit(amend: boolean = false): Promise<{ success: boolean; output: string } | null> {
+        const cwd = globalStore.get(this.cwd);
+        const message = globalStore.get(this.commitMessageAtom);
+        if (!message.trim()) {
+            return null;
+        }
+        const route = makeConnRoute(globalStore.get(this.connection));
+        globalStore.set(this.committingAtom, true);
+        try {
+            const result = await this.env.rpc.GitCommitCommand(
+                TabRpcClient,
+                { dir: cwd, message: message.trim(), amend },
+                { route }
+            );
+            if (result.success) {
+                globalStore.set(this.commitMessageAtom, "");
+            }
+            await this.fetchStatus();
+            await this.fetchDiffForSelected();
+            return result;
+        } catch (e) {
+            console.error("Failed to commit:", e);
+            await this.fetchStatus();
+            return { success: false, output: String(e) };
+        } finally {
+            globalStore.set(this.committingAtom, false);
         }
     }
 

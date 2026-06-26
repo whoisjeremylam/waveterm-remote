@@ -130,6 +130,7 @@ type WshRpcInterface interface {
 	GitUnstageCommand(ctx context.Context, data CommandGitUnstageData) error
 	GitStageHunkCommand(ctx context.Context, data CommandGitStageHunkData) error
 	GitRevertHunkCommand(ctx context.Context, data CommandGitRevertHunkData) error
+	GitCommitCommand(ctx context.Context, data CommandGitCommitData) (*GitCommitResponse, error)
 
 	// emain
 	WebSelectorCommand(ctx context.Context, data CommandWebSelectorData) ([]string, error)
@@ -921,4 +922,15 @@ type GitDiffHunk struct {
 	ModifiedCount int    `json:"modifiedCount"` // number of lines in modified
 	OriginalStart int    `json:"originalStart"` // 1-based start line in original
 	OriginalCount int    `json:"originalCount"` // number of lines in original
+}
+
+type CommandGitCommitData struct {
+	Dir     string `json:"dir,omitempty"` // working directory
+	Message string `json:"message"`       // commit message
+	Amend   bool   `json:"amend,omitempty"` // amend the last commit
+}
+
+type GitCommitResponse struct {
+	Success bool   `json:"success"`
+	Output  string `json:"output"` // git commit output
 }

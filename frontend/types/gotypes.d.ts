@@ -334,6 +334,13 @@ declare global {
         filename?: string;
     };
 
+    // wshrpc.CommandGitCommitData
+    type CommandGitCommitData = {
+        dir?: string;
+        message: string;
+        amend?: boolean;
+    };
+
     // wshrpc.CommandGitDiffData
     type CommandGitDiffData = {
         dir?: string;
@@ -967,6 +974,12 @@ declare global {
         configerrors: ConfigError[];
         version: string;
         buildtime: string;
+    };
+
+    // wshrpc.GitCommitResponse
+    type GitCommitResponse = {
+        success: boolean;
+        output: string;
     };
 
     // wshrpc.GitDiffHunk

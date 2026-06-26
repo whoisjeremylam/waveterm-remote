@@ -217,6 +217,36 @@ func (impl *ServerImpl) GitRevertHunkCommand(ctx context.Context, data wshrpc.Co
 	return applyPatch(ctx, data.Dir, patch)
 }
 
+// GitCommitCommand commits staged changes with a message
+func (impl *ServerImpl) GitCommitCommand(ctx context.Context, data wshrpc.CommandGitCommitData) (*wshrpc.GitCommitResponse, error) {
+	if data.Dir == "" {
+		return nil, fmt.Errorf("directory is required")
+	}
+	if data.Message == "" {
+		return nil, fmt.Errorf("commit message is required")
+	}
+
+	var args []string
+	if data.Amend {
+		args = []string{"commit", "--amend", "-m", data.Message}
+	} else {
+		args = []string{"commit", "-m", data.Message}
+	}
+
+	output, err := runGitCommand(ctx, data.Dir, args...)
+	if err != nil {
+		return &wshrpc.GitCommitResponse{
+			Success: false,
+			Output:  output + "\n" + err.Error(),
+		}, nil
+	}
+
+	return &wshrpc.GitCommitResponse{
+		Success: true,
+		Output:  output,
+	}, nil
+}
+
 // runGitCommand runs a git command in the specified directory
 func runGitCommand(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)

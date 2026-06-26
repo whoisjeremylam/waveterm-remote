@@ -470,6 +470,12 @@ func GetVarCommand(w *wshutil.WshRpc, data wshrpc.CommandVarData, opts *wshrpc.R
 	return resp, err
 }
 
+// command "gitcommit", wshserver.GitCommitCommand
+func GitCommitCommand(w *wshutil.WshRpc, data wshrpc.CommandGitCommitData, opts *wshrpc.RpcOpts) (*wshrpc.GitCommitResponse, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GitCommitResponse](w, "gitcommit", data, opts)
+	return resp, err
+}
+
 // command "gitdiff", wshserver.GitDiffCommand
 func GitDiffCommand(w *wshutil.WshRpc, data wshrpc.CommandGitDiffData, opts *wshrpc.RpcOpts) (*wshrpc.GitDiffResponse, error) {
 	resp, err := sendRpcRequestCallHelper[*wshrpc.GitDiffResponse](w, "gitdiff", data, opts)

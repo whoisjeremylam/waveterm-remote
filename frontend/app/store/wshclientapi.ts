@@ -474,6 +474,12 @@ export class RpcApiType {
         return client.wshRpcCall("getvar", data, opts);
     }
 
+    // command "gitcommit" [call]
+    GitCommitCommand(client: WshClient, data: CommandGitCommitData, opts?: RpcOpts): Promise<GitCommitResponse> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitcommit", data, opts);
+        return client.wshRpcCall("gitcommit", data, opts);
+    }
+
     // command "gitdiff" [call]
     GitDiffCommand(client: WshClient, data: CommandGitDiffData, opts?: RpcOpts): Promise<GitDiffResponse> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitdiff", data, opts);

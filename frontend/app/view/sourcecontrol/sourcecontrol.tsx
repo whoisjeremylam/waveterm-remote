@@ -142,16 +142,16 @@ const ErrorState = memo(({ error, onRetry }: { error: string; onRetry: () => voi
 ErrorState.displayName = "ErrorState";
 
 // Diff panel component
-const DiffPanel = memo(({ diff, fileName, viewMode, isStaged, onStageHunk, onRevertHunk }: {
+const DiffPanel = memo(({ diff, fileName, viewMode, wordWrap, isStaged, onStageHunk, onRevertHunk }: {
     diff: GitDiffResponse | null;
     fileName: string;
     viewMode: "side-by-side" | "inline";
+    wordWrap: boolean;
     isStaged: boolean;
     onStageHunk: (hunkIndex: number) => void;
     onRevertHunk: (hunkIndex: number) => void;
 }) => {
     const [diffEditor, setDiffEditor] = useState<monaco.editor.IStandaloneDiffEditor | null>(null);
-    const [wordWrap, setWordWrap] = useState(false);
 
     const diffViewerOptions = useMemo(() => ({
         renderSideBySide: viewMode === "side-by-side",
@@ -174,13 +174,6 @@ const DiffPanel = memo(({ diff, fileName, viewMode, isStaged, onStageHunk, onRev
         }
     }, [diffEditor, viewMode]);
 
-    const handleWordWrapToggle = useCallback(() => {
-        if (diffEditor) {
-            diffEditor.updateOptions({ wordWrap: wordWrap ? "off" : "on" });
-        }
-        setWordWrap(!wordWrap);
-    }, [diffEditor, wordWrap]);
-
     if (!diff) {
         return (
             <EmptyState message="Select a file to view changes" />
@@ -191,14 +184,7 @@ const DiffPanel = memo(({ diff, fileName, viewMode, isStaged, onStageHunk, onRev
         <div className="flex flex-col h-full w-full">
             <div className="flex items-center gap-2 px-3 py-2 border-b border-border text-xs text-secondary">
                 <i className="fa-solid fa-file-code" />
-                <span className="truncate flex-1">{fileName}</span>
-                <button
-                    className={`p-1 rounded hover:bg-hoverbg transition-colors ${wordWrap ? "text-white" : "text-muted"}`}
-                    title={wordWrap ? "Disable word wrap" : "Enable word wrap"}
-                    onClick={handleWordWrapToggle}
-                >
-                    <i className="fa-solid fa-text-width text-[11px]" />
-                </button>
+                <span className="truncate">{fileName}</span>
             </div>
             <div className="flex-1 overflow-hidden relative">
                 <MonacoDiffViewer
@@ -230,6 +216,70 @@ const DiffPanel = memo(({ diff, fileName, viewMode, isStaged, onStageHunk, onRev
 });
 DiffPanel.displayName = "DiffPanel";
 
+// Commit message input component
+const CommitInput = memo(({ model, hasStagedChanges }: {
+    model: SourceControlViewModel;
+    hasStagedChanges: boolean;
+}) => {
+    const commitMessage = jotai.useAtomValue(model.commitMessageAtom);
+    const committing = jotai.useAtomValue(model.committingAtom);
+
+    const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        globalStore.set(model.commitMessageAtom, e.target.value);
+        // Auto-grow: reset height then set to scrollHeight
+        e.target.style.height = "auto";
+        e.target.style.height = `${e.target.scrollHeight}px`;
+    }, [model]);
+
+    const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            if (commitMessage.trim() && hasStagedChanges && !committing) {
+                model.commit();
+            }
+        }
+    }, [model, commitMessage, hasStagedChanges, committing]);
+
+    const handleCommit = useCallback(() => {
+        if (commitMessage.trim() && hasStagedChanges && !committing) {
+            model.commit();
+        }
+    }, [model, commitMessage, hasStagedChanges, committing]);
+
+    return (
+        <div className="flex flex-col gap-2">
+            <textarea
+                className="w-full px-2 py-1.5 text-xs bg-surface border border-border rounded resize-none outline-none focus:border-zinc-500 placeholder:text-muted"
+                placeholder="Commit message (Ctrl+Enter to commit)"
+                rows={1}
+                value={commitMessage}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                disabled={committing}
+            />
+            <button
+                className={`w-full px-3 py-1.5 text-xs rounded font-medium transition-colors ${
+                    commitMessage.trim() && hasStagedChanges && !committing
+                        ? "bg-zinc-600 hover:bg-zinc-500 text-white"
+                        : "bg-surface text-muted cursor-not-allowed"
+                }`}
+                onClick={handleCommit}
+                disabled={!commitMessage.trim() || !hasStagedChanges || committing}
+            >
+                {committing ? (
+                    <span className="flex items-center justify-center gap-2">
+                        <i className="fa-solid fa-spinner fa-spin" />
+                        Committing...
+                    </span>
+                ) : (
+                    "Commit"
+                )}
+            </button>
+        </div>
+    );
+});
+CommitInput.displayName = "CommitInput";
+
 // Main Source Control View component
 export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     const status = jotai.useAtomValue(model.statusAtom);
@@ -246,6 +296,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     const [unstagedExpanded, setUnstagedExpanded] = useState(true);
     const [untrackedExpanded, setUntrackedExpanded] = useState(true);
     const [filter, setFilter] = useState("");
+    const [wordWrap, setWordWrap] = useState(false);
     const pathRef = useRef<HTMLDivElement>(null);
 
     const handleFileSelect = useCallback((file: SelectedFile) => {
@@ -260,6 +311,10 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
         const newMode = viewMode === "side-by-side" ? "inline" : "side-by-side";
         globalStore.set(model.viewModeAtom, newMode);
     }, [model, viewMode]);
+
+    const handleWordWrapToggle = useCallback(() => {
+        setWordWrap((prev) => !prev);
+    }, []);
 
     const handleDirectorySelect = useCallback((path: string) => {
         globalStore.set(model.cwd, path);
@@ -344,6 +399,14 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                             <i className={`fa-solid ${viewMode === "side-by-side" ? "fa-columns" : "fa-bars"} text-xs`} />
                         </button>
                     </Tooltip>
+                    <Tooltip content={wordWrap ? "Disable word wrap" : "Enable word wrap"} placement="bottom">
+                        <button
+                            className={`p-1.5 rounded hover:bg-hoverbg transition-colors ${wordWrap ? "text-white" : "text-secondary hover:text-white"}`}
+                            onClick={handleWordWrapToggle}
+                        >
+                            <i className="fa-solid fa-text-width text-xs" />
+                        </button>
+                    </Tooltip>
                     <Tooltip content="Refresh" placement="bottom">
                         <button
                             className="p-1.5 rounded hover:bg-hoverbg text-secondary hover:text-white transition-colors"
@@ -393,8 +456,18 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
             <PanelGroup direction="horizontal" className="flex-1 overflow-hidden">
                 {/* File List */}
                 <Panel defaultSize={33} minSize={15} maxSize={60}>
-                    <div className="h-full overflow-y-auto border-r border-border">
-                        {/* Staged */}
+                    <div className="h-full flex flex-col border-r border-border">
+                        {/* Commit Message Input - always visible */}
+                        <div className="p-2 border-b border-border">
+                            <CommitInput
+                                model={model}
+                                hasStagedChanges={filteredStaged.length > 0}
+                            />
+                        </div>
+
+                        {/* File Sections */}
+                        <div className="flex-1 overflow-y-auto">
+                            {/* Staged */}
                         {filteredStaged.length > 0 && (
                             <div>
                                 <SectionHeader
@@ -465,6 +538,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                                 ))}
                             </div>
                         )}
+                        </div>
                     </div>
                 </Panel>
                 <PanelResizeHandle className="w-0.5 bg-transparent hover:bg-zinc-500/20 transition-colors" />
@@ -475,6 +549,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                             diff={diff}
                             fileName={selectedFile?.path || ""}
                             viewMode={viewMode}
+                            wordWrap={wordWrap}
                             isStaged={selectedFile?.staged ?? false}
                             onStageHunk={(hunkIndex) => model.stageHunk(selectedFile?.path || "", hunkIndex)}
                             onRevertHunk={(hunkIndex) => model.revertHunk(selectedFile?.path || "", hunkIndex, selectedFile?.staged ?? false)}
