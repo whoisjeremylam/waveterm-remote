@@ -128,8 +128,9 @@ type DiffViewerProps = {
 export function MonacoDiffViewer({ original, modified, language, path, options, onMount }: DiffViewerProps) {
     const divRef = useRef<HTMLDivElement>(null);
     const diffRef = useRef<MonacoTypes.editor.IStandaloneDiffEditor | null>(null);
+    const currentPathRef = useRef<string>(path);
 
-    // Create once
+    // Create editor once
     useEffect(() => {
         loadMonaco();
 
@@ -137,16 +138,8 @@ export function MonacoDiffViewer({ original, modified, language, path, options, 
         if (!el) return;
 
         try {
-            const origUri = monaco.Uri.parse(`wave://diff/${encodeURIComponent(path)}.orig`);
-            const modUri = monaco.Uri.parse(`wave://diff/${encodeURIComponent(path)}.mod`);
-
-            const originalModel = monaco.editor.createModel(original, language, origUri);
-            const modifiedModel = monaco.editor.createModel(modified, language, modUri);
-
             const diff = monaco.editor.createDiffEditor(el, options);
             diffRef.current = diff;
-
-            diff.setModel({ original: originalModel, modified: modifiedModel });
             onMount?.(diff);
         } catch (e) {
             console.error("Failed to create Monaco diff editor:", e);
@@ -155,12 +148,55 @@ export function MonacoDiffViewer({ original, modified, language, path, options, 
         return () => {
             const diff = diffRef.current;
             if (diff) {
+                const model = diff.getModel();
+                if (model) {
+                    model.original.dispose();
+                    model.modified.dispose();
+                }
                 diff.setModel(null);
                 diff.dispose();
                 diffRef.current = null;
             }
         };
     }, []);
+
+    // Recreate models when path changes
+    useEffect(() => {
+        const diff = diffRef.current;
+        if (!diff) return;
+
+        // Dispose old models
+        const oldModel = diff.getModel();
+        if (oldModel) {
+            oldModel.original.dispose();
+            oldModel.modified.dispose();
+        }
+
+        // Create new models with fresh URIs
+        const origUri = monaco.Uri.parse(`wave://diff/${encodeURIComponent(path)}.orig`);
+        const modUri = monaco.Uri.parse(`wave://diff/${encodeURIComponent(path)}.mod`);
+        const originalModel = monaco.editor.createModel(original, language, origUri);
+        const modifiedModel = monaco.editor.createModel(modified, language, modUri);
+
+        diff.setModel({ original: originalModel, modified: modifiedModel });
+        currentPathRef.current = path;
+    }, [path]);
+
+    // Update model content when original/modified change (same file, new diff)
+    useEffect(() => {
+        const diff = diffRef.current;
+        if (!diff) return;
+        const model = diff.getModel();
+        if (!model) return;
+
+        if (model.original.getValue() !== original) model.original.setValue(original);
+        if (model.modified.getValue() !== modified) model.modified.setValue(modified);
+
+        if (language) {
+            monaco.editor.setModelLanguage(model.original, language);
+            monaco.editor.setModelLanguage(model.modified, language);
+        }
+    }, [original, modified, language]);
 
     useEffect(() => {
         const diff = diffRef.current;
@@ -178,22 +214,6 @@ export function MonacoDiffViewer({ original, modified, language, path, options, 
             debouncedLayout.cancel();
         };
     }, []);
-
-    // Update models on prop change
-    useEffect(() => {
-        const diff = diffRef.current;
-        if (!diff) return;
-        const model = diff.getModel();
-        if (!model) return;
-
-        if (model.original.getValue() !== original) model.original.setValue(original);
-        if (model.modified.getValue() !== modified) model.modified.setValue(modified);
-
-        if (language) {
-            monaco.editor.setModelLanguage(model.original, language);
-            monaco.editor.setModelLanguage(model.modified, language);
-        }
-    }, [original, modified, language]);
 
     useEffect(() => {
         const diff = diffRef.current;
