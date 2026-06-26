@@ -712,7 +712,11 @@ export class TermViewModel implements ViewModel {
             return false;
         }
         const shellProcStatus = globalStore.get(this.shellProcStatus);
-        if ((shellProcStatus == "done" || shellProcStatus == "init") && keyutil.checkKeyPressed(waveEvent, "Enter")) {
+        if (shellProcStatus == "done" && keyutil.checkKeyPressed(waveEvent, "Enter")) {
+            fireAndForget(() => this.closeBlock());
+            return false;
+        }
+        if (shellProcStatus == "init" && keyutil.checkKeyPressed(waveEvent, "Enter")) {
             fireAndForget(() => this.forceRestartController());
             return false;
         }
@@ -730,6 +734,10 @@ export class TermViewModel implements ViewModel {
             oref: WOS.makeORef("block", this.blockId),
             meta: { "term:theme": themeName },
         });
+    }
+
+    async closeBlock() {
+        await RpcApi.DeleteBlockCommand(TabRpcClient, { blockid: this.blockId });
     }
 
     async forceRestartController() {

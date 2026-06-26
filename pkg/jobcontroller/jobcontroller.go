@@ -1233,11 +1233,11 @@ func HandleCmdJobExited(ctx context.Context, jobId string, data wshrpc.CommandJo
 	})
 	if shouldWrite {
 		resetTerminalState(ctx, updatedJob.AttachedBlockId)
-		msg := "shell terminated"
+		msg := "shell terminated - press enter to close"
 		if updatedJob.CmdExitCode != nil && *updatedJob.CmdExitCode != 0 {
-			msg = fmt.Sprintf("shell terminated (exit code %d)", *updatedJob.CmdExitCode)
+			msg = fmt.Sprintf("shell terminated (exit code %d) - press enter to close", *updatedJob.CmdExitCode)
 		} else if updatedJob.CmdExitSignal != "" {
-			msg = fmt.Sprintf("shell terminated (signal %s)", updatedJob.CmdExitSignal)
+			msg = fmt.Sprintf("shell terminated (signal %s) - press enter to close", updatedJob.CmdExitSignal)
 		}
 		writeMutedMessageToTerminal(updatedJob.AttachedBlockId, "["+msg+"]")
 	}
@@ -1346,7 +1346,7 @@ func remoteTerminateJobManager(ctx context.Context, job *waveobj.Job) error {
 	})
 	if shouldWrite {
 		resetTerminalState(ctx, job.AttachedBlockId)
-		writeMutedMessageToTerminal(job.AttachedBlockId, "[shell terminated]")
+		writeMutedMessageToTerminal(job.AttachedBlockId, "[shell terminated - press enter to close]")
 	}
 
 	if job.JobManagerStatus == JobManagerStatus_Done {

@@ -260,7 +260,7 @@ const CommitInput = memo(({ model, hasStagedChanges, hasUnpushedCommits }: {
     return (
         <div className="flex flex-col gap-2">
             <textarea
-                className="w-full px-2 py-1.5 text-xs bg-surface border border-border rounded resize-none outline-none focus:border-zinc-500 placeholder:text-muted"
+                className="w-full px-2 py-1.5 text-xs bg-surface border border-border rounded resize-none outline-none focus:border-zinc-500 placeholder:text-muted overflow-hidden text-ellipsis"
                 placeholder="Commit message (Ctrl+Enter to commit)"
                 rows={1}
                 value={commitMessage}
@@ -414,16 +414,19 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
             <div className="flex items-center justify-between px-3 py-2 border-b border-border">
                 <div className="flex items-center gap-2 text-xs">
                     <i className="fa-solid fa-code-branch text-muted" />
-                    <div ref={pathRef} className="cursor-pointer hover:text-white transition-colors">
-                        {cwd}
-                    </div>
+                    <span className="font-medium">{status?.branch || "detached"}</span>
                     <span className="text-muted text-[10px]">({totalChanges} changes)</span>
                 </div>
                 <div className="flex items-center gap-1">
-                    <Tooltip content={viewMode === "side-by-side" ? "Switch to inline" : "Switch to side-by-side"} placement="bottom">
+                    <Tooltip content={selectedFile?.untracked ? "Not available for untracked files" : (viewMode === "side-by-side" ? "Switch to inline" : "Switch to side-by-side")} placement="bottom">
                         <button
-                            className="p-1.5 rounded hover:bg-hoverbg text-secondary hover:text-white transition-colors"
+                            className={`p-1.5 rounded transition-colors ${
+                                selectedFile?.untracked
+                                    ? "text-muted cursor-not-allowed"
+                                    : "hover:bg-hoverbg text-secondary hover:text-white"
+                            }`}
                             onClick={handleViewModeToggle}
+                            disabled={!!selectedFile?.untracked}
                         >
                             <i className={`fa-solid ${viewMode === "side-by-side" ? "fa-columns" : "fa-bars"} text-xs`} />
                         </button>
@@ -578,7 +581,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                         <DiffPanel
                             diff={diff}
                             fileName={selectedFile?.path || ""}
-                            viewMode={viewMode}
+                            viewMode={selectedFile?.untracked ? "inline" : viewMode}
                             wordWrap={wordWrap}
                             isStaged={selectedFile?.staged ?? false}
                             onStageHunk={(hunkIndex) => model.stageHunk(selectedFile?.path || "", hunkIndex)}

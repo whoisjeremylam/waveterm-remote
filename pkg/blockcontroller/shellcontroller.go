@@ -605,15 +605,15 @@ func (bc *ShellController) manageRunningShellProcess(shellProc *shellexec.ShellP
 		exitSignal := shellProc.Cmd.ExitSignal()
 		var baseMsg string
 		if bc.ControllerType == BlockController_Shell {
-			baseMsg = "shell terminated"
+			baseMsg = "shell terminated - press enter to close"
 		} else {
-			baseMsg = "command exited"
+			baseMsg = "command exited - press enter to close"
 		}
 		msg := baseMsg
 		if exitSignal != "" {
-			msg = fmt.Sprintf("%s (signal %s)", baseMsg, exitSignal)
+			msg = fmt.Sprintf("shell terminated (signal %s) - press enter to close", exitSignal)
 		} else if exitCode != 0 {
-			msg = fmt.Sprintf("%s (exit code %d)", baseMsg, exitCode)
+			msg = fmt.Sprintf("shell terminated (exit code %d) - press enter to close", exitCode)
 		}
 		bc.writeMutedMessageToTerminal("[" + msg + "]")
 		go checkCloseOnExit(bc.BlockId, exitCode)
