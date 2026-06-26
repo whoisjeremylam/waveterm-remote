@@ -31,6 +31,7 @@ var (
 	badgeClear    bool
 	badgeBeep     bool
 	badgePid      int
+	badgeRotation float64
 )
 
 func init() {
@@ -40,6 +41,7 @@ func init() {
 	badgeCmd.Flags().BoolVar(&badgeClear, "clear", false, "clear the badge")
 	badgeCmd.Flags().BoolVar(&badgeBeep, "beep", false, "play system bell sound")
 	badgeCmd.Flags().IntVar(&badgePid, "pid", 0, "watch a pid and automatically clear the badge when it exits (default priority 5)")
+	badgeCmd.Flags().Float64Var(&badgeRotation, "rotation", 0, "icon rotation in degrees (0-360), applied via CSS transform")
 }
 
 func badgeRun(cmd *cobra.Command, args []string) (rtnErr error) {
@@ -81,6 +83,7 @@ func badgeRun(cmd *cobra.Command, args []string) (rtnErr error) {
 			Color:     badgeColor,
 			Priority:  badgePriority,
 			PidLinked: badgePid > 0,
+			Rotation:  badgeRotation,
 		}
 	}
 

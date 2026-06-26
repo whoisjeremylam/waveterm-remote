@@ -286,7 +286,17 @@ const BlockFrame_Header = ({
             )}
             {useTermHeader && badge && (
                 <div className="pointer-events-none flex items-center px-1" style={{ color: badge.color || "#fbbf24" }}>
-                    <i className={makeIconClass(badge.icon, true, { defaultIcon: "circle-small" })} />
+                    <i
+                        className={makeIconClass(badge.icon, true, { defaultIcon: "circle-small" })}
+                        style={
+                            badge.rotation != null
+                                ? {
+                                      transform: `rotate(${badge.rotation}deg)`,
+                                      transition: "transform 0.1s ease",
+                                  }
+                                : undefined
+                        }
+                    />
                 </div>
             )}
             <HeaderTextElems viewModel={viewModel} blockId={nodeModel.blockId} preview={preview} error={error} />

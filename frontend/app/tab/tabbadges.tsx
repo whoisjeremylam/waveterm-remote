@@ -34,7 +34,15 @@ export function TabBadges({ badges, flagColor, className }: TabBadgesProps) {
         <div className={cn(DefaultClassName, className)}>
             <i
                 className={makeIconClass(firstBadge.icon, true, { defaultIcon: "circle-small" }) + " text-[12px]"}
-                style={{ color: firstBadge.color || "#fbbf24" }}
+                style={{
+                    color: firstBadge.color || "#fbbf24",
+                    ...(firstBadge.rotation != null
+                        ? {
+                              transform: `rotate(${firstBadge.rotation}deg)`,
+                              transition: "transform 0.1s ease",
+                          }
+                        : {}),
+                }}
             />
             {extraBadges.length > 0 && (
                 <div className="ml-[2px] flex flex-col items-center justify-center gap-[2px]">

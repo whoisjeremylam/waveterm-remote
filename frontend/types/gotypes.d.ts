@@ -46,6 +46,7 @@ declare global {
         color?: string;
         priority: number;
         pidlinked?: boolean;
+        rotation?: number; // degrees 0-360, applied via CSS transform
     };
 
     // baseds.BadgeEvent
