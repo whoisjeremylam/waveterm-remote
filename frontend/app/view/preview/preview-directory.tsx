@@ -965,6 +965,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     onSelect={(path) => model.goHistory(path)}
                     onClose={() => globalStore.set(model.directoryDropdownOpen, false)}
                     anchorRef={model.previewTextRef}
+                    dirsOnly
                 />
             )}
         </Fragment>

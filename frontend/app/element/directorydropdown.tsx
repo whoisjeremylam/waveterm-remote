@@ -129,7 +129,8 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
     }, [onClose, anchorRef]);
 
     const handleItemClick = useCallback(
-        (entry: DirEntry) => {
+        (e: React.MouseEvent, entry: DirEntry) => {
+            e.stopPropagation();
             onSelect(entry.path);
         },
         [onSelect]
@@ -154,7 +155,7 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
                     <div
                         key={entry.path}
                         className="directory-dropdown-item"
-                        onClick={() => handleItemClick(entry)}
+                        onClick={(e) => handleItemClick(e, entry)}
                     >
                         <span className="directory-item-name">
                             <i className={`fa-solid ${entry.name === ".." ? "fa-arrow-up" : entry.isdir ? "fa-folder" : "fa-file"}`} />
