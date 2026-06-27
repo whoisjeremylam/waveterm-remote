@@ -11,7 +11,6 @@ import * as WOS from "@/store/wos";
 import { atom, useAtomValue } from "jotai";
 import * as React from "react";
 import { useMemo, useEffect, useRef } from "react";
-import { TabUserInputPromptOverlay } from "@/app/tab/tabuserinputpromptoverlay";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { isLocalConnName } from "@/util/util";
@@ -100,7 +99,6 @@ const TabContent = React.memo(({ tabId, noTopPadding }: { tabId: string; noTopPa
     return (
         <div className={`flex flex-row flex-grow min-h-0 w-full items-center justify-center overflow-hidden relative ${noTopPadding ? "" : "pt-[3px]"} pr-[3px]`}>
             {innerContent}
-            {tabData?.blockids?.length ? <TabUserInputPromptOverlay tabId={tabId} blockIds={tabData.blockids} /> : null}
         </div>
     );
 });
