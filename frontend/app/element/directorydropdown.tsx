@@ -3,7 +3,6 @@
 
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
-import { makeConnRoute } from "@/util/util";
 import { formatRemoteUri } from "@/util/waveutil";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -76,12 +75,11 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
             }
 
             try {
-                const route = connection ? makeConnRoute(connection) : undefined;
                 const remotePath = formatRemoteUri(dirPath, connection || "local");
                 const result = await RpcApi.FileListCommand(
                     TabRpcClient,
                     { path: remotePath },
-                    { route }
+                    undefined
                 );
 
                 if (result) {
