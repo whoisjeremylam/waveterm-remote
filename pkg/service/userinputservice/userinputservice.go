@@ -16,6 +16,12 @@ func (uis *UserInputService) SendUserInputResponse(response *userinput.UserInput
 	ch := userinput.MainUserInputHandler.Channels[response.RequestId]
 	if ch == nil {
 		log.Printf("[PW-RESP] channel not found for requestId=%q (may have timed out)", response.RequestId)
+		// If the original GetUserInput goroutine timed out, cache the password
+		// so the next connect attempt can use it without re-prompting.
+		if response.Text != "" && response.ConnName != "" {
+			userinput.CacheOrphanedPassword(response.ConnName, response.Text)
+			log.Printf("[PW-RESP] cached orphaned password for conn=%q", response.ConnName)
+		}
 		return
 	}
 	select {

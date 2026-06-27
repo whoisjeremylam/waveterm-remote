@@ -382,7 +382,7 @@ func createPublicKeyCallback(connCtx context.Context, sshKeywords *wconfig.ConnK
 			Title:        "Publickey Auth + Passphrase",
 			PromptType:   "passphrase",
 		}
-		ctx, cancelFn := context.WithTimeout(connCtx, 60*time.Second)
+		ctx, cancelFn := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancelFn()
 		response, err := userinput.GetUserInput(ctx, request)
 		if err != nil {
@@ -439,7 +439,7 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 			}
 			return *cachedPw, nil
 		}
-		ctx, cancelFn := context.WithTimeout(connCtx, 60*time.Second)
+		ctx, cancelFn := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancelFn()
 		queryText := fmt.Sprintf(
 			"Password Authentication requested from connection  \n"+
@@ -492,7 +492,7 @@ func createInteractiveKbdInteractiveChallenge(connCtx context.Context, remoteNam
 func promptChallengeQuestion(connCtx context.Context, question string, echo bool, remoteName string) (answer string, err error) {
 	// limited to 15 seconds for some reason. this should be investigated more
 	// in the future
-	ctx, cancelFn := context.WithTimeout(connCtx, 60*time.Second)
+	ctx, cancelFn := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelFn()
 	queryText := fmt.Sprintf(
 		"Keyboard Interactive Authentication requested from connection  \n"+

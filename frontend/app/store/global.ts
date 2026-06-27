@@ -701,10 +701,9 @@ function subscribeToConnEvents() {
                     // Clear per-tab dismissed state so all tabs re-show the prompt.
                     if (connStatus.errorcode === "auth-failed") {
                         modalsModel.resetDismissedUserInputPrompts(connStatus.connection);
-                    } else {
-                        // Non-auth errors: dismiss stale prompts (backend gave up)
-                        modalsModel.dismissUserInputPrompt(connStatus.connection);
                     }
+                    // Non-auth errors (timeout, dial-error): keep the prompt visible.
+                    // The password buffer is independent of connection lifecycle.
                 }
                 const curAtom = getConnStatusAtom(connStatus.connection);
                 globalStore.set(curAtom, connStatus);
@@ -713,6 +712,22 @@ function subscribeToConnEvents() {
             }
         },
     });
+    // Secondary defense: on startup, dismiss stale password prompts for connections
+    // that are already connected. This handles the race where a buffered userinput
+    // event arrives before the corresponding connchange(connected) event is replayed.
+    cleanupStaleUserInputPrompts();
+}
+
+function cleanupStaleUserInputPrompts() {
+    const activePrompts = globalStore.get(modalsModel.activeUserInputPromptsAtom);
+    for (const connName of Object.keys(activePrompts)) {
+        const statusAtom = getConnStatusAtom(connName);
+        const status = globalStore.get(statusAtom);
+        if (status?.connected) {
+            console.log(`[PW-CLEANUP] dismissing stale prompt for connected conn=${connName}`);
+            modalsModel.dismissUserInputPrompt(connName);
+        }
+    }
 }
 
 function makeDefaultConnStatus(conn: string): ConnStatus {

@@ -666,32 +666,14 @@ func onConnectionDown(connName string) {
 		return
 	}
 
-	// Check if connection requires interactive auth
+	// Connections requiring interactive auth (password/keyboard-interactive)
+	// without a cached password never start the auto-reconnect scheduler.
+	// The password prompt is a persistent buffer independent of connection
+	// lifecycle — re-prompts and retries are handled by the conncontroller's
+	// background re-prompt goroutine (see conncontroller.requestPasswordRePrompt).
 	if needsInteractiveAuth(connName) {
-		// Special case: if the last error was auth-failed (wrong cached password),
-		// start the scheduler so the user gets re-prompted on all tabs.
-		connOpts, err := remote.ParseOpts(connName)
-		if err == nil {
-			conn := conncontroller.MaybeGetConn(connOpts)
-			if conn != nil {
-				status := conn.GetStatus()
-				// Only start scheduler if we're in error state (auth failed)
-				// and the error was specifically auth-failed
-				if status == conncontroller.Status_Error && conn.GetLastErrorCode() == "auth-failed" {
-					log.Printf("[conn:%s] auth failed with cached password, starting scheduler for retry", connName)
-					// Fall through to scheduler start below
-				} else {
-					log.Printf("[conn:%s] connection may require interactive auth (password/keyboard-interactive), skipping auto-reconnect scheduler", connName)
-					return
-				}
-			} else {
-				log.Printf("[conn:%s] connection may require interactive auth (password/keyboard-interactive), skipping auto-reconnect scheduler", connName)
-				return
-			}
-		} else {
-			log.Printf("[conn:%s] connection may require interactive auth (password/keyboard-interactive), skipping auto-reconnect scheduler", connName)
-			return
-		}
+		log.Printf("[conn:%s] connection requires interactive auth, skipping auto-reconnect scheduler", connName)
+		return
 	}
 
 	// Deduplicate: only one scheduler per connection at a time

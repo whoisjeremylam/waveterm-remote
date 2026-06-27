@@ -291,8 +291,10 @@ func (b *BrokerType) persistEvent(event WaveEvent) {
 
 // shouldBufferEvent returns true for event types that must survive the
 // startup window before the frontend connects (e.g. userinput password prompts).
+// connchange events are also buffered so late-subscribing windows (including
+// WebSocket reconnects) can reconcile prompt visibility with current connection state.
 func shouldBufferEvent(eventType string) bool {
-	return eventType == Event_UserInput
+	return eventType == Event_UserInput || eventType == Event_ConnChange
 }
 
 func (b *BrokerType) Publish(event WaveEvent) {
