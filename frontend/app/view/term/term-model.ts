@@ -720,6 +720,17 @@ export class TermViewModel implements ViewModel {
             fireAndForget(() => this.forceRestartController());
             return false;
         }
+        const connStatus = globalStore.get(this.connStatus);
+        const isDurable = globalStore.get(getBlockTermDurableAtom(this.blockId));
+        if (
+            isDurable &&
+            shellProcStatus == "running" &&
+            connStatus?.status != "connected" &&
+            keyutil.checkKeyPressed(waveEvent, "Enter")
+        ) {
+            fireAndForget(() => this.closeBlock());
+            return false;
+        }
         const appHandled = appHandleKeyDown(waveEvent);
         if (appHandled) {
             event.preventDefault();

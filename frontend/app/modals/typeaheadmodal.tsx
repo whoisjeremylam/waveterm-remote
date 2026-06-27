@@ -5,7 +5,7 @@ import { Input, InputGroup, InputRightElement } from "@/app/element/input";
 import { useDimensionsWithExistingRef } from "@/app/hook/useDimensions";
 import { makeIconClass } from "@/util/util";
 import clsx from "clsx";
-import React, { forwardRef, useLayoutEffect, useRef } from "react";
+import React, { forwardRef, useEffect, useLayoutEffect, useRef } from "react";
 import ReactDOM from "react-dom";
 
 import "./typeaheadmodal.scss";
@@ -111,7 +111,7 @@ const TypeAheadModal = ({
     const suggestionsWrapperRef = useRef<HTMLDivElement>(null);
     const suggestionsRef = useRef<HTMLDivElement>(null);
 
-    useLayoutEffect(() => {
+    useEffect(() => {
         if (!modalRef.current || !inputGroupRef.current || !suggestionsRef.current || !suggestionsWrapperRef.current) {
             return;
         }
@@ -145,7 +145,7 @@ const TypeAheadModal = ({
         suggestionsWrapperRef.current.style.height = `${computedHeight - inputHeight - modalPadding - modalBorder - suggestionsWrapperMarginTop}px`;
     }, [height, suggestions]);
 
-    useLayoutEffect(() => {
+    useEffect(() => {
         if (!blockRef.current || !modalRef.current) return;
 
         const blockRect = blockRef.current.getBoundingClientRect();
