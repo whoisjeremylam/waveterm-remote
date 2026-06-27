@@ -74,7 +74,8 @@ function initGlobalWaveEventSubs(initOpts: WaveInitOpts) {
             if (connName) {
                 modalsModel.upsertUserInputPrompt(connName, "UserInputPrompt", { ...event.data });
             } else {
-                modalsModel.pushModal("UserInputPrompt", { ...event.data });
+                console.log("[PW-EVENT] userinput event has no connName, using empty key", event.data);
+                modalsModel.upsertUserInputPrompt("", "UserInputPrompt", { ...event.data });
             }
         },
         scope: initOpts.windowId,
