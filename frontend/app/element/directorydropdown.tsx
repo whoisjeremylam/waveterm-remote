@@ -34,6 +34,7 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
 }: DirectoryDropdownProps) {
     const [entries, setEntries] = useState<DirEntry[]>([]);
     const [loading, setLoading] = useState(true);
+    const [dirError, setDirError] = useState<string | null>(null);
     const [posStyle, setPosStyle] = useState<React.CSSProperties>({});
     const dropdownRef = useRef<HTMLDivElement>(null);
     const currentPathRef = useRef(currentPath);
@@ -66,6 +67,14 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
     const loadDirectories = useCallback(
         async (dirPath: string) => {
             setLoading(true);
+            setDirError(null);
+            const dirs: DirEntry[] = [];
+
+            if (dirPath !== "/") {
+                const parentPath = dirPath.split("/").slice(0, -1).join("/") || "/";
+                dirs.push({ name: "..", path: parentPath, isdir: true });
+            }
+
             try {
                 const route = connection ? makeConnRoute(connection) : undefined;
                 const remotePath = formatRemoteUri(dirPath, connection || "local");
@@ -74,13 +83,6 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
                     { path: remotePath },
                     { route }
                 );
-
-                const dirs: DirEntry[] = [];
-
-                if (dirPath !== "/") {
-                    const parentPath = dirPath.split("/").slice(0, -1).join("/") || "/";
-                    dirs.push({ name: "..", path: parentPath, isdir: true });
-                }
 
                 if (result) {
                     for (const item of result) {
@@ -94,21 +96,20 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
                         }
                     }
                 }
-
-                dirs.sort((a, b) => {
-                    if (a.name === "..") return -1;
-                    if (b.name === "..") return 1;
-                    if (a.isdir !== b.isdir) return a.isdir ? -1 : 1;
-                    return a.name.localeCompare(b.name);
-                });
-
-                setEntries(dirs);
             } catch (e) {
                 console.error("Failed to load directories:", e);
-                setEntries([]);
+                setDirError("Error loading directories");
             } finally {
                 setLoading(false);
             }
+
+            dirs.sort((a, b) => {
+                if (a.name === "..") return -1;
+                if (b.name === "..") return 1;
+                if (a.isdir !== b.isdir) return a.isdir ? -1 : 1;
+                return a.name.localeCompare(b.name);
+            });
+            setEntries(dirs);
         },
         [connection, dirsOnly]
     );
@@ -119,13 +120,15 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
 
     useEffect(() => {
         function handleClickOutside(e: MouseEvent) {
+            const anchor = anchorRef?.current;
+            if (anchor && anchor.contains(e.target as Node)) return;
             if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
                 onClose();
             }
         }
         document.addEventListener("mousedown", handleClickOutside);
         return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, [onClose]);
+    }, [onClose, anchorRef]);
 
     const handleItemClick = useCallback(
         (entry: DirEntry) => {
@@ -140,9 +143,13 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
                 <div className="directory-dropdown-item">
                     <span className="directory-item-name">Loading...</span>
                 </div>
+            ) : dirError ? (
+                <div className="directory-dropdown-item">
+                    <span className="directory-item-name">Error loading directories</span>
+                </div>
             ) : entries.length === 0 ? (
                 <div className="directory-dropdown-item">
-                    <span className="directory-item-name">Empty directory</span>
+                    <span className="directory-item-name">No directories</span>
                 </div>
             ) : (
                 entries.map((entry) => (

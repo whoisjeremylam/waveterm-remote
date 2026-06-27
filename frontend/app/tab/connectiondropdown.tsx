@@ -58,13 +58,15 @@ export const ConnectionDropdown = memo(function ConnectionDropdown({
 
     useEffect(() => {
         function handleClickOutside(e: MouseEvent) {
+            const anchor = anchorRef?.current;
+            if (anchor && anchor.contains(e.target as Node)) return;
             if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
                 onClose();
             }
         }
         document.addEventListener("mousedown", handleClickOutside);
         return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, [onClose]);
+    }, [onClose, anchorRef]);
 
     return createPortal(
         <div ref={dropdownRef} className="connection-dropdown" style={posStyle}>

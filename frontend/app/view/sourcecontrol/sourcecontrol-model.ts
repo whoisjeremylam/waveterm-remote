@@ -7,6 +7,7 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { WaveEnv } from "@/app/waveenv/waveenv";
 import { makeConnRoute, isBlank } from "@/util/util";
 import * as jotai from "jotai";
+import { createRef } from "react";
 import type { SelectedFile } from "./types";
 
 import { SourceControlView } from "./sourcecontrol";
@@ -47,6 +48,7 @@ export class SourceControlViewModel implements ViewModel {
     pollTimer: ReturnType<typeof setInterval> | null = null;
     selectedFileUnsub: (() => void) | null = null;
     disposed = false;
+    pathRef: React.RefObject<HTMLDivElement>;
 
     constructor({ blockId, waveEnv }: ViewModelInitType) {
         this.viewType = "sourcecontrol";
@@ -65,6 +67,7 @@ export class SourceControlViewModel implements ViewModel {
         this.commitMessageAtom = jotai.atom<string>("") as jotai.PrimitiveAtom<string>;
         this.committingAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
         this.pushingAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
+        this.pathRef = createRef();
 
         // Connection from block metadata
         this.connection = jotai.atom((get) => {
@@ -118,6 +121,7 @@ export class SourceControlViewModel implements ViewModel {
                 {
                     elemtype: "text",
                     text: cwd,
+                    ref: this.pathRef,
                     className: "preview-filename",
                     onClick: () => {
                         const current = globalStore.get(this.directoryDropdownOpen);

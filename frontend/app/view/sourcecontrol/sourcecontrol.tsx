@@ -8,7 +8,7 @@ import { Tooltip } from "@/app/element/tooltip";
 import { makeIconClass } from "@/util/util";
 import * as jotai from "jotai";
 import * as monaco from "monaco-editor";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { DiffGutter } from "./DiffGutter";
 import type { SourceControlViewModel } from "./sourcecontrol-model";
@@ -326,7 +326,6 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     const [untrackedExpanded, setUntrackedExpanded] = useState(true);
     const [filter, setFilter] = useState("");
     const [wordWrap, setWordWrap] = useState(false);
-    const pathRef = useRef<HTMLDivElement>(null);
 
     const handleFileSelect = useCallback((file: SelectedFile) => {
         globalStore.set(model.selectedFileAtom, file);
@@ -457,7 +456,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                     connection={connection === "local" ? "" : connection}
                     onSelect={handleDirectorySelect}
                     onClose={handleDirectoryDropdownClose}
-                    anchorRef={pathRef}
+                    anchorRef={model.pathRef}
                     dirsOnly
                 />
             )}
