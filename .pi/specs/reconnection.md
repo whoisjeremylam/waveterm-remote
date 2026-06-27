@@ -331,6 +331,18 @@ connected   max 5 min   no durable jobs
 | G3 | Password lost when context timeout kills parent goroutine before user responds | High | Phase 2A |
 | G4 | `connchange` events not buffered — late windows miss dismissals | High | Phase 5 |
 | G5 | Scheduler 5s timeout propagates to password callback (60s→5s) | High | Phase 2B-2C |
+| G6 | ConnName lost when `context.Background()` decoupled from connection context (Phase 2 broke ConnName injection) | High | Phase 2D (fixed 2026-06-27) |
+
+---
+
+## Phase 2D: ConnName Injection Fix (2026-06-27)
+
+Phase 2 decoupled the password timeout from the connection context by using `context.Background()` in `sshclient.go` callbacks. However this also removed the `ConnName` from the context, causing:
+- Frontend fell through to `pushModal` path → prompt rendered inline without absolute positioning
+- `ModalsRenderer` rendered the prompt as a flex child → occupied space, pushed content right
+- `connchange(connected)` dismissal only cleared `activeUserInputPromptsAtom`, not `modalsAtom` → prompt persisted
+
+**Fix**: All 5 `GetUserInput` call sites in `sshclient.go` now explicitly set `request.ConnName` from `genconn.GetConnData(connCtx).GetConnName()`. Frontend `global.ts` always uses `upsertUserInputPrompt` (overlay path) — no more `pushModal` fallback.
 
 ---
 
@@ -348,4 +360,6 @@ connected   max 5 min   no durable jobs
 | `frontend/app/store/global.ts` | `subscribeToConnEvents`, prompt event handler |
 | `frontend/app/block/connstatusoverlay.tsx` | Reconnect button, status display |
 | `frontend/app/block/blockframe.tsx` | `ConnEnsureCommand` on mount, `UserInputPromptOverlay` |
+| `frontend/app/tab/tabuserinputpromptoverlay.tsx` | Tab-level password prompt overlay (phase 1) |
+| `frontend/app/workspace/workspace.tsx` | Overlay rendering at workspace level (phase 1 fix) |
 | `frontend/app/modals/userinputprompt.tsx` | Password prompt component |
