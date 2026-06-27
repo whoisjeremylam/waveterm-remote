@@ -3,7 +3,7 @@
 
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./connectiondropdown.scss";
 
@@ -34,7 +34,7 @@ export const ConnectionDropdown = memo(function ConnectionDropdown({
         });
     }, [anchorRef]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         updatePosition();
         window.addEventListener("resize", updatePosition);
         return () => {

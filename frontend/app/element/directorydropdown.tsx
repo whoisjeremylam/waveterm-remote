@@ -4,7 +4,7 @@
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { formatRemoteUri } from "@/util/waveutil";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./directorydropdown.scss";
 
@@ -53,7 +53,7 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
         });
     }, [anchorRef]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         updatePosition();
         window.addEventListener("resize", updatePosition);
         window.addEventListener("scroll", updatePosition, true);
