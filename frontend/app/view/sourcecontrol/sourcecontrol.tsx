@@ -121,6 +121,7 @@ const GitAuthDialog = memo(({ model }: { model: SourceControlViewModel }) => {
     const authRemote = jotai.useAtomValue(model.authRemoteAtom);
     const authPreFilledUsername = jotai.useAtomValue(model.authPreFilledUsernameAtom);
     const authIsRetry = jotai.useAtomValue(model.authIsRetryAtom);
+    const authScope = jotai.useAtomValue(model.authScopeAtom);
 
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
@@ -132,9 +133,9 @@ const GitAuthDialog = memo(({ model }: { model: SourceControlViewModel }) => {
         if (showAuthDialog) {
             setUsername(authPreFilledUsername);
             setPassword("");
-            setSaveScope("repo");
+            setSaveScope(authScope as "repo" | "host");
         }
-    }, [showAuthDialog, authPreFilledUsername]);
+    }, [showAuthDialog, authPreFilledUsername, authScope]);
 
     const handleSubmit = useCallback(async () => {
         if (!username || !password || isSubmitting) return;
@@ -406,11 +407,7 @@ const CommitInput = memo(({ model, hasStagedChanges, hasUnpushedCommits }: {
 
     const handlePush = useCallback(async () => {
         if (pushing || committing) return;
-        const result = await model.push();
-        if (result.authNeeded) {
-            // TODO: prompt for credentials via UserInput
-            console.log("[SCM] Auth needed for push:", result.authError);
-        }
+        model.push();
     }, [model, pushing, committing]);
 
     return (

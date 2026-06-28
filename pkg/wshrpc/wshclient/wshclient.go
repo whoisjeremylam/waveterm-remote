@@ -488,6 +488,18 @@ func GitPushCommand(w *wshutil.WshRpc, data wshrpc.CommandGitPushData, opts *wsh
 	return resp, err
 }
 
+// command "gitlookupcredentials", wshserver.GitLookupCredentialsCommand
+func GitLookupCredentialsCommand(w *wshutil.WshRpc, data wshrpc.CommandGitLookupCredentialsData, opts *wshrpc.RpcOpts) (*wshrpc.GitCredentials, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GitCredentials](w, "gitlookupcredentials", data, opts)
+	return resp, err
+}
+
+// command "gitsavecredentials", wshserver.GitSaveCredentialsCommand
+func GitSaveCredentialsCommand(w *wshutil.WshRpc, data wshrpc.CommandGitSaveCredentialsData, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "gitsavecredentials", data, opts)
+	return err
+}
+
 // command "gitreverthunk", wshserver.GitRevertHunkCommand
 func GitRevertHunkCommand(w *wshutil.WshRpc, data wshrpc.CommandGitRevertHunkData, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "gitreverthunk", data, opts)

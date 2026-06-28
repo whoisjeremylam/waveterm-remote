@@ -300,15 +300,30 @@ func (impl *ServerImpl) GitPushCommand(ctx context.Context, data wshrpc.CommandG
 	// If credentials provided, use GIT_ASKPASS
 	var cmd *exec.Cmd
 	if data.Username != "" || data.Password != "" {
-		// Create a credential script
 		credScript := fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\n*Username*) echo %q;;\n*Password*) echo %q;;\nesac\n", data.Username, data.Password)
-		scriptPath := "/tmp/.wave-git-askpass.sh"
-		if err := os.WriteFile(scriptPath, []byte(credScript), 0700); err != nil {
+		f, err := os.CreateTemp("", "wave-git-askpass-*.sh")
+		if err != nil {
 			return &wshrpc.GitPushResponse{
 				Success: false,
 				Output:  "Failed to create credential script: " + err.Error(),
 			}, nil
 		}
+		scriptPath := f.Name()
+		if _, err := f.Write([]byte(credScript)); err != nil {
+			f.Close()
+			return &wshrpc.GitPushResponse{
+				Success: false,
+				Output:  "Failed to write credential script: " + err.Error(),
+			}, nil
+		}
+		if err := f.Chmod(0700); err != nil {
+			f.Close()
+			return &wshrpc.GitPushResponse{
+				Success: false,
+				Output:  "Failed to chmod credential script: " + err.Error(),
+			}, nil
+		}
+		f.Close()
 		defer os.Remove(scriptPath)
 
 		cmd = exec.CommandContext(ctx, "git", args...)
@@ -369,17 +384,18 @@ func parseHostFromURL(remoteURL string) string {
 		return ""
 	}
 
-	// Handle SSH format: git@host:path
-	if strings.Contains(remoteURL, "@") && strings.Contains(remoteURL, ":") {
+	// Handle SSH SCP-style format: git@host:path (must check before URL-style)
+	if strings.Contains(remoteURL, "@") && !strings.HasPrefix(remoteURL, "ssh://") && !strings.HasPrefix(remoteURL, "https://") && !strings.HasPrefix(remoteURL, "http://") {
 		parts := strings.Split(remoteURL, "@")
 		if len(parts) == 2 {
-			host := strings.Split(parts[1], ":")[0]
-			return host
+			hostPart := strings.SplitN(parts[1], ":", 2)[0]
+			if hostPart != "" {
+				return hostPart
+			}
 		}
 	}
 
-	// Handle HTTPS/SSH URL format
-	// Remove scheme
+	// Handle URL format (HTTPS, HTTP, SSH)
 	url := remoteURL
 	if strings.HasPrefix(url, "https://") {
 		url = strings.TrimPrefix(url, "https://")
@@ -387,9 +403,8 @@ func parseHostFromURL(remoteURL string) string {
 		url = strings.TrimPrefix(url, "http://")
 	} else if strings.HasPrefix(url, "ssh://") {
 		url = strings.TrimPrefix(url, "ssh://")
-		// Remove user@ if present
 		if strings.Contains(url, "@") {
-			url = strings.Split(url, "@")[1]
+			url = strings.SplitN(url, "@", 2)[1]
 		}
 	}
 
@@ -412,16 +427,18 @@ func parsePathFromURL(remoteURL string) string {
 		return ""
 	}
 
-	// Handle SSH format: git@host:path
-	if strings.Contains(remoteURL, "@") && strings.Contains(remoteURL, ":") {
+	// Handle SSH SCP-style format: git@host:path (must check before URL-style)
+	if strings.Contains(remoteURL, "@") && !strings.HasPrefix(remoteURL, "ssh://") && !strings.HasPrefix(remoteURL, "https://") && !strings.HasPrefix(remoteURL, "http://") {
 		parts := strings.Split(remoteURL, "@")
 		if len(parts) == 2 {
-			path := strings.SplitN(parts[1], ":", 2)[1]
-			return strings.TrimSuffix(path, ".git")
+			pathParts := strings.SplitN(parts[1], ":", 2)
+			if len(pathParts) == 2 {
+				return strings.TrimSuffix(pathParts[1], ".git")
+			}
 		}
 	}
 
-	// Handle HTTPS URL format
+	// Handle URL format (HTTPS, HTTP, SSH)
 	url := remoteURL
 	if strings.HasPrefix(url, "https://") {
 		url = strings.TrimPrefix(url, "https://")
@@ -430,7 +447,7 @@ func parsePathFromURL(remoteURL string) string {
 	} else if strings.HasPrefix(url, "ssh://") {
 		url = strings.TrimPrefix(url, "ssh://")
 		if strings.Contains(url, "@") {
-			url = strings.Split(url, "@")[1]
+			url = strings.SplitN(url, "@", 2)[1]
 		}
 	}
 
@@ -448,6 +465,30 @@ func parsePathFromURL(remoteURL string) string {
 	return ""
 }
 
+// detectProtocolFromURL returns "https" or "ssh" from a git remote URL
+func detectProtocolFromURL(remoteURL string) string {
+	if strings.HasPrefix(remoteURL, "https://") || strings.HasPrefix(remoteURL, "http://") {
+		return "https"
+	}
+	return "ssh"
+}
+
+// encodeSecretName converts a git secret key (protocol, host, path) to a
+// secret-store-safe name using underscores. This avoids characters (:, /, .)
+// that the secret store regex rejects.
+// Examples:
+//   - https, github.com, user/repo → git_https_github_com_user_repo
+//   - ssh, github.com, ""          → git_ssh_github_com
+func encodeSecretName(protocol, host, path string) string {
+	safeHost := strings.NewReplacer(":", "_", ".", "_", "/", "_").Replace(host)
+	name := "git_" + protocol + "_" + safeHost
+	if path != "" {
+		safePath := strings.NewReplacer(":", "_", ".", "_", "/", "_").Replace(path)
+		name += "_" + safePath
+	}
+	return name
+}
+
 // GitLookupCredentials looks up stored credentials for a remote
 func (impl *ServerImpl) GitLookupCredentialsCommand(ctx context.Context, data wshrpc.CommandGitLookupCredentialsData) (*wshrpc.GitCredentials, error) {
 	remote := data.Remote
@@ -457,22 +498,22 @@ func (impl *ServerImpl) GitLookupCredentialsCommand(ctx context.Context, data ws
 
 	host := parseHostFromURL(remote)
 	path := parsePathFromURL(remote)
+	protocol := detectProtocolFromURL(remote)
 
 	if host == "" {
 		return &wshrpc.GitCredentials{Found: false}, nil
 	}
 
 	// Try repo-specific secret first, then host-wide
-	secretNames := []string{}
+	secretNames := make([]string, 0, 2)
 	if path != "" {
-		// Extract owner/repo from path
 		pathParts := strings.Split(path, "/")
 		if len(pathParts) >= 2 {
 			ownerRepo := strings.Join(pathParts[:2], "/")
-			secretNames = append(secretNames, "git:https:"+host+"/"+ownerRepo)
+			secretNames = append(secretNames, encodeSecretName(protocol, host, ownerRepo))
 		}
 	}
-	secretNames = append(secretNames, "git:https:"+host)
+	secretNames = append(secretNames, encodeSecretName(protocol, host, ""))
 
 	// Try each secret name
 	for _, secretName := range secretNames {
@@ -519,6 +560,7 @@ func (impl *ServerImpl) GitSaveCredentialsCommand(ctx context.Context, data wshr
 
 	host := parseHostFromURL(remote)
 	path := parsePathFromURL(remote)
+	protocol := detectProtocolFromURL(remote)
 
 	if host == "" {
 		return fmt.Errorf("invalid remote URL")
@@ -530,11 +572,11 @@ func (impl *ServerImpl) GitSaveCredentialsCommand(ctx context.Context, data wshr
 		pathParts := strings.Split(path, "/")
 		if len(pathParts) >= 2 {
 			ownerRepo := strings.Join(pathParts[:2], "/")
-			secretName = "git:https:" + host + "/" + ownerRepo
+			secretName = encodeSecretName(protocol, host, ownerRepo)
 		}
 	}
 	if secretName == "" {
-		secretName = "git:https:" + host
+		secretName = encodeSecretName(protocol, host, "")
 	}
 
 	// Create JSON value with username and password

@@ -44,6 +44,7 @@ export class SourceControlViewModel implements ViewModel {
     authRemoteAtom: jotai.PrimitiveAtom<string>;
     authPreFilledUsernameAtom: jotai.PrimitiveAtom<string>;
     authIsRetryAtom: jotai.PrimitiveAtom<boolean>;
+    authScopeAtom: jotai.PrimitiveAtom<string>;
 
     // Connection
     connection: jotai.Atom<string>;
@@ -81,6 +82,7 @@ export class SourceControlViewModel implements ViewModel {
         this.authRemoteAtom = jotai.atom<string>("") as jotai.PrimitiveAtom<string>;
         this.authPreFilledUsernameAtom = jotai.atom<string>("") as jotai.PrimitiveAtom<string>;
         this.authIsRetryAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
+        this.authScopeAtom = jotai.atom<string>("repo") as jotai.PrimitiveAtom<string>;
         this.pathRef = createRef();
 
         // Connection from block metadata
@@ -379,14 +381,16 @@ export class SourceControlViewModel implements ViewModel {
                     return this.push(stored.username, stored.password);
                 } else {
                     // Show dialog for new credentials
-                    this.showAuthDialog(result.authHost, result.authRemote, "", false);
+                    this.showAuthDialog(result.authHost, result.authRemote, "", false, "repo");
                     return null;
                 }
             }
 
             // If auth failed with provided credentials (retry case)
             if (!result.success && result.authNeeded) {
-                this.showAuthDialog(result.authHost, result.authRemote, username || "", true);
+                // Determine the original scope from where credentials were found
+                const stored = await this.lookupCredentials(result.authRemote);
+                this.showAuthDialog(result.authHost, result.authRemote, username || "", true, stored.scope || "repo");
                 return null;
             }
 
@@ -423,14 +427,16 @@ export class SourceControlViewModel implements ViewModel {
             );
         } catch (e) {
             console.error("Failed to save credentials:", e);
+            globalStore.set(this.authErrorAtom, "Failed to save credentials. Check the secret store.");
         }
     }
 
-    showAuthDialog(host: string, remote: string, preFilledUsername: string, isRetry: boolean) {
+    showAuthDialog(host: string, remote: string, preFilledUsername: string, isRetry: boolean, scope: string) {
         globalStore.set(this.authHostAtom, host);
         globalStore.set(this.authRemoteAtom, remote);
         globalStore.set(this.authPreFilledUsernameAtom, preFilledUsername);
         globalStore.set(this.authIsRetryAtom, isRetry);
+        globalStore.set(this.authScopeAtom, scope);
         globalStore.set(this.authErrorAtom, isRetry ? "Stored credentials were rejected." : null);
         globalStore.set(this.showAuthDialogAtom, true);
     }
