@@ -184,8 +184,8 @@ type GitCredentials struct {
 
 **Behavior:**
 1. Parse protocol, host, owner, repo from remote URL
-2. Check repo-specific secret first (`git:https:github.com/user/repo`)
-3. Fall back to host-wide secret (`git:https:github.com`)
+2. Check repo-specific secret first (`git_https_github_com_user_repo`)
+3. Fall back to host-wide secret (`git_https_github_com`)
 4. Parse JSON value to extract username/password
 5. Return credentials with scope indicator
 
