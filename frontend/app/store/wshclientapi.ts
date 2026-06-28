@@ -492,6 +492,18 @@ export class RpcApiType {
         return client.wshRpcCall("gitpush", data, opts);
     }
 
+    // command "gitlookupcredentials" [call]
+    GitLookupCredentialsCommand(client: WshClient, data: CommandGitLookupCredentialsData, opts?: RpcOpts): Promise<GitCredentials> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitlookupcredentials", data, opts);
+        return client.wshRpcCall("gitlookupcredentials", data, opts);
+    }
+
+    // command "gitsavecredentials" [call]
+    GitSaveCredentialsCommand(client: WshClient, data: CommandGitSaveCredentialsData, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitsavecredentials", data, opts);
+        return client.wshRpcCall("gitsavecredentials", data, opts);
+    }
+
     // command "gitreverthunk" [call]
     GitRevertHunkCommand(client: WshClient, data: CommandGitRevertHunkData, opts?: RpcOpts): Promise<void> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitreverthunk", data, opts);

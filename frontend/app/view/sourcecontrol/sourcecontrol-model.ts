@@ -37,6 +37,14 @@ export class SourceControlViewModel implements ViewModel {
     committingAtom: jotai.PrimitiveAtom<boolean>;
     pushingAtom: jotai.PrimitiveAtom<boolean>;
 
+    // Auth dialog atoms
+    showAuthDialogAtom: jotai.PrimitiveAtom<boolean>;
+    authErrorAtom: jotai.PrimitiveAtom<string | null>;
+    authHostAtom: jotai.PrimitiveAtom<string>;
+    authRemoteAtom: jotai.PrimitiveAtom<string>;
+    authPreFilledUsernameAtom: jotai.PrimitiveAtom<string>;
+    authIsRetryAtom: jotai.PrimitiveAtom<boolean>;
+
     // Connection
     connection: jotai.Atom<string>;
     cwd: jotai.PrimitiveAtom<string>;
@@ -67,6 +75,12 @@ export class SourceControlViewModel implements ViewModel {
         this.commitMessageAtom = jotai.atom<string>("") as jotai.PrimitiveAtom<string>;
         this.committingAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
         this.pushingAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
+        this.showAuthDialogAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
+        this.authErrorAtom = jotai.atom<string | null>(null) as jotai.PrimitiveAtom<string | null>;
+        this.authHostAtom = jotai.atom<string>("") as jotai.PrimitiveAtom<string>;
+        this.authRemoteAtom = jotai.atom<string>("") as jotai.PrimitiveAtom<string>;
+        this.authPreFilledUsernameAtom = jotai.atom<string>("") as jotai.PrimitiveAtom<string>;
+        this.authIsRetryAtom = jotai.atom<boolean>(false) as jotai.PrimitiveAtom<boolean>;
         this.pathRef = createRef();
 
         // Connection from block metadata
@@ -345,7 +359,7 @@ export class SourceControlViewModel implements ViewModel {
         }
     }
 
-    async push(username?: string, password?: string): Promise<GitPushResponse> {
+    async push(username?: string, password?: string): Promise<GitPushResponse | null> {
         const cwd = globalStore.get(this.cwd);
         const route = makeConnRoute(globalStore.get(this.connection));
         globalStore.set(this.pushingAtom, true);
@@ -355,13 +369,79 @@ export class SourceControlViewModel implements ViewModel {
                 { dir: cwd, username, password },
                 { route }
             );
+
+            // If auth needed and no credentials provided, check secret store
+            if (result.authNeeded && !username) {
+                const stored = await this.lookupCredentials(result.authRemote);
+                if (stored.found) {
+                    // Retry silently with stored credentials
+                    globalStore.set(this.pushingAtom, false);
+                    return this.push(stored.username, stored.password);
+                } else {
+                    // Show dialog for new credentials
+                    this.showAuthDialog(result.authHost, result.authRemote, "", false);
+                    return null;
+                }
+            }
+
+            // If auth failed with provided credentials (retry case)
+            if (!result.success && result.authNeeded) {
+                this.showAuthDialog(result.authHost, result.authRemote, username || "", true);
+                return null;
+            }
+
             return result;
         } catch (e) {
             console.error("Failed to push:", e);
-            return { success: false, output: String(e), authNeeded: false, authError: "" };
+            return { success: false, output: String(e), authNeeded: false, authError: "", authHost: "", authRemote: "" };
         } finally {
             globalStore.set(this.pushingAtom, false);
         }
+    }
+
+    async lookupCredentials(remote: string): Promise<GitCredentials> {
+        const route = makeConnRoute(globalStore.get(this.connection));
+        try {
+            return await this.env.rpc.GitLookupCredentialsCommand(
+                TabRpcClient,
+                { remote },
+                { route }
+            );
+        } catch (e) {
+            console.error("Failed to lookup credentials:", e);
+            return { username: "", password: "", found: false, scope: "" };
+        }
+    }
+
+    async saveCredentials(remote: string, username: string, password: string, scope: string): Promise<void> {
+        const route = makeConnRoute(globalStore.get(this.connection));
+        try {
+            await this.env.rpc.GitSaveCredentialsCommand(
+                TabRpcClient,
+                { remote, username, password, scope },
+                { route }
+            );
+        } catch (e) {
+            console.error("Failed to save credentials:", e);
+        }
+    }
+
+    showAuthDialog(host: string, remote: string, preFilledUsername: string, isRetry: boolean) {
+        globalStore.set(this.authHostAtom, host);
+        globalStore.set(this.authRemoteAtom, remote);
+        globalStore.set(this.authPreFilledUsernameAtom, preFilledUsername);
+        globalStore.set(this.authIsRetryAtom, isRetry);
+        globalStore.set(this.authErrorAtom, isRetry ? "Stored credentials were rejected." : null);
+        globalStore.set(this.showAuthDialogAtom, true);
+    }
+
+    hideAuthDialog() {
+        globalStore.set(this.showAuthDialogAtom, false);
+        globalStore.set(this.authErrorAtom, null);
+        globalStore.set(this.authHostAtom, "");
+        globalStore.set(this.authRemoteAtom, "");
+        globalStore.set(this.authPreFilledUsernameAtom, "");
+        globalStore.set(this.authIsRetryAtom, false);
     }
 
     refresh() {

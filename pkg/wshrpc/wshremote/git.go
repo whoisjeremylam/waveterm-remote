@@ -5,6 +5,7 @@ package wshremote
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/wavetermdev/waveterm/pkg/secretstore"
 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
 )
 
@@ -290,6 +292,11 @@ func (impl *ServerImpl) GitPushCommand(ctx context.Context, data wshrpc.CommandG
 		args = append(args, branch)
 	}
 
+	// Get remote URL for auth error reporting
+	remoteURL, _ := runGitCommand(ctx, data.Dir, "remote", "get-url", remote)
+	remoteURL = strings.TrimSpace(remoteURL)
+	authHost := parseHostFromURL(remoteURL)
+
 	// If credentials provided, use GIT_ASKPASS
 	var cmd *exec.Cmd
 	if data.Username != "" || data.Password != "" {
@@ -323,6 +330,8 @@ func (impl *ServerImpl) GitPushCommand(ctx context.Context, data wshrpc.CommandG
 			Output:     outputStr,
 			AuthNeeded: authNeeded,
 			AuthError:  outputStr,
+			AuthHost:   authHost,
+			AuthRemote: remoteURL,
 		}, nil
 	}
 
@@ -348,6 +357,201 @@ func isGitAuthError(output string) bool {
 		}
 	}
 	return false
+}
+
+// parseHostFromURL extracts the host from a git remote URL
+// Examples:
+//   - https://github.com/user/repo → github.com
+//   - git@github.com:user/repo → github.com
+//   - ssh://git@github.com/user/repo → github.com
+func parseHostFromURL(remoteURL string) string {
+	if remoteURL == "" {
+		return ""
+	}
+
+	// Handle SSH format: git@host:path
+	if strings.Contains(remoteURL, "@") && strings.Contains(remoteURL, ":") {
+		parts := strings.Split(remoteURL, "@")
+		if len(parts) == 2 {
+			host := strings.Split(parts[1], ":")[0]
+			return host
+		}
+	}
+
+	// Handle HTTPS/SSH URL format
+	// Remove scheme
+	url := remoteURL
+	if strings.HasPrefix(url, "https://") {
+		url = strings.TrimPrefix(url, "https://")
+	} else if strings.HasPrefix(url, "http://") {
+		url = strings.TrimPrefix(url, "http://")
+	} else if strings.HasPrefix(url, "ssh://") {
+		url = strings.TrimPrefix(url, "ssh://")
+		// Remove user@ if present
+		if strings.Contains(url, "@") {
+			url = strings.Split(url, "@")[1]
+		}
+	}
+
+	// Remove path and any trailing slashes
+	host := strings.Split(url, "/")[0]
+	// Remove port if present
+	if strings.Contains(host, ":") {
+		host = strings.Split(host, ":")[0]
+	}
+
+	return host
+}
+
+// parsePathFromURL extracts owner/repo from a git remote URL
+// Examples:
+//   - https://github.com/user/repo → user/repo
+//   - git@github.com:user/repo → user/repo
+func parsePathFromURL(remoteURL string) string {
+	if remoteURL == "" {
+		return ""
+	}
+
+	// Handle SSH format: git@host:path
+	if strings.Contains(remoteURL, "@") && strings.Contains(remoteURL, ":") {
+		parts := strings.Split(remoteURL, "@")
+		if len(parts) == 2 {
+			path := strings.SplitN(parts[1], ":", 2)[1]
+			return strings.TrimSuffix(path, ".git")
+		}
+	}
+
+	// Handle HTTPS URL format
+	url := remoteURL
+	if strings.HasPrefix(url, "https://") {
+		url = strings.TrimPrefix(url, "https://")
+	} else if strings.HasPrefix(url, "http://") {
+		url = strings.TrimPrefix(url, "http://")
+	} else if strings.HasPrefix(url, "ssh://") {
+		url = strings.TrimPrefix(url, "ssh://")
+		if strings.Contains(url, "@") {
+			url = strings.Split(url, "@")[1]
+		}
+	}
+
+	// Remove host
+	parts := strings.SplitN(url, "/", 2)
+	if len(parts) == 2 {
+		path := parts[1]
+		// Remove .git suffix
+		path = strings.TrimSuffix(path, ".git")
+		// Remove trailing slash
+		path = strings.TrimSuffix(path, "/")
+		return path
+	}
+
+	return ""
+}
+
+// GitLookupCredentials looks up stored credentials for a remote
+func (impl *ServerImpl) GitLookupCredentialsCommand(ctx context.Context, data wshrpc.CommandGitLookupCredentialsData) (*wshrpc.GitCredentials, error) {
+	remote := data.Remote
+	if remote == "" {
+		return &wshrpc.GitCredentials{Found: false}, nil
+	}
+
+	host := parseHostFromURL(remote)
+	path := parsePathFromURL(remote)
+
+	if host == "" {
+		return &wshrpc.GitCredentials{Found: false}, nil
+	}
+
+	// Try repo-specific secret first, then host-wide
+	secretNames := []string{}
+	if path != "" {
+		// Extract owner/repo from path
+		pathParts := strings.Split(path, "/")
+		if len(pathParts) >= 2 {
+			ownerRepo := strings.Join(pathParts[:2], "/")
+			secretNames = append(secretNames, "git:https:"+host+"/"+ownerRepo)
+		}
+	}
+	secretNames = append(secretNames, "git:https:"+host)
+
+	// Try each secret name
+	for _, secretName := range secretNames {
+		value, exists, err := secretstore.GetSecret(secretName)
+		if err != nil || !exists {
+			continue
+		}
+
+		// Parse JSON value
+		var creds struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := json.Unmarshal([]byte(value), &creds); err != nil {
+			continue
+		}
+
+		if creds.Username == "" || creds.Password == "" {
+			continue
+		}
+
+		scope := "host"
+		if secretNames[0] == secretName {
+			scope = "repo"
+		}
+
+		return &wshrpc.GitCredentials{
+			Username: creds.Username,
+			Password: creds.Password,
+			Found:    true,
+			Scope:    scope,
+		}, nil
+	}
+
+	return &wshrpc.GitCredentials{Found: false}, nil
+}
+
+// GitSaveCredentials saves credentials to the secret store
+func (impl *ServerImpl) GitSaveCredentialsCommand(ctx context.Context, data wshrpc.CommandGitSaveCredentialsData) error {
+	remote := data.Remote
+	if remote == "" {
+		return fmt.Errorf("remote is required")
+	}
+
+	host := parseHostFromURL(remote)
+	path := parsePathFromURL(remote)
+
+	if host == "" {
+		return fmt.Errorf("invalid remote URL")
+	}
+
+	// Determine secret name based on scope
+	var secretName string
+	if data.Scope == "repo" && path != "" {
+		pathParts := strings.Split(path, "/")
+		if len(pathParts) >= 2 {
+			ownerRepo := strings.Join(pathParts[:2], "/")
+			secretName = "git:https:" + host + "/" + ownerRepo
+		}
+	}
+	if secretName == "" {
+		secretName = "git:https:" + host
+	}
+
+	// Create JSON value with username and password
+	creds := struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}{
+		Username: data.Username,
+		Password: data.Password,
+	}
+
+	jsonBytes, err := json.Marshal(creds)
+	if err != nil {
+		return fmt.Errorf("failed to marshal credentials: %w", err)
+	}
+
+	return secretstore.SetSecret(secretName, string(jsonBytes))
 }
 
 // runGitCommand runs a git command in the specified directory

@@ -132,6 +132,8 @@ type WshRpcInterface interface {
 	GitRevertHunkCommand(ctx context.Context, data CommandGitRevertHunkData) error
 	GitCommitCommand(ctx context.Context, data CommandGitCommitData) (*GitCommitResponse, error)
 	GitPushCommand(ctx context.Context, data CommandGitPushData) (*GitPushResponse, error)
+	GitLookupCredentialsCommand(ctx context.Context, data CommandGitLookupCredentialsData) (*GitCredentials, error)
+	GitSaveCredentialsCommand(ctx context.Context, data CommandGitSaveCredentialsData) error
 
 	// emain
 	WebSelectorCommand(ctx context.Context, data CommandWebSelectorData) ([]string, error)
@@ -951,4 +953,24 @@ type GitPushResponse struct {
 	Output     string `json:"output"`
 	AuthNeeded bool   `json:"authNeeded"` // true if auth is required
 	AuthError  string `json:"authError"`  // the auth error message
+	AuthHost   string `json:"authHost"`   // parsed host (e.g., github.com)
+	AuthRemote string `json:"authRemote"` // full remote URL
+}
+
+type CommandGitLookupCredentialsData struct {
+	Remote string `json:"remote"` // full remote URL (e.g., https://github.com/user/repo)
+}
+
+type GitCredentials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Found    bool   `json:"found"`
+	Scope    string `json:"scope"` // "repo" or "host"
+}
+
+type CommandGitSaveCredentialsData struct {
+	Remote   string `json:"remote"`   // full remote URL (e.g., https://github.com/user/repo)
+	Username string `json:"username"` // git username
+	Password string `json:"password"` // git password/token
+	Scope    string `json:"scope"`    // "repo" or "host"
 }

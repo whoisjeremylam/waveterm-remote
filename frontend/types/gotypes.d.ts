@@ -1025,6 +1025,29 @@ declare global {
         output: string;
         authNeeded: boolean;
         authError: string;
+        authHost: string;
+        authRemote: string;
+    };
+
+    // wshrpc.CommandGitLookupCredentialsData
+    type CommandGitLookupCredentialsData = {
+        remote: string;
+    };
+
+    // wshrpc.GitCredentials
+    type GitCredentials = {
+        username: string;
+        password: string;
+        found: boolean;
+        scope: string;
+    };
+
+    // wshrpc.CommandGitSaveCredentialsData
+    type CommandGitSaveCredentialsData = {
+        remote: string;
+        username: string;
+        password: string;
+        scope: string;
     };
 
     // wshrpc.GitStatusResponse
