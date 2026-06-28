@@ -154,8 +154,12 @@ const GitAuthDialog = memo(({ model }: { model: SourceControlViewModel }) => {
                 model.hideAuthDialog();
             } else if (result?.authNeeded) {
                 // Auth failed again, show error
-                globalStore.set(model.authErrorAtom, "Authentication failed. Check your credentials and try again.");
+                globalStore.set(model.authErrorAtom, result.authError || "Authentication failed. Check your credentials and try again.");
+            } else if (result && !result.success) {
+                // Other error (not auth), show the error message
+                globalStore.set(model.authErrorAtom, result.output || "Push failed. Please try again.");
             }
+            // If result is null, push() already showed the dialog with error
         } finally {
             setIsSubmitting(false);
         }
