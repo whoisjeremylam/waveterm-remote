@@ -292,6 +292,17 @@ func (impl *ServerImpl) GitPushCommand(ctx context.Context, data wshrpc.CommandG
 		args = append(args, branch)
 	}
 
+	// Check if there are unpushed commits before prompting for auth
+	if data.Username == "" && data.Password == "" {
+		hasUnpushed, err := checkUnpushedCommits(ctx, data.Dir, remote, branch)
+		if err == nil && !hasUnpushed {
+			return &wshrpc.GitPushResponse{
+				Success: true,
+				Output:  "Everything up-to-date",
+			}, nil
+		}
+	}
+
 	// Get remote URL for auth error reporting
 	remoteURL, err := runGitCommand(ctx, data.Dir, "remote", "get-url", remote)
 	if err != nil {
@@ -475,6 +486,37 @@ func detectProtocolFromURL(remoteURL string) string {
 		return "https"
 	}
 	return "ssh"
+}
+
+// checkUnpushedCommits checks if there are commits to push
+func checkUnpushedCommits(ctx context.Context, dir, remote, branch string) (bool, error) {
+	// First check if upstream is set
+	upstreamOutput, err := runGitCommand(ctx, dir, "rev-parse", "--abbrev-ref", "@{upstream}")
+	if err != nil {
+		// No upstream set, check if remote branch exists
+		remoteBranchOutput, err := runGitCommand(ctx, dir, "branch", "-r", "--list", remote+"/"+branch)
+		if err != nil || remoteBranchOutput == "" {
+			// No remote branch exists, check if there are any local commits
+			localCommits, err := runGitCommand(ctx, dir, "rev-list", "--count", "HEAD")
+			if err != nil {
+				return false, err
+			}
+			count := strings.TrimSpace(localCommits)
+			return count != "0", nil
+		}
+		// Remote branch exists but no upstream, assume there are things to push
+		return true, nil
+	}
+
+	// Upstream is set, check if there are unpushed commits
+	upstream := strings.TrimSpace(upstreamOutput)
+	unpushedOutput, err := runGitCommand(ctx, dir, "rev-list", "--count", upstream+"..HEAD")
+	if err != nil {
+		return false, err
+	}
+
+	count := strings.TrimSpace(unpushedOutput)
+	return count != "0", nil
 }
 
 // encodeSecretName converts a git secret key (protocol, host, path) to a
