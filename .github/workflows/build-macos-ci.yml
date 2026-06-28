@@ -1,0 +1,57 @@
+name: Build macOS (CI)
+on:
+    push:
+        branches:
+            - "**"
+    workflow_dispatch:
+
+env:
+    GO_VERSION: "1.26.2"
+    NODE_VERSION: 22
+    NODE_OPTIONS: --max-old-space-size=4096
+
+jobs:
+    build:
+        runs-on: macos-latest
+        steps:
+            - uses: actions/checkout@v6
+
+            - name: Install Go
+              run: |
+                  curl -sL "https://go.dev/dl/go${{ env.GO_VERSION }}.darwin-arm64.tar.gz" | tar -xzf - -C .
+                  mv go golang-${{ env.GO_VERSION }}
+                  echo "module golang" > golang-${{ env.GO_VERSION }}/go.mod
+
+            - name: Install Zig
+              run: |
+                  curl -sL "https://ziglang.org/download/0.14.0/zig-macos-aarch64-0.14.0.tar.xz" | tar -xJf -
+                  mv zig-macos-aarch64-0.14.0 zig-0.14.0
+
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install Task
+              uses: arduino/setup-task@v2
+              with:
+                  version: 3.x
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Install deps
+              run: npm ci --no-audit --no-fund
+              env:
+                  GIT_ASKPASS: "echo"
+                  GIT_TERMINAL_PROMPT: "0"
+
+            - name: Build
+              run: task package
+              env:
+                  USE_SYSTEM_FPM: true
+
+            - name: Upload artifacts
+              uses: actions/upload-artifact@v5
+              with:
+                  name: macos-build-${{ github.ref_name }}
+                  path: make/
