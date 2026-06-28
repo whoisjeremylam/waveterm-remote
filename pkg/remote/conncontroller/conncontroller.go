@@ -1845,12 +1845,9 @@ func EnsureConnection(ctx context.Context, connName string) error {
 		}
 		return conn.Connect(ctx, &wconfig.ConnKeywords{})
 	case Status_Error:
-		// If a password is cached, retry automatically (scheduler path)
-		// Otherwise, return the error so the UI can show a manual reconnect option
-		if conn.getCachedPassword() != nil {
-			return conn.Connect(ctx, &wconfig.ConnKeywords{})
-		}
-		return fmt.Errorf("connection error: %s", connStatus.Error)
+		// Always retry connecting from error state. If no cached password,
+		// the decoupled password callback will prompt the user independently.
+		return conn.Connect(ctx, &wconfig.ConnKeywords{})
 	default:
 		return fmt.Errorf("unknown connection status %q", connStatus.Status)
 	}
