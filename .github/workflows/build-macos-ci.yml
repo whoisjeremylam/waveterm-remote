@@ -50,8 +50,12 @@ jobs:
               env:
                   USE_SYSTEM_FPM: true
 
+            - name: Sanitize branch name
+              id: sanitize
+              run: echo "branch=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
+
             - name: Upload artifacts
               uses: actions/upload-artifact@v5
               with:
-                  name: macos-build-${{ github.ref_name }}
+                  name: macos-build-${{ steps.sanitize.outputs.branch }}
                   path: make/
