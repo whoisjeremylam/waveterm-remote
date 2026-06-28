@@ -121,10 +121,10 @@ const GitAuthDialog = memo(({ model }: { model: SourceControlViewModel }) => {
     const authRemote = jotai.useAtomValue(model.authRemoteAtom);
     const authPreFilledUsername = jotai.useAtomValue(model.authPreFilledUsernameAtom);
     const authIsRetry = jotai.useAtomValue(model.authIsRetryAtom);
-    const authScope = jotai.useAtomValue(model.authScopeAtom);
 
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
+    const [saveToSecrets, setSaveToSecrets] = useState(false);
     const [saveScope, setSaveScope] = useState<"repo" | "host">("repo");
     const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -133,9 +133,10 @@ const GitAuthDialog = memo(({ model }: { model: SourceControlViewModel }) => {
         if (showAuthDialog) {
             setUsername(authPreFilledUsername);
             setPassword("");
-            setSaveScope(authScope as "repo" | "host");
+            setSaveToSecrets(false);
+            setSaveScope("repo");
         }
-    }, [showAuthDialog, authPreFilledUsername, authScope]);
+    }, [showAuthDialog, authPreFilledUsername]);
 
     const handleSubmit = useCallback(async () => {
         if (!username || !password || isSubmitting) return;
@@ -147,7 +148,9 @@ const GitAuthDialog = memo(({ model }: { model: SourceControlViewModel }) => {
 
             if (result?.success) {
                 // Save credentials if requested
-                await model.saveCredentials(authRemote, username, password, saveScope);
+                if (saveToSecrets) {
+                    await model.saveCredentials(authRemote, username, password, saveScope);
+                }
                 model.hideAuthDialog();
             } else if (result?.authNeeded) {
                 // Auth failed again, show error
@@ -156,7 +159,7 @@ const GitAuthDialog = memo(({ model }: { model: SourceControlViewModel }) => {
         } finally {
             setIsSubmitting(false);
         }
-    }, [model, username, password, authRemote, saveScope, isSubmitting]);
+    }, [model, username, password, authRemote, saveToSecrets, saveScope, isSubmitting]);
 
     const handleCancel = useCallback(() => {
         model.hideAuthDialog();
@@ -175,35 +178,38 @@ const GitAuthDialog = memo(({ model }: { model: SourceControlViewModel }) => {
         return null;
     }
 
+    // Extract display host from remote URL
+    const displayHost = authHost || (authRemote ? authRemote.replace(/^https?:\/\//, '').split('/')[0] : "remote");
+
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div className="bg-surface border border-border rounded-lg shadow-xl w-96 p-6">
-                <div className="flex items-center gap-2 mb-4">
-                    <i className="fa-solid fa-lock text-muted" />
-                    <h3 className="text-sm font-medium">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
+            <div className="bg-[#1e1e1e] border border-[#3e3e3e] rounded-lg shadow-2xl w-96 p-6">
+                <div className="flex items-center justify-center gap-2 mb-4">
+                    <i className="fa-solid fa-lock text-[#888]" />
+                    <h3 className="text-sm font-medium text-white">
                         {authIsRetry ? "Authentication Failed" : "Authentication Required"}
                     </h3>
                 </div>
 
                 {authError && (
-                    <div className="mb-4 p-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400">
+                    <div className="mb-4 p-2 bg-red-500/20 border border-red-500/30 rounded text-xs text-red-400">
                         {authError}
                     </div>
                 )}
 
-                <p className="text-xs text-muted mb-4">
+                <p className="text-xs text-[#888] mb-4">
                     {authIsRetry
-                        ? `Stored credentials for ${authHost} were rejected. Enter new credentials:`
-                        : `git push to ${authHost}`
+                        ? `Stored credentials for ${displayHost} were rejected. Enter new credentials:`
+                        : `git push to ${displayHost}`
                     }
                 </p>
 
-                <div className="space-y-3">
-                    <div>
-                        <label className="block text-xs text-muted mb-1">Username</label>
+                <div className="space-y-4">
+                    <div className="flex items-center gap-3">
+                        <label className="text-xs text-[#888] w-20 text-right">Username</label>
                         <input
                             type="text"
-                            className="w-full px-3 py-2 text-xs bg-surface border border-border rounded outline-none focus:border-zinc-500"
+                            className="flex-1 px-3 py-2 text-xs bg-[#2d2d2d] border border-[#3e3e3e] rounded outline-none focus:border-[#555] text-white"
                             value={username}
                             onChange={(e) => setUsername(e.target.value)}
                             onKeyDown={handleKeyDown}
@@ -212,62 +218,75 @@ const GitAuthDialog = memo(({ model }: { model: SourceControlViewModel }) => {
                         />
                     </div>
 
-                    <div>
-                        <label className="block text-xs text-muted mb-1">Token</label>
+                    <div className="flex items-center gap-3">
+                        <label className="text-xs text-[#888] w-20 text-right">Password</label>
                         <input
                             type="password"
-                            className="w-full px-3 py-2 text-xs bg-surface border border-border rounded outline-none focus:border-zinc-500"
+                            className="flex-1 px-3 py-2 text-xs bg-[#2d2d2d] border border-[#3e3e3e] rounded outline-none focus:border-[#555] text-white"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             onKeyDown={handleKeyDown}
-                            placeholder="Personal access token"
+                            placeholder="Password or token"
                         />
                     </div>
 
                     {!authIsRetry && (
-                        <div>
-                            <label className="block text-xs text-muted mb-2">Save to</label>
-                            <div className="flex gap-4">
-                                <label className="flex items-center gap-2 cursor-pointer">
-                                    <input
-                                        type="radio"
-                                        name="saveScope"
-                                        checked={saveScope === "repo"}
-                                        onChange={() => setSaveScope("repo")}
-                                        className="w-3 h-3"
-                                    />
-                                    <span className="text-xs">This repository</span>
-                                </label>
-                                <label className="flex items-center gap-2 cursor-pointer">
-                                    <input
-                                        type="radio"
-                                        name="saveScope"
-                                        checked={saveScope === "host"}
-                                        onChange={() => setSaveScope("host")}
-                                        className="w-3 h-3"
-                                    />
-                                    <span className="text-xs">All repos on {authHost}</span>
-                                </label>
-                            </div>
+                        <div className="ml-20">
+                            <label className="flex items-center gap-2 cursor-pointer mb-2">
+                                <input
+                                    type="checkbox"
+                                    checked={saveToSecrets}
+                                    onChange={(e) => setSaveToSecrets(e.target.checked)}
+                                    className="w-3 h-3"
+                                />
+                                <span className="text-xs text-[#888]">Save credentials in secrets store</span>
+                            </label>
+
+                            {saveToSecrets && (
+                                <div className="flex gap-4 ml-5">
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <input
+                                            type="radio"
+                                            name="saveScope"
+                                            checked={saveScope === "repo"}
+                                            onChange={() => setSaveScope("repo")}
+                                            className="w-3 h-3"
+                                        />
+                                        <span className="text-xs text-[#888]">This repo</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <input
+                                            type="radio"
+                                            name="saveScope"
+                                            checked={saveScope === "host"}
+                                            onChange={() => setSaveScope("host")}
+                                            className="w-3 h-3"
+                                        />
+                                        <span className="text-xs text-[#888]">All repos for this remote</span>
+                                    </label>
+                                </div>
+                            )}
                         </div>
                     )}
 
                     {authIsRetry && (
-                        <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                                type="checkbox"
-                                checked={true}
-                                readOnly
-                                className="w-3 h-3"
-                            />
-                            <span className="text-xs">Update stored credentials</span>
-                        </label>
+                        <div className="ml-20">
+                            <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={true}
+                                    readOnly
+                                    className="w-3 h-3"
+                                />
+                                <span className="text-xs text-[#888]">Update stored credentials</span>
+                            </label>
+                        </div>
                     )}
                 </div>
 
                 <div className="flex justify-end gap-2 mt-6">
                     <button
-                        className="px-3 py-1.5 text-xs rounded bg-surface hover:bg-hoverbg transition-colors"
+                        className="px-3 py-1.5 text-xs rounded bg-[#3e3e3e] hover:bg-[#4e4e4e] text-white transition-colors"
                         onClick={handleCancel}
                         disabled={isSubmitting}
                     >
@@ -276,8 +295,8 @@ const GitAuthDialog = memo(({ model }: { model: SourceControlViewModel }) => {
                     <button
                         className={`px-3 py-1.5 text-xs rounded font-medium transition-colors ${
                             username && password && !isSubmitting
-                                ? "bg-zinc-600 hover:bg-zinc-500 text-white"
-                                : "bg-surface text-muted cursor-not-allowed"
+                                ? "bg-[#0e639c] hover:bg-[#1177bb] text-white"
+                                : "bg-[#3e3e3e] text-[#888] cursor-not-allowed"
                         }`}
                         onClick={handleSubmit}
                         disabled={!username || !password || isSubmitting}

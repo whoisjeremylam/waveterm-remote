@@ -293,7 +293,11 @@ func (impl *ServerImpl) GitPushCommand(ctx context.Context, data wshrpc.CommandG
 	}
 
 	// Get remote URL for auth error reporting
-	remoteURL, _ := runGitCommand(ctx, data.Dir, "remote", "get-url", remote)
+	remoteURL, err := runGitCommand(ctx, data.Dir, "remote", "get-url", remote)
+	if err != nil {
+		// Try getting URL from git config
+		remoteURL, _ = runGitCommand(ctx, data.Dir, "config", "--get", "remote."+remote+".url")
+	}
 	remoteURL = strings.TrimSpace(remoteURL)
 	authHost := parseHostFromURL(remoteURL)
 
