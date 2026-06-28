@@ -5,15 +5,13 @@ import { Block } from "@/app/block/block";
 import { CenteredDiv } from "@/element/quickelems";
 import { ContentRenderer, NodeModel, PreviewRenderer, TileLayout } from "@/layout/index";
 import { TileLayoutContents } from "@/layout/lib/types";
-import { atoms, getApi, globalStore, getBlockMetaKeyAtom } from "@/store/global";
+import { atoms, getApi } from "@/store/global";
 import * as services from "@/store/services";
 import * as WOS from "@/store/wos";
 import { atom, useAtomValue } from "jotai";
 import * as React from "react";
-import { useMemo, useEffect, useRef } from "react";
-import { TabRpcClient } from "@/app/store/wshrpcutil";
-import { RpcApi } from "@/app/store/wshclientapi";
-import { isLocalConnName } from "@/util/util";
+import { useMemo } from "react";
+import { TabUserInputPromptOverlay } from "@/app/tab/tabuserinputpromptoverlay";
 
 const tileGapSizeAtom = atom((get) => {
     const settings = get(atoms.settingsAtom);
@@ -27,33 +25,6 @@ const TabContent = React.memo(({ tabId, noTopPadding }: { tabId: string; noTopPa
     const tabAtom = useMemo(() => WOS.getWaveObjectAtom<Tab>(oref), [oref]);
     const tabData = useAtomValue(tabAtom);
     const tileGapSize = useAtomValue(tileGapSizeAtom);
-    const hasTriggeredReconnect = useRef(false);
-
-    // On tab activation (mount), trigger reconnect for disconnected connections.
-    // This closes the gap where the scheduler gave up (5 min max) and the user
-    // switches to the tab expecting the connection to retry automatically.
-    useEffect(() => {
-        if (hasTriggeredReconnect.current || !tabData?.blockids?.length) {
-            return;
-        }
-        hasTriggeredReconnect.current = true;
-        const seenConns = new Set<string>();
-        for (const blockId of tabData.blockids) {
-            const connAtom = getBlockMetaKeyAtom(blockId, "connection");
-            const connName = globalStore.get(connAtom);
-            if (!connName || typeof connName !== "string" || isLocalConnName(connName) || seenConns.has(connName)) {
-                continue;
-            }
-            seenConns.add(connName);
-            RpcApi.ConnEnsureCommand(
-                TabRpcClient,
-                { connname: connName, logblockid: blockId },
-                { timeout: 60000 }
-            ).catch((e: unknown) => {
-                console.log("tab activation: error ensuring connection", blockId, connName, e);
-            });
-        }
-    }, [tabData?.blockids]);
 
     const tileLayoutContents = useMemo(() => {
         const renderContent: ContentRenderer = (nodeModel: NodeModel) => {
