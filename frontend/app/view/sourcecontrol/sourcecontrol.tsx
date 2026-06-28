@@ -82,12 +82,14 @@ const SectionHeader = memo(({ label, count, expanded, onToggle, actionLabel, onA
         <span>{label}</span>
         <span className="text-[10px] bg-surface rounded px-1.5 py-0.5">{count}</span>
         {actionLabel && onAction && count > 0 && (
-            <button
-                className="ml-auto opacity-0 group-hover:opacity-100 text-[10px] px-1.5 py-0.5 rounded hover:bg-hoverbg transition-opacity"
-                onClick={(e) => { e.stopPropagation(); onAction(); }}
-            >
-                {actionLabel}
-            </button>
+            <Tooltip content={actionLabel} placement="bottom">
+                <button
+                    className="ml-auto opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-hoverbg transition-opacity"
+                    onClick={(e) => { e.stopPropagation(); onAction(); }}
+                >
+                    <i className="fa-solid fa-plus text-[10px]" />
+                </button>
+            </Tooltip>
         )}
     </div>
 ));
@@ -110,36 +112,6 @@ const LoadingState = memo(() => (
     </div>
 ));
 LoadingState.displayName = "LoadingState";
-
-// Error state component
-const ErrorState = memo(({ error, onRetry }: { error: string; onRetry: () => void }) => {
-    const isNotGitRepo = error.includes("not a git repository");
-
-    return (
-        <div className="flex flex-col items-center justify-center h-full text-muted text-xs p-8">
-            <i className="fa-solid fa-code-branch text-2xl mb-3 opacity-50" />
-            {isNotGitRepo ? (
-                <>
-                    <span className="text-center mb-2 text-xs">This directory is not a git repository</span>
-                    <span className="text-[10px] text-muted text-center">
-                        Select a directory containing a git repository to view source control status
-                    </span>
-                </>
-            ) : (
-                <>
-                    <span className="text-center mb-2">{error}</span>
-                    <button
-                        className="px-3 py-1 text-[10px] bg-surface rounded hover:bg-hoverbg transition-colors mt-2"
-                        onClick={onRetry}
-                    >
-                        Retry
-                    </button>
-                </>
-            )}
-        </div>
-    );
-});
-ErrorState.displayName = "ErrorState";
 
 // Diff panel component
 const DiffPanel = memo(({ diff, fileName, viewMode, wordWrap, isStaged, onStageHunk, onRevertHunk }: {
@@ -314,7 +286,6 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     const status = jotai.useAtomValue(model.statusAtom);
     const selectedFile = jotai.useAtomValue(model.selectedFileAtom);
     const loading = jotai.useAtomValue(model.loadingAtom);
-    const error = jotai.useAtomValue(model.errorAtom);
     const viewMode = jotai.useAtomValue(model.viewModeAtom);
     const diff = jotai.useAtomValue(model.diffAtom);
     const cwd = jotai.useAtomValue(model.cwd);
@@ -397,14 +368,6 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
 
     if (loading && !status) {
         return <LoadingState />;
-    }
-
-    if (error && !status) {
-        return <ErrorState error={error} onRetry={handleRefresh} />;
-    }
-
-    if (!status || totalChanges === 0) {
-        return <EmptyState message="No changes detected" />;
     }
 
     return (

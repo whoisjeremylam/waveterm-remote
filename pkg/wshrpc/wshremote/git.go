@@ -22,10 +22,16 @@ func (impl *ServerImpl) GitStatusCommand(ctx context.Context, data wshrpc.Comman
 		return nil, fmt.Errorf("directory is required")
 	}
 
-	// Get current branch
+	// Get current branch - return empty status if not a git repo
 	branch, err := runGitCommand(ctx, dir, "branch", "--show-current")
 	if err != nil {
-		return nil, fmt.Errorf("not a git repository or git not available: %w", err)
+		// Not a git repository - return valid empty response
+		return &wshrpc.GitStatusResponse{
+			Branch:    "",
+			Staged:    []wshrpc.GitFileChange{},
+			Unstaged:  []wshrpc.GitFileChange{},
+			Untracked: []wshrpc.GitFileChange{},
+		}, nil
 	}
 	branch = strings.TrimSpace(branch)
 
