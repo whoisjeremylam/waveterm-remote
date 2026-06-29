@@ -1222,6 +1222,21 @@ func HandleCmdJobExited(ctx context.Context, jobId string, data wshrpc.CommandJo
 			msg = fmt.Sprintf("shell terminated (signal %s) - press enter to close", updatedJob.CmdExitSignal)
 		}
 		writeMutedMessageToTerminal(updatedJob.AttachedBlockId, "["+msg+"]")
+		wps.Broker.Publish(wps.WaveEvent{
+			Event: wps.Event_ControllerStatus,
+			Scopes: []string{
+				waveobj.MakeORef(waveobj.OType_Block, updatedJob.AttachedBlockId).String(),
+			},
+			Data: struct {
+				BlockId         string `json:"blockid"`
+				Version         int64  `json:"version"`
+				ShellProcStatus string `json:"shellprocstatus"`
+			}{
+				BlockId:         updatedJob.AttachedBlockId,
+				Version:         time.Now().UnixMilli(),
+				ShellProcStatus: "done",
+			},
+		})
 	}
 	return nil
 }
