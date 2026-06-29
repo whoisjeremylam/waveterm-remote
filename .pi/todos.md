@@ -167,7 +167,9 @@
 - [ ] Paste screenshots into terminal (local sessions — polish)
   - [ ] Consider implementing paste-as-image in Pi directly for tighter integration (avoid SCP+filename pattern, inject binary data or use OSC52/terminal-native paste)
 
-## Phase 4: SCM Widget — VS Code Feature Parity (MVP Priority)
+## Phase 4: SCM Widget — AI Agent Change Review Workflow
+
+**Primary use case:** Reviewing changes made by AI agents on remote machines. The SCM widget is the audit/review/approval dashboard, not a general-purpose git GUI.
 
 ### Analysis Complete (2026-06-25)
 
@@ -178,35 +180,64 @@ Full VS Code SCM diff view feature analysis done on `~/project/vscode`. Source f
 - `src/vs/workbench/contrib/multiDiffEditor/browser/multiDiffEditor.ts` (multi-file diff)
 - `extensions/git/src/commands.ts` (git commands)
 
-### MVP Priority — Must Have
+### ✅ Already Done
 
-- [ ] **Stage/Unstage individual files** — `git.stage`, `git.unstage`, `git.stageAll`, `git.unstageAll` (resource-level actions in scmViewPane)
-- [ ] **Stage/Unstage individual hunks** — `git.diff.stageHunk`, `git.diff.stageSelection` (inline actions from gutter toolbar in diff editor)
-- [ ] **Commit with message input** — `git.commit` with configurable input widget (auto-growing height, history nav)
-- [ ] **Discard/revert changes** — `git.revertChange` (per-file), `RevertHunkOrSelection` (per-hunk from diff gutter)
-- [ ] **Next/prev change navigation** — `GoToNextChangeAction` (`F7`), `GoToPreviousChangeAction` (`Shift+F7`) in diff editor
-- [ ] **Multi-file diff view** — `git.openAllChanges` opens all changed files in single editor; middle-click in SCM panel triggers this
+- [x] **File list with status badges** — M/A/D/R/U with icon + color (MVP)
+- [x] **Read-only diffs** — Side-by-side and inline via Monaco (MVP)
+- [x] **Stage/Unstage individual files** — `git.stage`, `git.unstage`
+- [x] **Stage/Unstage individual hunks** — Per-hunk actions from gutter toolbar
+- [x] **Stage all / Unstage all** — `git.stageAll`, `git.unstageAll`
+- [x] **Discard/revert changes** — `git.revertChange` per-file, per-hunk from gutter
+- [x] **Commit message input** — Ctrl+Enter, auto-growing height
+- [x] **Push with auth** — Credential dialog, secret store, GIT_ASKPASS fallback
+- [x] **Directory dropdown** — Shared component with Files widget
+- [x] **Word-level diff highlighting** — Inherited from Monaco
 
-### Should Have
+### P1 — Review Prerequisites (multi-file diff unlocks everything)
 
-- [ ] **Collapse unchanged regions** — `diffEditor.hideUnchangedRegions.enabled` (auto-collapse unchanged code blocks)
-- [ ] **Compact mode** — `diffEditor.compactMode` (hides original line numbers, auto-selects inline for simple diffs)
-- [ ] **Stage individual hunks from diff view gutter** — Gutter toolbar with per-hunk actions (stage, revert)
+- [ ] **Multi-file diff view** — All changed files in a single scrollable editor. Prereq for commit inspection, review mode, and graph view. Middle-click on a file in SCM panel triggers this. VSCode ref: `multiDiffEditor.ts`, `git.openAllChanges`
+- [ ] **Next/prev change navigation** — `F7` / `Shift+F7` to jump between diff regions. Essential for fast scanning across files in multi-diff mode
+
+### P2 — Review Mode (better views for AI output review)
+
+- [ ] **Unified "Changes" view** — Single flat list (not separate staged/unstaged sections) with per-file status badges (M/A/D/R). Per-hunk stage/revert actions inline. Sections toggleable as a setting for users who prefer groups
+- [ ] **Summary stats in header** — "3 files, +47/-12" at a glance on open
+- [ ] **File preview mode** — Toggle between Diff (current side-by-side/inline diff) and Preview (read-only syntax-highlighted full file content via Monaco). Essential for reviewing AI-written files where the diff is 100% green additions (new files) or the "before" is irrelevant to the review. Per-file button: [Diff | Preview]
+- [ ] **Markdown rendered preview** — When previewing a `.md` file, render it (not diff). Reuse/improve the markdown viewer from the Files widget, or use a standalone renderer. The current Files widget preview isn't great — worth a dedicated improvement
+
+### P3 — Change Provenance
+
+- [ ] **Env var placeholders** — `WAVETERM_AGENT_NAME`, `WAVETERM_AGENT_MODEL`, `WAVETERM_AGENT_SESSION`. Set by agent harness, picked up by `wsh` on connect
+- [ ] **Display in SCM** — Show agent name/model/session in file rows (for uncommitted changes from that connection), commit author/message (for committed changes)
+
+### P4 — Pull/Push (explicit, not opaque)
+
+- [ ] **Pull button with incoming count** — `git fetch` + show "Pull (3)". Badge on button shows how many commits are incoming
+- [ ] **Fetch** — `git.fetch`
+- [ ] **Branch ahead/behind** — Show `↓3 ↑2` in branch display. VSCode-style tracking against origin
+- [ ] **Sync Changes** — Convenience button that runs pull then push. Lower priority than explicit buttons since it obscures what's happening
+
+### P5 — Commit List + Graph
+
+- [ ] **Simple commit list (default)** — Flat timeline like `git log --oneline --decorate`. Colored branch/tag labels, expandable to show changed files. No DAG lanes by default. Depends on multi-file diff (P1) for click-to-inspect
+- [ ] **`git/log` RPC** — Backend command returning structured commit log (hash, message, author, date, parents, refs)
+- [ ] **Graph mode toggle** — Minimal lane rendering (one thin line per branch, merge dots). Highlighted branch, rest dimmed. Closer to `git log --graph` with light styling than a full canvas DAG. Same data source as simple list
+- [ ] **Filter/search** — By author, date range, message text, agent name
+
+### P6 — Should Have
+
 - [ ] **Commit amend** — `git.commitAmend`
-- [ ] **Stage all / Unstage all** — `git.stageAll`, `git.unstageAll`
 - [ ] **Open file from diff** — `git.openFile`
-
-### Nice-to-Have (Next Stage)
-
-- [ ] **Push/Pull/Fetch** — `git.push`, `git.pull`, `git.fetch` (full set)
 - [ ] **Branch management** — `git.checkout`, `git.branch`, `git.deleteBranch`
+- [ ] **Collapse unchanged regions** — `diffEditor.hideUnchangedRegions.enabled`
+- [ ] **Compact mode** — `diffEditor.compactMode`
+
+### P7 — Nice-to-Have
+
 - [ ] **Stash operations** — `git.stash`, `git.stashPop`, `git.stashApply`
 - [ ] **Merge/Rebase** — `git.merge`, `git.rebase` (with abort)
-- [ ] **Gutter decorations** — Line-level insert/delete icons, configurable width (1-5px)
-- [ ] **Overview ruler** — Shows change locations in editor scrollbar
-- [ ] **Word-level diff highlighting** — Already inherited from Monaco ✅
-- [ ] **Collapse unchanged regions** — `ToggleCollapseUnchangedRegions` in diff editor
-- [ ] **Compact mode** — Hides original line numbers, auto-selects inline for simple diffs
+- [ ] **Gutter decorations** — Line-level insert/delete icons, configurable width
+- [ ] **Overview ruler** — Change locations in editor scrollbar
 - [ ] **Diff algorithm selection** — `legacy`, `advanced`, `advanced-external`
 - [ ] **True inline diff** — `diffEditor.experimental.useTrueInlineView`
 

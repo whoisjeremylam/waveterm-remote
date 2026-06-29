@@ -267,11 +267,16 @@ npm install react-arborist
 
 | Phase | Scope | Effort |
 |-------|-------|--------|
-| **MVP** | File list, staged/unstaged, read-only diffs | 3-5 days |
-| **Phase 2** | Stage/unstage files + hunks | 2-3 days |
-| **Phase 3** | Commit input box + commit | 1-2 days |
-| **Phase 4** | Context menus, keyboard shortcuts | 2-3 days |
-| **Phase 5** | History, branches, conflict resolution | 1-2 weeks |
+| **MVP** | File list, staged/unstaged, read-only diffs | ✅ Done |
+| **Phase 2** | Stage/unstage files + hunks | ✅ Done |
+| **Phase 3** | Commit input box + commit | ✅ Done |
+| **Phase 4** | Push auth, directory dropdown | ✅ Done |
+| **Phase 5** | Multi-file diff view (P1 prereq) | 2-3 days |
+| **Phase 6** | Review mode: unified view, file preview (full content + markdown render), change provenance (P2-P3) | 2-3 days |
+| **Phase 7** | Pull/push buttons with counts, branch tracking (P4) | 2-3 days |
+| **Phase 8** | Commit list + graph toggle (P5) | 3-5 days |
+| **Phase 9** | Amend, branch mgmt, collapse regions (P6) | 3-5 days |
+| **Phase 10** | Stash, merge/rebase, decorations (P7) | 1-2 weeks |
 
 ## [S10] Resolved Design Decisions
 

@@ -8,11 +8,12 @@ import { Tooltip } from "@/app/element/tooltip";
 import { makeIconClass } from "@/util/util";
 import * as jotai from "jotai";
 import * as monaco from "monaco-editor";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { DiffGutter } from "./DiffGutter";
+import { ReviewMode } from "./review-mode";
 import type { SourceControlViewModel } from "./sourcecontrol-model";
-import type { FileTreeNode, SelectedFile } from "./types";
+import type { FileTreeNode, ReviewFile, SelectedFile } from "./types";
 
 type SourceControlViewProps = ViewComponentProps<SourceControlViewModel>;
 
@@ -34,19 +35,28 @@ const FileIcon = memo(({ icon, color }: { icon: string; color: string }) => (
 FileIcon.displayName = "FileIcon";
 
 // Single file row component
-const FileRow = memo(({ data, isSelected, onClick, stageLabel, onStage }: {
+const FileRow = memo(({ data, isSelected, onClick, onMiddleClick, stageLabel, onStage }: {
     data: FileTreeNode;
     isSelected: boolean;
     onClick: () => void;
+    onMiddleClick?: () => void;
     stageLabel?: string;
     onStage?: () => void;
 }) => {
+    const handleMouseDown = useCallback((e: React.MouseEvent) => {
+        if (e.button === 1 && onMiddleClick) {
+            e.preventDefault();
+            onMiddleClick();
+        }
+    }, [onMiddleClick]);
+
     return (
         <div
             className={`flex items-center gap-2 px-2 py-1 cursor-pointer text-xs group ${
                 isSelected ? "bg-activebg text-white" : "hover:bg-hoverbg text-secondary"
             }`}
             onClick={onClick}
+            onMouseDown={handleMouseDown}
         >
             <StatusBadge status={data.status.status} color={data.status.color} />
             <FileIcon icon={data.status.icon} color={data.status.color} />
@@ -57,7 +67,7 @@ const FileRow = memo(({ data, isSelected, onClick, stageLabel, onStage }: {
                     title={stageLabel}
                     onClick={(e) => { e.stopPropagation(); console.log("[SCM] stage button clicked"); onStage(); }}
                 >
-                    <i className={`fa-solid ${stageLabel === "Stage" ? "fa-plus" : "fa-minus"} text-[10px]`} />
+                    <i className={`fa-solid ${stageLabel === "Stage" ? "fa-plus" : "fa-minus"} text-[10px]"`} />
                 </button>
             )}
         </div>
@@ -485,6 +495,63 @@ const CommitInput = memo(({ model, hasStagedChanges, hasUnpushedCommits }: {
 });
 CommitInput.displayName = "CommitInput";
 
+// Review mode dropdown button
+const ReviewDropdown = memo(({ totalCount, stagedCount, unstagedCount, onReviewAll, onReviewStaged, onReviewUnstaged }: {
+    totalCount: number;
+    stagedCount: number;
+    unstagedCount: number;
+    onReviewAll: () => void;
+    onReviewStaged: () => void;
+    onReviewUnstaged: () => void;
+}) => {
+    const [open, setOpen] = useState(false);
+
+    if (totalCount === 0) return null;
+
+    return (
+        <div className="relative">
+            <button
+                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-surface hover:bg-hoverbg text-secondary hover:text-white transition-colors"
+                onClick={() => setOpen(!open)}
+            >
+                <i className="fa-solid fa-eye text-[10px]" />
+                <span>Review ({totalCount})</span>
+                <i className="fa-solid fa-chevron-down text-[8px]" />
+            </button>
+            {open && (
+                <>
+                    <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-50 bg-[#252526] border border-[#3e3e3e] rounded shadow-lg min-w-[160px]">
+                        <button
+                            className="w-full text-left px-3 py-1.5 text-xs text-secondary hover:bg-hoverbg hover:text-white"
+                            onClick={() => { setOpen(false); onReviewAll(); }}
+                        >
+                            Review All ({totalCount})
+                        </button>
+                        {stagedCount > 0 && (
+                            <button
+                                className="w-full text-left px-3 py-1.5 text-xs text-secondary hover:bg-hoverbg hover:text-white"
+                                onClick={() => { setOpen(false); onReviewStaged(); }}
+                            >
+                                Review Staged ({stagedCount})
+                            </button>
+                        )}
+                        {unstagedCount > 0 && (
+                            <button
+                                className="w-full text-left px-3 py-1.5 text-xs text-secondary hover:bg-hoverbg hover:text-white"
+                                onClick={() => { setOpen(false); onReviewUnstaged(); }}
+                            >
+                                Review Unstaged ({unstagedCount})
+                            </button>
+                        )}
+                    </div>
+                </>
+            )}
+        </div>
+    );
+});
+ReviewDropdown.displayName = "ReviewDropdown";
+
 // Main Source Control View component
 export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     const status = jotai.useAtomValue(model.statusAtom);
@@ -495,6 +562,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     const cwd = jotai.useAtomValue(model.cwd);
     const connection = jotai.useAtomValue(model.connection);
     const directoryDropdownOpen = jotai.useAtomValue(model.directoryDropdownOpen);
+    const reviewMode = jotai.useAtomValue(model.reviewModeAtom);
 
     const [stagedExpanded, setStagedExpanded] = useState(true);
     const [unstagedExpanded, setUnstagedExpanded] = useState(true);
@@ -528,6 +596,54 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
         globalStore.set(model.directoryDropdownOpen, false);
     }, [model]);
 
+    const handleReviewAll = useCallback(() => {
+        const st = globalStore.get(model.statusAtom);
+        const allFiles: ReviewFile[] = [
+            ...(st?.staged?.map(f => ({ ...f, staged: true, additions: 0, deletions: 0 })) ?? []),
+            ...(st?.unstaged?.map(f => ({ ...f, staged: false, additions: 0, deletions: 0 })) ?? []),
+            ...(st?.untracked?.map(f => ({ ...f, staged: false, untracked: true, additions: 0, deletions: 0 })) ?? []),
+        ];
+        model.enterReview(allFiles);
+    }, [model]);
+
+    const handleReviewStaged = useCallback(() => {
+        const st = globalStore.get(model.statusAtom);
+        const files: ReviewFile[] = (st?.staged?.map(f => ({ ...f, staged: true, additions: 0, deletions: 0 })) ?? []);
+        model.enterReview(files);
+    }, [model]);
+
+    const handleReviewUnstaged = useCallback(() => {
+        const st = globalStore.get(model.statusAtom);
+        const files: ReviewFile[] = [
+            ...(st?.unstaged?.map(f => ({ ...f, staged: false, additions: 0, deletions: 0 })) ?? []),
+            ...(st?.untracked?.map(f => ({ ...f, staged: false, untracked: true, additions: 0, deletions: 0 })) ?? []),
+        ];
+        model.enterReview(files);
+    }, [model]);
+
+    const handleExitReview = useCallback(() => {
+        model.exitReview();
+    }, [model]);
+
+    const containerRef = useRef<HTMLDivElement>(null);
+    const handleReviewAllRef = useRef(handleReviewAll);
+    handleReviewAllRef.current = handleReviewAll;
+
+    // Keyboard shortcut: Ctrl/Cmd+Shift+R to enter review mode — scoped to SCM container (fix #5, #7)
+    useEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "R") {
+                e.preventDefault();
+                handleReviewAllRef.current();
+            }
+        };
+        container.addEventListener("keydown", handleKeyDown);
+        return () => container.removeEventListener("keydown", handleKeyDown);
+    }, []);
+
     const handleStageFile = useCallback((path: string) => {
         console.log("[SCM] handleStageFile clicked:", path);
         model.stageFiles([path]);
@@ -548,6 +664,20 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
         const staged = status?.staged?.map(f => f.path) ?? [];
         model.unstageFiles(staged);
     }, [model, status]);
+
+    const handleMiddleClickFile = useCallback((path: string, staged: boolean, untracked: boolean) => {
+        const st = globalStore.get(model.statusAtom);
+        if (!st) return;
+        const allFiles = [
+            ...(st.staged?.map(f => ({ ...f, staged: true, additions: 0, deletions: 0 })) ?? []),
+            ...(st.unstaged?.map(f => ({ ...f, staged: false, additions: 0, deletions: 0 })) ?? []),
+            ...(st.untracked?.map(f => ({ ...f, staged: false, untracked: true, additions: 0, deletions: 0 })) ?? []),
+        ];
+        const file = allFiles.find(f => f.path === path);
+        if (file) {
+            model.enterReview([{ ...file, staged, untracked }]);
+        }
+    }, [model]);
 
     // Filter files
     const filteredStaged = useMemo(() => {
@@ -575,7 +705,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     }
 
     return (
-        <div className="flex flex-col h-full w-full overflow-hidden">
+        <div ref={containerRef} className="flex flex-col h-full w-full overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-border">
                 <div className="flex items-center gap-2 text-xs">
@@ -613,6 +743,14 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                             <i className="fa-solid fa-arrows-rotate text-xs" />
                         </button>
                     </Tooltip>
+                    <ReviewDropdown
+                        totalCount={totalChanges}
+                        stagedCount={status?.staged?.length || 0}
+                        unstagedCount={(status?.unstaged?.length || 0) + (status?.untracked?.length || 0)}
+                        onReviewAll={handleReviewAll}
+                        onReviewStaged={handleReviewStaged}
+                        onReviewUnstaged={handleReviewUnstaged}
+                    />
                 </div>
             </div>
 
@@ -628,6 +766,10 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                 />
             )}
 
+            {reviewMode ? (
+                <ReviewMode model={model} onExit={handleExitReview} />
+            ) : (
+                <>
             {/* Search */}
             <div className="px-3 py-2 border-b border-border">
                 <div className="flex items-center gap-2 px-2 py-1 bg-surface rounded text-xs">
@@ -683,6 +825,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                                         data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
                                         isSelected={selectedFile?.path === file.path && selectedFile?.staged === true}
                                         onClick={() => handleFileSelect({ path: file.path, staged: true })}
+                                        onMiddleClick={() => handleMiddleClickFile(file.path, true, false)}
                                         stageLabel="Unstage"
                                         onStage={() => handleUnstageFile(file.path)}
                                     />
@@ -707,6 +850,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                                         data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
                                         isSelected={selectedFile?.path === file.path && selectedFile?.staged === false}
                                         onClick={() => handleFileSelect({ path: file.path, staged: false })}
+                                        onMiddleClick={() => handleMiddleClickFile(file.path, false, false)}
                                         stageLabel="Stage"
                                         onStage={() => handleStageFile(file.path)}
                                     />
@@ -731,6 +875,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                                         data={{ id: file.path, name: file.path.split("/").pop() || file.path, path: file.path, status: file, isDirectory: false }}
                                         isSelected={selectedFile?.path === file.path && selectedFile?.untracked === true}
                                         onClick={() => handleFileSelect({ path: file.path, staged: false, untracked: true })}
+                                        onMiddleClick={() => handleMiddleClickFile(file.path, false, true)}
                                         stageLabel="Stage"
                                         onStage={() => handleStageFile(file.path)}
                                     />
@@ -756,6 +901,8 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                     </div>
                 </Panel>
             </PanelGroup>
+                </>
+            )}
 
             {/* Auth Dialog */}
             <GitAuthDialog model={model} />

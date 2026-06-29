@@ -7,6 +7,13 @@ export type SelectedFile = {
     untracked?: boolean;
 };
 
+export type ReviewFile = GitFileChange & {
+    staged: boolean;
+    untracked?: boolean;
+    additions: number;
+    deletions: number;
+};
+
 export type FileTreeNode = {
     id: string;
     name: string;
