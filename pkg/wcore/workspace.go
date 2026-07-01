@@ -7,8 +7,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
+	"os"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -216,6 +220,74 @@ func getNextTabName(tabNames []string) string {
 	return "T" + strconv.Itoa(maxNum+1)
 }
 
+func shortHostname(host string) string {
+	hostOnly, _, err := net.SplitHostPort(host)
+	if err == nil {
+		host = hostOnly
+	}
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	if host == "" {
+		return ""
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) == 1 {
+		return strings.ToLower(host)
+	}
+	isIP := true
+	for _, p := range parts {
+		if _, err := strconv.Atoi(p); err != nil {
+			isIP = false
+			break
+		}
+	}
+	if isIP {
+		return strings.ToLower(host)
+	}
+	return strings.ToLower(parts[0])
+}
+
+func makeUniqueTabName(base string, existingNames []string) string {
+	if !slices.Contains(existingNames, base) {
+		return base
+	}
+	for counter := 2; ; counter++ {
+		attempt := fmt.Sprintf("%s (%d)", base, counter)
+		if !slices.Contains(existingNames, attempt) {
+			return attempt
+		}
+	}
+}
+
+func getTabNameFromConn(connName string, existingNames []string) string {
+	parts := strings.Split(connName, "@")
+	host := parts[len(parts)-1]
+	if host == "" {
+		return ""
+	}
+	base := shortHostname(host)
+	if base == "" {
+		return ""
+	}
+	return makeUniqueTabName(base, existingNames)
+}
+
+func getTabNameFromLocal(existingNames []string) string {
+	config := wconfig.ReadFullConfig()
+	if config.Settings.ConnLocalHostnameDisplay != nil && *config.Settings.ConnLocalHostnameDisplay != "" {
+		return makeUniqueTabName(*config.Settings.ConnLocalHostnameDisplay, existingNames)
+	}
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return ""
+	}
+	base := shortHostname(hostname)
+	if base == "" {
+		return ""
+	}
+	return makeUniqueTabName(base, existingNames)
+}
+
 // returns tabid
 func CreateTab(ctx context.Context, workspaceId string, tabName string, activateTab bool, isInitialLaunch bool, connName string) (string, error) {
 	if tabName == "" {
@@ -231,7 +303,14 @@ func CreateTab(ctx context.Context, workspaceId string, tabName string, activate
 			}
 			tabNames = append(tabNames, tab.Name)
 		}
-		tabName = getNextTabName(tabNames)
+		if connName != "" {
+			tabName = getTabNameFromConn(connName, tabNames)
+		} else {
+			tabName = getTabNameFromLocal(tabNames)
+		}
+		if tabName == "" {
+			tabName = getNextTabName(tabNames)
+		}
 	}
 
 	tab, err := createTabObj(ctx, workspaceId, tabName, nil)
