@@ -123,6 +123,18 @@ type WshRpcInterface interface {
 	RemoteProcessListCommand(ctx context.Context, data CommandRemoteProcessListData) (*ProcessListResponse, error)
 	RemoteProcessSignalCommand(ctx context.Context, data CommandRemoteProcessSignalData) error
 
+	// git/source control
+	GitStatusCommand(ctx context.Context, data CommandGitStatusData) (*GitStatusResponse, error)
+	GitDiffCommand(ctx context.Context, data CommandGitDiffData) (*GitDiffResponse, error)
+	GitStageCommand(ctx context.Context, data CommandGitStageData) error
+	GitUnstageCommand(ctx context.Context, data CommandGitUnstageData) error
+	GitStageHunkCommand(ctx context.Context, data CommandGitStageHunkData) error
+	GitRevertHunkCommand(ctx context.Context, data CommandGitRevertHunkData) error
+	GitCommitCommand(ctx context.Context, data CommandGitCommitData) (*GitCommitResponse, error)
+	GitPushCommand(ctx context.Context, data CommandGitPushData) (*GitPushResponse, error)
+	GitLookupCredentialsCommand(ctx context.Context, data CommandGitLookupCredentialsData) (*GitCredentials, error)
+	GitSaveCredentialsCommand(ctx context.Context, data CommandGitSaveCredentialsData) error
+
 	// emain
 	WebSelectorCommand(ctx context.Context, data CommandWebSelectorData) ([]string, error)
 	NotifyCommand(ctx context.Context, notificationOptions WaveNotificationOptions) error
@@ -846,4 +858,119 @@ type CommandRemoteProcessListData struct {
 type CommandRemoteProcessSignalData struct {
 	Pid    int32  `json:"pid"`
 	Signal string `json:"signal"`
+}
+
+// Git source control types
+type CommandGitStatusData struct {
+	Dir string `json:"dir,omitempty"` // working directory, defaults to terminal cwd
+}
+
+type GitFileChange struct {
+	Path    string `json:"path"`
+	Status  string `json:"status"`  // M, A, D, R, C, U
+	OldPath string `json:"oldPath"` // for renames
+	Icon    string `json:"icon"`    // font-awesome icon name
+	Color   string `json:"color"`   // CSS color
+}
+
+type GitStatusResponse struct {
+	Branch    string          `json:"branch"`
+	Staged    []GitFileChange `json:"staged"`
+	Unstaged  []GitFileChange `json:"unstaged"`
+	Untracked []GitFileChange `json:"untracked"`
+}
+
+type CommandGitDiffData struct {
+	Dir       string `json:"dir,omitempty"`       // working directory
+	Path      string `json:"path"`                // file path
+	Staged    bool   `json:"staged,omitempty"`    // true for staged diff (git diff --cached)
+	Untracked bool   `json:"untracked,omitempty"` // true for untracked files (read content directly)
+}
+
+type GitDiffResponse struct {
+	Original string        `json:"original"`
+	Modified string        `json:"modified"`
+	Language string        `json:"language"` // detected from file extension
+	Hunks    []GitDiffHunk `json:"hunks,omitempty"`
+}
+
+// Git staging operations
+type CommandGitStageData struct {
+	Dir   string   `json:"dir,omitempty"` // working directory
+	Paths []string `json:"paths"`        // file paths to stage
+}
+
+type CommandGitUnstageData struct {
+	Dir   string   `json:"dir,omitempty"` // working directory
+	Paths []string `json:"paths"`        // file paths to unstage
+}
+
+type CommandGitStageHunkData struct {
+	Dir       string `json:"dir"`       // working directory
+	Path      string `json:"path"`      // file path
+	HunkIndex int    `json:"hunkIndex"` // 0-based index of the hunk to stage
+}
+
+type CommandGitRevertHunkData struct {
+	Dir       string `json:"dir"`       // working directory
+	Path      string `json:"path"`      // file path
+	HunkIndex int    `json:"hunkIndex"` // 0-based index of the hunk to revert
+	Staged    bool   `json:"staged"`    // true if reverting a staged hunk
+}
+
+// GitDiffHunk represents a single hunk in a unified diff
+type GitDiffHunk struct {
+	Header        string `json:"header"`        // the @@ ... @@ line
+	ModifiedStart int    `json:"modifiedStart"` // 1-based start line in modified file
+	ModifiedCount int    `json:"modifiedCount"` // number of lines in modified
+	OriginalStart int    `json:"originalStart"` // 1-based start line in original
+	OriginalCount int    `json:"originalCount"` // number of lines in original
+}
+
+type CommandGitCommitData struct {
+	Dir     string `json:"dir,omitempty"` // working directory
+	Message string `json:"message"`       // commit message
+	Amend   bool   `json:"amend,omitempty"` // amend the last commit
+}
+
+type GitCommitResponse struct {
+	Success bool   `json:"success"`
+	Output  string `json:"output"` // git commit output
+}
+
+type CommandGitPushData struct {
+	Dir      string `json:"dir,omitempty"`       // working directory
+	Remote   string `json:"remote,omitempty"`    // remote name (default: origin)
+	Branch   string `json:"branch,omitempty"`    // branch name (default: current branch)
+	Username string `json:"username,omitempty"`  // for HTTPS auth
+	Password string `json:"password,omitempty"`  // for HTTPS auth
+	Force    bool   `json:"force,omitempty"`     // force push
+	SetUpstream bool `json:"setUpstream,omitempty"` // set upstream branch
+}
+
+type GitPushResponse struct {
+	Success    bool   `json:"success"`
+	Output     string `json:"output"`
+	AuthNeeded bool   `json:"authNeeded"` // true if auth is required
+	AuthError  string `json:"authError"`  // the auth error message
+	AuthHost   string `json:"authHost"`   // parsed host (e.g., github.com)
+	AuthRemote string `json:"authRemote"` // full remote URL
+}
+
+type CommandGitLookupCredentialsData struct {
+	Remote string `json:"remote"` // full remote URL (e.g., https://github.com/user/repo)
+}
+
+type GitCredentials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Found    bool   `json:"found"`
+	Scope    string `json:"scope"` // "repo" or "host"
+}
+
+type CommandGitSaveCredentialsData struct {
+	Remote   string `json:"remote"`   // full remote URL (e.g., https://github.com/user/repo)
+	Username string `json:"username"` // git username
+	Password string `json:"password"` // git password/token
+	Scope    string `json:"scope"`    // "repo" or "host"
 }

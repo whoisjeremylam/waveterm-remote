@@ -59,6 +59,12 @@ This means:
 
 **To modify npm dependency behavior**: Edit the compiled `.mjs`/`.js` files in `node_modules/`, then run `npx patch-package` to capture both source and compiled changes in the patch. The `.ts` changes are cosmetic only (helpful for readability but not executed).
 
+**Version bumps are required** when:
+- Adding new wsh RPC commands (e.g., `GitStageCommand`) — remote servers only download new wsh binaries if the version changes
+- Breaking changes to existing RPC types or protocols
+- Adding new wsh CLI subcommands (files in `cmd/wsh/cmd/wshcmd-*.go`)
+- Use `node version.cjs patch` for minor fixes, `node version.cjs minor` for new features
+
 ## Priorities
 
 1. Verify `task dev` and `task start` work (build tools installed)

@@ -26,6 +26,7 @@ import (
 	"github.com/kevinburke/ssh_config"
 	"github.com/skeema/knownhosts"
 	"github.com/wavetermdev/waveterm/pkg/blocklogger"
+	"github.com/wavetermdev/waveterm/pkg/genconn"
 	"github.com/wavetermdev/waveterm/pkg/panichandler"
 	"github.com/wavetermdev/waveterm/pkg/secretstore"
 	"github.com/wavetermdev/waveterm/pkg/trimquotes"
@@ -382,7 +383,10 @@ func createPublicKeyCallback(connCtx context.Context, sshKeywords *wconfig.ConnK
 			Title:        "Publickey Auth + Passphrase",
 			PromptType:   "passphrase",
 		}
-		ctx, cancelFn := context.WithTimeout(connCtx, 60*time.Second)
+		if connData := genconn.GetConnData(connCtx); connData != nil {
+			request.ConnName = connData.GetConnName()
+		}
+		ctx, cancelFn := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancelFn()
 		response, err := userinput.GetUserInput(ctx, request)
 		if err != nil {
@@ -439,7 +443,7 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 			}
 			return *cachedPw, nil
 		}
-		ctx, cancelFn := context.WithTimeout(connCtx, 60*time.Second)
+		ctx, cancelFn := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancelFn()
 		queryText := fmt.Sprintf(
 			"Password Authentication requested from connection  \n"+
@@ -451,6 +455,9 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 			Markdown:     true,
 			Title:        "Password Authentication",
 			PromptType:   "password",
+		}
+		if connData := genconn.GetConnData(connCtx); connData != nil {
+			request.ConnName = connData.GetConnName()
 		}
 		response, err := userinput.GetUserInput(ctx, request)
 		if err != nil {
@@ -492,7 +499,7 @@ func createInteractiveKbdInteractiveChallenge(connCtx context.Context, remoteNam
 func promptChallengeQuestion(connCtx context.Context, question string, echo bool, remoteName string) (answer string, err error) {
 	// limited to 15 seconds for some reason. this should be investigated more
 	// in the future
-	ctx, cancelFn := context.WithTimeout(connCtx, 60*time.Second)
+	ctx, cancelFn := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelFn()
 	queryText := fmt.Sprintf(
 		"Keyboard Interactive Authentication requested from connection  \n"+
@@ -505,6 +512,9 @@ func promptChallengeQuestion(connCtx context.Context, question string, echo bool
 		Title:        "Keyboard Interactive Authentication",
 		PublicText:   echo,
 		PromptType:   "keyboard-interactive",
+	}
+	if connData := genconn.GetConnData(connCtx); connData != nil {
+		request.ConnName = connData.GetConnName()
 	}
 	response, err := userinput.GetUserInput(ctx, request)
 	if err != nil {
@@ -578,6 +588,9 @@ func createUnknownKeyVerifier(ctx context.Context, knownHostsFile string, hostna
 		Markdown:     true,
 		Title:        "Known Hosts Key Missing",
 	}
+	if connData := genconn.GetConnData(ctx); connData != nil {
+		request.ConnName = connData.GetConnName()
+	}
 	return func() (*userinput.UserInputResponse, error) {
 		ctx, cancelFn := context.WithTimeout(ctx, 60*time.Second)
 		defer cancelFn()
@@ -608,6 +621,7 @@ func createMissingKnownHostsVerifier(knownHostsFile string, hostname string, rem
 		QueryText:    queryText,
 		Markdown:     true,
 		Title:        "Known Hosts File Missing",
+		ConnName:     remote,
 	}
 	return func() (*userinput.UserInputResponse, error) {
 		ctx, cancelFn := context.WithTimeout(context.Background(), 60*time.Second)

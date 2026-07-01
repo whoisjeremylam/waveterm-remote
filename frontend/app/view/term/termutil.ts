@@ -4,6 +4,7 @@
 export const DefaultTermTheme = "default-dark";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { makeConnRoute } from "@/util/util";
 import * as TermTypes from "@xterm/xterm";
 import base64 from "base64-js";
 import { colord } from "colord";
@@ -113,7 +114,7 @@ export async function createTempFileFromBlob(blob: Blob): Promise<string> {
     return tempPath;
 }
 
-export async function createRemoteTempFileFromBlob(blob: Blob, fileName?: string): Promise<string> {
+export async function createRemoteTempFileFromBlob(blob: Blob, fileName?: string, connName?: string): Promise<string> {
     if (blob.size > 50 * 1024 * 1024) {
         throw new Error("File too large (>50MB)");
     }
@@ -134,10 +135,11 @@ export async function createRemoteTempFileFromBlob(blob: Blob, fileName?: string
 
     const base64Data = base64.fromByteArray(new Uint8Array(arrayBuffer));
 
+    const opts = connName ? { route: makeConnRoute(connName) } : undefined;
     const tempPath = await RpcApi.RemoteWriteTempFileCommand(TabRpcClient, {
         filename: fileName,
         data64: base64Data,
-    });
+    }, opts);
 
     return tempPath;
 }

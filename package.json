@@ -1,16 +1,16 @@
 {
-    "name": "waveterm",
+    "name": "remoteterm",
     "author": {
-        "name": "Command Line Inc",
-        "email": "info@commandline.dev"
+        "name": "Jeremy Lam",
+        "email": "JeremyLam@users.noreply.github.com"
     },
-    "productName": "Wave",
-    "description": "Open-Source AI-Native Terminal Built for Seamless Workflows",
+    "productName": "RemoteTerm",
+    "description": "Open-Source Remote Development Terminal — SSH-first, local client",
     "license": "Apache-2.0",
-    "version": "0.14.5",
-    "homepage": "https://waveterm.dev",
+    "version": "0.15.2",
+    "homepage": "https://remoteterm.dev",
     "build": {
-        "appId": "dev.commandline.waveterm"
+        "appId": "dev.remoteterm.app"
     },
     "private": true,
     "main": "./dist/main/index.js",

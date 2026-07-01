@@ -74,7 +74,8 @@ function initGlobalWaveEventSubs(initOpts: WaveInitOpts) {
             if (connName) {
                 modalsModel.upsertUserInputPrompt(connName, "UserInputPrompt", { ...event.data });
             } else {
-                modalsModel.pushModal("UserInputPrompt", { ...event.data });
+                console.log("[PW-EVENT] userinput event has no connName, using empty key", event.data);
+                modalsModel.upsertUserInputPrompt("", "UserInputPrompt", { ...event.data });
             }
         },
         scope: initOpts.windowId,
@@ -615,6 +616,37 @@ function getFocusedTerminalConnection(): string | null {
     return null;
 }
 
+function getFocusedTerminalCwd(): string | null {
+    const layoutModel = getLayoutModelForStaticTab();
+    if (layoutModel == null) {
+        return null;
+    }
+    const focusedNode = globalStore.get(layoutModel.focusedNode);
+    if (focusedNode != null) {
+        const blockId = focusedNode.data?.blockId;
+        if (blockId) {
+            const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+            if (blockData?.meta?.["cmd:cwd"]) {
+                return blockData.meta["cmd:cwd"];
+            }
+        }
+    }
+    // Fallback: find most recently focused terminal using focus history
+    const focusHistory = layoutModel.focusHistory;
+    for (const nodeId of focusHistory) {
+        const node = layoutModel.getNodeById(nodeId);
+        if (node == null) continue;
+        const blockId = node.data?.blockId;
+        if (blockId) {
+            const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
+            if (blockData?.meta?.view === "term" && blockData?.meta?.["cmd:cwd"]) {
+                return blockData.meta["cmd:cwd"];
+            }
+        }
+    }
+    return null;
+}
+
 // pass null to refocus the currently focused block
 function refocusNode(blockId: string) {
     if (blockId == null) {
@@ -670,10 +702,9 @@ function subscribeToConnEvents() {
                     // Clear per-tab dismissed state so all tabs re-show the prompt.
                     if (connStatus.errorcode === "auth-failed") {
                         modalsModel.resetDismissedUserInputPrompts(connStatus.connection);
-                    } else {
-                        // Non-auth errors: dismiss stale prompts (backend gave up)
-                        modalsModel.dismissUserInputPrompt(connStatus.connection);
                     }
+                    // Non-auth errors (timeout, dial-error): keep the prompt visible.
+                    // The password buffer is independent of connection lifecycle.
                 }
                 const curAtom = getConnStatusAtom(connStatus.connection);
                 globalStore.set(curAtom, connStatus);
@@ -682,6 +713,22 @@ function subscribeToConnEvents() {
             }
         },
     });
+    // Secondary defense: on startup, dismiss stale password prompts for connections
+    // that are already connected. This handles the race where a buffered userinput
+    // event arrives before the corresponding connchange(connected) event is replayed.
+    cleanupStaleUserInputPrompts();
+}
+
+function cleanupStaleUserInputPrompts() {
+    const activePrompts = globalStore.get(modalsModel.activeUserInputPromptsAtom);
+    for (const connName of Object.keys(activePrompts)) {
+        const statusAtom = getConnStatusAtom(connName);
+        const status = globalStore.get(statusAtom);
+        if (status?.connected) {
+            console.log(`[PW-CLEANUP] dismissing stale prompt for connected conn=${connName}`);
+            modalsModel.dismissUserInputPrompt(connName);
+        }
+    }
 }
 
 function makeDefaultConnStatus(conn: string): ConnStatus {
@@ -749,6 +796,7 @@ export {
     getConnStatusAtom,
     getFocusedBlockId,
     getFocusedTerminalConnection,
+    getFocusedTerminalCwd,
     getHostName,
     getLocalHostDisplayNameAtom,
     getObjectId,

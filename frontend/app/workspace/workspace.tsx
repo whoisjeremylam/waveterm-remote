@@ -6,13 +6,15 @@ import { CenteredDiv } from "@/app/element/quickelems";
 import { ModalsRenderer } from "@/app/modals/modalsrenderer";
 import { TabBar } from "@/app/tab/tabbar";
 import { TabContent } from "@/app/tab/tabcontent";
+import { TabUserInputPromptOverlay } from "@/app/tab/tabuserinputpromptoverlay";
 import { VTabBar } from "@/app/tab/vtabbar";
 import { Widgets } from "@/app/workspace/widgets";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { atoms, getApi, getSettingsKeyAtom } from "@/store/global";
+import * as WOS from "@/store/wos";
 import { isMacOS } from "@/util/platformutil";
 import { useAtomValue } from "jotai";
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import {
     ImperativePanelGroupHandle,
     Panel,
@@ -49,6 +51,9 @@ const WorkspaceElem = memo(() => {
     const outerPanelGroupRef = useRef<ImperativePanelGroupHandle>(null);
     const panelContainerRef = useRef<HTMLDivElement>(null);
     const vtabPanelWrapperRef = useRef<HTMLDivElement>(null);
+    const tabOref = useMemo(() => WOS.makeORef("tab", tabId), [tabId]);
+    const tabAtom = useMemo(() => WOS.getWaveObjectAtom<Tab>(tabOref), [tabOref]);
+    const tabData = useAtomValue(tabAtom);
 
     // showLeftTabBar is passed as a seed value only; subsequent changes are handled by setShowLeftTabBar below.
     // Do NOT add showLeftTabBar as a dep here — re-registering refs on config changes would redundantly re-run commitLayouts.
@@ -126,9 +131,10 @@ const WorkspaceElem = memo(() => {
                             {tabId === "" ? (
                                 <CenteredDiv>No Active Tab</CenteredDiv>
                             ) : (
-                                <div className="flex flex-row h-full">
+                                <div className="flex flex-row h-full relative">
                                     <TabContent key={tabId} tabId={tabId} noTopPadding={showLeftTabBar && isMacOS()} />
                                     {widgetsSidebarVisible && <Widgets />}
+                                    {tabData?.blockids?.length ? <TabUserInputPromptOverlay tabId={tabId} blockIds={tabData.blockids} /> : null}
                                 </div>
                             )}
                         </Panel>

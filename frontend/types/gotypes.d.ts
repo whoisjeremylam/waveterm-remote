@@ -334,6 +334,64 @@ declare global {
         filename?: string;
     };
 
+    // wshrpc.CommandGitCommitData
+    type CommandGitCommitData = {
+        dir?: string;
+        message: string;
+        amend?: boolean;
+    };
+
+    // wshrpc.CommandGitDiffData
+    type CommandGitDiffData = {
+        dir?: string;
+        path: string;
+        staged?: boolean;
+        untracked?: boolean;
+    };
+
+    // wshrpc.CommandGitPushData
+    type CommandGitPushData = {
+        dir?: string;
+        remote?: string;
+        branch?: string;
+        username?: string;
+        password?: string;
+        force?: boolean;
+        setUpstream?: boolean;
+    };
+
+    // wshrpc.CommandGitRevertHunkData
+    type CommandGitRevertHunkData = {
+        dir: string;
+        path: string;
+        hunkIndex: number;
+        staged: boolean;
+    };
+
+    // wshrpc.CommandGitStageData
+    type CommandGitStageData = {
+        dir?: string;
+        paths: string[];
+    };
+
+    // wshrpc.CommandGitStageHunkData
+    type CommandGitStageHunkData = {
+        dir: string;
+        path: string;
+        hunkIndex: number;
+    };
+
+    // wshrpc.CommandGitStatusData
+    type CommandGitStatusData = {
+        dir?: string;
+    };
+
+    // wshrpc.CommandGitUnstageData
+    type CommandGitUnstageData = {
+        dir?: string;
+        paths: string[];
+    };
+
     // wshrpc.CommandJobCmdExitedData
     type CommandJobCmdExitedData = {
         jobid: string;
@@ -927,6 +985,77 @@ declare global {
         configerrors: ConfigError[];
         version: string;
         buildtime: string;
+    };
+
+    // wshrpc.GitCommitResponse
+    type GitCommitResponse = {
+        success: boolean;
+        output: string;
+    };
+
+    // wshrpc.GitDiffHunk
+    type GitDiffHunk = {
+        header: string;
+        modifiedStart: number;
+        modifiedCount: number;
+        originalStart: number;
+        originalCount: number;
+    };
+
+    // wshrpc.GitDiffResponse
+    type GitDiffResponse = {
+        original: string;
+        modified: string;
+        language: string;
+        hunks?: GitDiffHunk[];
+    };
+
+    // wshrpc.GitFileChange
+    type GitFileChange = {
+        path: string;
+        status: string;
+        oldPath: string;
+        icon: string;
+        color: string;
+    };
+
+    // wshrpc.GitPushResponse
+    type GitPushResponse = {
+        success: boolean;
+        output: string;
+        authNeeded: boolean;
+        authError: string;
+        authHost: string;
+        authRemote: string;
+    };
+
+    // wshrpc.CommandGitLookupCredentialsData
+    type CommandGitLookupCredentialsData = {
+        remote: string;
+    };
+
+    // wshrpc.GitCredentials
+    type GitCredentials = {
+        username: string;
+        password: string;
+        found: boolean;
+        scope: string;
+    };
+
+    // wshrpc.CommandGitSaveCredentialsData
+    type CommandGitSaveCredentialsData = {
+        remote: string;
+        username: string;
+        password: string;
+        scope: string;
+    };
+
+    // wshrpc.GitStatusResponse
+    type GitStatusResponse = {
+        branch: string;
+        staged: GitFileChange[];
+        unstaged: GitFileChange[];
+        untracked: GitFileChange[];
     };
 
     // waveobj.Job

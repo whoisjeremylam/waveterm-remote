@@ -666,32 +666,14 @@ func onConnectionDown(connName string) {
 		return
 	}
 
-	// Check if connection requires interactive auth
+	// Connections requiring interactive auth (password/keyboard-interactive)
+	// without a cached password never start the auto-reconnect scheduler.
+	// The password prompt is a persistent buffer independent of connection
+	// lifecycle — re-prompts and retries are handled by the conncontroller's
+	// background re-prompt goroutine (see conncontroller.requestPasswordRePrompt).
 	if needsInteractiveAuth(connName) {
-		// Special case: if the last error was auth-failed (wrong cached password),
-		// start the scheduler so the user gets re-prompted on all tabs.
-		connOpts, err := remote.ParseOpts(connName)
-		if err == nil {
-			conn := conncontroller.MaybeGetConn(connOpts)
-			if conn != nil {
-				status := conn.GetStatus()
-				// Only start scheduler if we're in error state (auth failed)
-				// and the error was specifically auth-failed
-				if status == conncontroller.Status_Error && conn.GetLastErrorCode() == "auth-failed" {
-					log.Printf("[conn:%s] auth failed with cached password, starting scheduler for retry", connName)
-					// Fall through to scheduler start below
-				} else {
-					log.Printf("[conn:%s] connection may require interactive auth (password/keyboard-interactive), skipping auto-reconnect scheduler", connName)
-					return
-				}
-			} else {
-				log.Printf("[conn:%s] connection may require interactive auth (password/keyboard-interactive), skipping auto-reconnect scheduler", connName)
-				return
-			}
-		} else {
-			log.Printf("[conn:%s] connection may require interactive auth (password/keyboard-interactive), skipping auto-reconnect scheduler", connName)
-			return
-		}
+		log.Printf("[conn:%s] connection requires interactive auth, skipping auto-reconnect scheduler", connName)
+		return
 	}
 
 	// Deduplicate: only one scheduler per connection at a time
@@ -1233,13 +1215,28 @@ func HandleCmdJobExited(ctx context.Context, jobId string, data wshrpc.CommandJo
 	})
 	if shouldWrite {
 		resetTerminalState(ctx, updatedJob.AttachedBlockId)
-		msg := "shell terminated"
+		msg := "shell terminated - press enter to close"
 		if updatedJob.CmdExitCode != nil && *updatedJob.CmdExitCode != 0 {
-			msg = fmt.Sprintf("shell terminated (exit code %d)", *updatedJob.CmdExitCode)
+			msg = fmt.Sprintf("shell terminated (exit code %d) - press enter to close", *updatedJob.CmdExitCode)
 		} else if updatedJob.CmdExitSignal != "" {
-			msg = fmt.Sprintf("shell terminated (signal %s)", updatedJob.CmdExitSignal)
+			msg = fmt.Sprintf("shell terminated (signal %s) - press enter to close", updatedJob.CmdExitSignal)
 		}
 		writeMutedMessageToTerminal(updatedJob.AttachedBlockId, "["+msg+"]")
+		wps.Broker.Publish(wps.WaveEvent{
+			Event: wps.Event_ControllerStatus,
+			Scopes: []string{
+				waveobj.MakeORef(waveobj.OType_Block, updatedJob.AttachedBlockId).String(),
+			},
+			Data: struct {
+				BlockId         string `json:"blockid"`
+				Version         int64  `json:"version"`
+				ShellProcStatus string `json:"shellprocstatus"`
+			}{
+				BlockId:         updatedJob.AttachedBlockId,
+				Version:         time.Now().UnixMilli(),
+				ShellProcStatus: "done",
+			},
+		})
 	}
 	return nil
 }
@@ -1346,7 +1343,7 @@ func remoteTerminateJobManager(ctx context.Context, job *waveobj.Job) error {
 	})
 	if shouldWrite {
 		resetTerminalState(ctx, job.AttachedBlockId)
-		writeMutedMessageToTerminal(job.AttachedBlockId, "[shell terminated]")
+		writeMutedMessageToTerminal(job.AttachedBlockId, "[shell terminated - press enter to close]")
 	}
 
 	if job.JobManagerStatus == JobManagerStatus_Done {

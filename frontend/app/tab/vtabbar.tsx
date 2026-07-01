@@ -176,8 +176,6 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
     const scrollAnimFrameRef = useRef<number | null>(null);
     const scrollDirectionRef = useRef<number>(0);
     const scrollSpeedRef = useRef<number>(0);
-    const pendingConnectionRef = useRef<string | null>(null);
-    const prevTabIdsRef = useRef<string[]>(tabIds);
     const newTabBtnRef = useRef<HTMLButtonElement>(null);
 
     useEffect(() => {
@@ -190,31 +188,6 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
         }
     }, [reinitVersion]);
 
-    useEffect(() => {
-        const pendingConn = pendingConnectionRef.current;
-        if (!pendingConn || !workspace?.tabids?.length) {
-            prevTabIdsRef.current = tabIds;
-            return;
-        }
-        const prevTabIds = prevTabIdsRef.current;
-        const newTabId = tabIds.find((id) => !prevTabIds.includes(id));
-        prevTabIdsRef.current = tabIds;
-        if (!newTabId) {
-            return;
-        }
-        pendingConnectionRef.current = null;
-        fireAndForget(async () => {
-            const tabOref = WOS.makeORef("tab", newTabId);
-            const tabData = globalStore.get(WOS.getWaveObjectAtom<Tab>(tabOref));
-            const blockId = tabData?.blockids?.[0];
-            if (blockId) {
-                await RpcApi.SetMetaCommand(TabRpcClient, {
-                    oref: WOS.makeORef("block", blockId),
-                    meta: { connection: pendingConn },
-                });
-            }
-        });
-    }, [tabIds, workspace]);
 
     useEffect(() => {
         if (activeTabId == null || scrollContainerRef.current == null) {
@@ -446,10 +419,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                         anchorRef={newTabBtnRef}
                         onSelect={(connName) => {
                             setShowConnectionDropdown(false);
-                            if (connName) {
-                                pendingConnectionRef.current = connName;
-                            }
-                            env.electron.createTab();
+                            env.electron.createTab(connName);
                         }}
                         onClose={() => setShowConnectionDropdown(false)}
                     />

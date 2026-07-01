@@ -893,6 +893,10 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 		// Clear cached password on auth failure so user is re-prompted
 		if errorCode == "auth-failed" {
 			conn.clearCachedPassword()
+			// Launch a background goroutine to re-prompt the user for a new password.
+			// This is independent of the current Connect() lifecycle — the password
+			// buffer model means the prompt stays visible until the user acts.
+			go conn.requestPasswordRePrompt()
 		}
 		conn.closeInternal_withlifecyclelock(nil)
 	} else {
@@ -1013,6 +1017,41 @@ func (conn *SSHConn) getCachedPassword() *string {
 	conn.lock.Lock()
 	defer conn.lock.Unlock()
 	return conn.CachedPassword
+}
+
+// requestPasswordRePrompt launches a background goroutine that independently
+// prompts the user for a password. It is NOT tied to any Connect() lifecycle.
+// When the user submits a password, it is cached and a new Connect() is triggered.
+// On timeout or user cancel, the goroutine exits silently.
+func (conn *SSHConn) requestPasswordRePrompt() {
+	go func() {
+		defer func() {
+			panichandler.PanicHandler("conncontroller:requestPasswordRePrompt", recover())
+		}()
+		ctx, cancelFn := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancelFn()
+		request := &userinput.UserInputRequest{
+			ResponseType: "text",
+			QueryText:    fmt.Sprintf("Password for connection  \n%s\n\nPassword:", conn.GetName()),
+			Markdown:     true,
+			Title:        "Password Authentication",
+			PromptType:   "password",
+			ConnName:     conn.GetName(),
+		}
+		response, err := userinput.GetUserInput(ctx, request)
+		if err != nil {
+			log.Printf("[conn:%s] requestPasswordRePrompt: user input error: %v", conn.GetName(), err)
+			return
+		}
+		if response.Text == "" {
+			return
+		}
+		conn.cachePassword(response.Text)
+		log.Printf("[conn:%s] requestPasswordRePrompt: password cached, triggering reconnect", conn.GetName())
+		// Trigger reconnect with the newly cached password. Use background context
+		// since this is a new, independent connection attempt.
+		_ = conn.Connect(context.Background(), &wconfig.ConnKeywords{})
+	}()
 }
 
 // canAutoReconnectLocked returns true if the scheduler can auto-reconnect
@@ -1509,6 +1548,14 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 	ctx = genconn.ContextWithConnDataAndName(ctx, "", conn.GetName())
 	// Inject cached password into context so the password callback uses it
 	cachedPw := conn.getCachedPassword()
+	// Also check for orphaned passwords (user submitted after previous prompt timed out)
+	if cachedPw == nil {
+		if orphanedPw := userinput.GetOrphanedPassword(conn.GetName()); orphanedPw != nil {
+			conn.cachePassword(*orphanedPw)
+			cachedPw = orphanedPw
+			conn.Infof(ctx, "using orphaned password from timed-out prompt\n")
+		}
+	}
 	if cachedPw != nil {
 		ctx = remote.ContextWithCachedPassword(ctx, cachedPw)
 	}
@@ -1798,12 +1845,9 @@ func EnsureConnection(ctx context.Context, connName string) error {
 		}
 		return conn.Connect(ctx, &wconfig.ConnKeywords{})
 	case Status_Error:
-		// If a password is cached, retry automatically (scheduler path)
-		// Otherwise, return the error so the UI can show a manual reconnect option
-		if conn.getCachedPassword() != nil {
-			return conn.Connect(ctx, &wconfig.ConnKeywords{})
-		}
-		return fmt.Errorf("connection error: %s", connStatus.Error)
+		// Always retry connecting from error state. If no cached password,
+		// the decoupled password callback will prompt the user independently.
+		return conn.Connect(ctx, &wconfig.ConnKeywords{})
 	default:
 		return fmt.Errorf("unknown connection status %q", connStatus.Status)
 	}
