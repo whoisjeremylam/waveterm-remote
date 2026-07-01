@@ -596,27 +596,29 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
         globalStore.set(model.directoryDropdownOpen, false);
     }, [model]);
 
+    const isRegularFile = (f: GitFileChange) => !f.path.endsWith("/") && f.path.length > 0;
+
     const handleReviewAll = useCallback(() => {
         const st = globalStore.get(model.statusAtom);
         const allFiles: ReviewFile[] = [
-            ...(st?.staged?.map(f => ({ ...f, staged: true, additions: 0, deletions: 0 })) ?? []),
-            ...(st?.unstaged?.map(f => ({ ...f, staged: false, additions: 0, deletions: 0 })) ?? []),
-            ...(st?.untracked?.map(f => ({ ...f, staged: false, untracked: true, additions: 0, deletions: 0 })) ?? []),
+            ...(st?.staged?.filter(isRegularFile).map(f => ({ ...f, staged: true, additions: 0, deletions: 0 })) ?? []),
+            ...(st?.unstaged?.filter(isRegularFile).map(f => ({ ...f, staged: false, additions: 0, deletions: 0 })) ?? []),
+            ...(st?.untracked?.filter(isRegularFile).map(f => ({ ...f, staged: false, untracked: true, additions: 0, deletions: 0 })) ?? []),
         ];
         model.enterReview(allFiles);
     }, [model]);
 
     const handleReviewStaged = useCallback(() => {
         const st = globalStore.get(model.statusAtom);
-        const files: ReviewFile[] = (st?.staged?.map(f => ({ ...f, staged: true, additions: 0, deletions: 0 })) ?? []);
+        const files: ReviewFile[] = (st?.staged?.filter(isRegularFile).map(f => ({ ...f, staged: true, additions: 0, deletions: 0 })) ?? []);
         model.enterReview(files);
     }, [model]);
 
     const handleReviewUnstaged = useCallback(() => {
         const st = globalStore.get(model.statusAtom);
         const files: ReviewFile[] = [
-            ...(st?.unstaged?.map(f => ({ ...f, staged: false, additions: 0, deletions: 0 })) ?? []),
-            ...(st?.untracked?.map(f => ({ ...f, staged: false, untracked: true, additions: 0, deletions: 0 })) ?? []),
+            ...(st?.unstaged?.filter(isRegularFile).map(f => ({ ...f, staged: false, additions: 0, deletions: 0 })) ?? []),
+            ...(st?.untracked?.filter(isRegularFile).map(f => ({ ...f, staged: false, untracked: true, additions: 0, deletions: 0 })) ?? []),
         ];
         model.enterReview(files);
     }, [model]);
@@ -666,6 +668,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     }, [model, status]);
 
     const handleMiddleClickFile = useCallback((path: string, staged: boolean, untracked: boolean) => {
+        if (!isRegularFile({ path } as any)) return;
         const st = globalStore.get(model.statusAtom);
         if (!st) return;
         const allFiles = [

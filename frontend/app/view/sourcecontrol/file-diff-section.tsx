@@ -26,11 +26,20 @@ export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggle
     const containerRef = useRef<HTMLDivElement>(null);
     const [shouldMount, setShouldMount] = useState(false);
     const [diff, setDiff] = useState<GitDiffResponse | null>(null);
+    const [diffError, setDiffError] = useState(false);
     const [diffEditor, setDiffEditor] = useState<monaco.editor.IStandaloneDiffEditor | null>(null);
     const stagedRef = useRef(file.staged);
     const viewMode = jotai.useAtomValue(model.viewModeAtom);
 
     const isStaged = file.staged;
+
+    const editorHeight = useMemo(() => {
+        if (!diff) return undefined;
+        const lineCount = viewMode === "side-by-side"
+            ? Math.max(diff.original.split("\n").length, diff.modified.split("\n").length)
+            : diff.original.split("\n").length + diff.modified.split("\n").length;
+        return Math.max(120, lineCount * 18 + 40);
+    }, [diff, viewMode]);
 
     // Reset diff when staged state changes (critical #3)
     useEffect(() => {
@@ -86,8 +95,15 @@ export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggle
     useEffect(() => {
         if (!shouldMount || diff) return;
         let cancelled = false;
+        setDiffError(false);
         model.fetchDiffCached(file.path, file.staged, file.untracked ?? false).then((d) => {
-            if (!cancelled) setDiff(d);
+            if (!cancelled) {
+                if (d) {
+                    setDiff(d);
+                } else {
+                    setDiffError(true);
+                }
+            }
         });
         return () => { cancelled = true; };
     }, [shouldMount, diff, file.path, file.staged, file.untracked, model]);
@@ -201,7 +217,12 @@ export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggle
                     {diff ? (
                         <div
                             className="relative"
-                            style={{ minHeight: "100px", opacity: isDone ? 0.6 : 1, transition: "opacity 0.3s" }}
+                            style={{
+                                height: editorHeight ? `${editorHeight}px` : "200px",
+                                minHeight: "80px",
+                                opacity: isDone ? 0.6 : 1,
+                                transition: "opacity 0.3s",
+                            }}
                         >
                             <MonacoDiffViewer
                                 original={diff.original}
@@ -226,6 +247,11 @@ export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggle
                                     onRevertHunk={(hunkIndex) => model.revertHunk(file.path, hunkIndex, isStaged)}
                                 />
                             )}
+                        </div>
+                    ) : diffError ? (
+                        <div className="flex items-center justify-center py-4 text-xs text-muted">
+                            <i className="fa-solid fa-triangle-exclamation mr-2" />
+                            Unable to load diff
                         </div>
                     ) : (
                         <div className="flex items-center justify-center py-4 text-xs text-muted">
