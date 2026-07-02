@@ -605,13 +605,13 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
             ...(st?.unstaged?.filter(isRegularFile).map(f => ({ ...f, staged: false, additions: 0, deletions: 0 })) ?? []),
             ...(st?.untracked?.filter(isRegularFile).map(f => ({ ...f, staged: false, untracked: true, additions: 0, deletions: 0 })) ?? []),
         ];
-        model.enterReview(allFiles);
+        model.enterReview(allFiles, "All");
     }, [model]);
 
     const handleReviewStaged = useCallback(() => {
         const st = globalStore.get(model.statusAtom);
         const files: ReviewFile[] = (st?.staged?.filter(isRegularFile).map(f => ({ ...f, staged: true, additions: 0, deletions: 0 })) ?? []);
-        model.enterReview(files);
+        model.enterReview(files, "Staged");
     }, [model]);
 
     const handleReviewUnstaged = useCallback(() => {
@@ -620,7 +620,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
             ...(st?.unstaged?.filter(isRegularFile).map(f => ({ ...f, staged: false, additions: 0, deletions: 0 })) ?? []),
             ...(st?.untracked?.filter(isRegularFile).map(f => ({ ...f, staged: false, untracked: true, additions: 0, deletions: 0 })) ?? []),
         ];
-        model.enterReview(files);
+        model.enterReview(files, "Unstaged");
     }, [model]);
 
     const handleExitReview = useCallback(() => {
@@ -770,7 +770,9 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
             )}
 
             {reviewMode ? (
-                <ReviewMode model={model} onExit={handleExitReview} />
+                <div className="flex-1 overflow-hidden">
+                    <ReviewMode model={model} onExit={handleExitReview} />
+                </div>
             ) : (
                 <>
             {/* Search */}

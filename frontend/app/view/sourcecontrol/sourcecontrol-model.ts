@@ -53,6 +53,7 @@ export class SourceControlViewModel implements ViewModel {
     reviewCollapsedAtom: jotai.PrimitiveAtom<Map<string, boolean>>;
     reviewFileRefsAtom: jotai.PrimitiveAtom<Map<string, HTMLDivElement>>;
     diffCacheAtom: jotai.PrimitiveAtom<Map<string, GitDiffResponse>>;
+    reviewFilterLabelAtom: jotai.PrimitiveAtom<string>;
 
     reviewStatsAtom: jotai.Atom<{ additions: number; deletions: number }>;
 
@@ -102,6 +103,7 @@ export class SourceControlViewModel implements ViewModel {
         this.reviewCollapsedAtom = jotai.atom<Map<string, boolean>>(new Map()) as jotai.PrimitiveAtom<Map<string, boolean>>;
         this.reviewFileRefsAtom = jotai.atom<Map<string, HTMLDivElement>>(new Map()) as jotai.PrimitiveAtom<Map<string, HTMLDivElement>>;
         this.diffCacheAtom = jotai.atom<Map<string, GitDiffResponse>>(new Map()) as jotai.PrimitiveAtom<Map<string, GitDiffResponse>>;
+        this.reviewFilterLabelAtom = jotai.atom<string>("") as jotai.PrimitiveAtom<string>;
 
         this.reviewStatsAtom = jotai.atom((get) => {
             const files = get(this.reviewFilesAtom);
@@ -480,10 +482,11 @@ export class SourceControlViewModel implements ViewModel {
         globalStore.set(this.authIsRetryAtom, false);
     }
 
-    enterReview(files: ReviewFile[]) {
+    enterReview(files: ReviewFile[], filterLabel: string = "") {
         globalStore.set(this.reviewFilesAtom, files);
         globalStore.set(this.reviewActiveIndexAtom, 0);
         globalStore.set(this.reviewCollapsedAtom, new Map());
+        globalStore.set(this.reviewFilterLabelAtom, filterLabel);
         globalStore.set(this.reviewModeAtom, true);
     }
 
@@ -507,7 +510,7 @@ export class SourceControlViewModel implements ViewModel {
         globalStore.set(this.reviewActiveIndexAtom, index);
         const refs = globalStore.get(this.reviewFileRefsAtom);
         const el = refs.get(files[index].path);
-        el?.scrollIntoView({ behavior: "smooth", block: "start" });
+        el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
 
     getDiffCacheKey(path: string, staged: boolean, untracked: boolean): string {

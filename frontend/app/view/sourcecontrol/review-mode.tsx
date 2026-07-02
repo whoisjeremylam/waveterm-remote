@@ -21,6 +21,7 @@ export const ReviewMode = memo(({ model, onExit }: ReviewModeProps) => {
     const activeIndex = jotai.useAtomValue(model.reviewActiveIndexAtom);
     const collapsedMap = jotai.useAtomValue(model.reviewCollapsedAtom);
     const stats = jotai.useAtomValue(model.reviewStatsAtom);
+    const filterLabel = jotai.useAtomValue(model.reviewFilterLabelAtom);
     const containerRef = useRef<HTMLDivElement>(null);
     const editorRefs = useRef<Map<string, monaco.editor.IStandaloneDiffEditor>>(new Map());
 
@@ -163,6 +164,7 @@ export const ReviewMode = memo(({ model, onExit }: ReviewModeProps) => {
                 fileCount={files.length}
                 totalAdditions={stats.additions}
                 totalDeletions={stats.deletions}
+                filterLabel={filterLabel}
                 onExit={onExit}
             />
             <div className="flex flex-1 overflow-hidden">

@@ -50,6 +50,13 @@ const JumpListItem = memo(({ file, isActive, isCollapsed, onClick }: JumpListIte
 });
 JumpListItem.displayName = "JumpListItem";
 
+const SectionHeader = memo(({ label, count }: { label: string; count: number }) => (
+    <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted border-t border-border">
+        {label} ({count})
+    </div>
+));
+SectionHeader.displayName = "SectionHeader";
+
 type JumpListProps = {
     files: ReviewFile[];
     activeIndex: number;
@@ -58,21 +65,70 @@ type JumpListProps = {
 };
 
 export const JumpList = memo(({ files, activeIndex, collapsedMap, onJump }: JumpListProps) => {
+    const categories = useMemo(() => {
+        const staged: { file: ReviewFile; originalIndex: number }[] = [];
+        const changed: { file: ReviewFile; originalIndex: number }[] = [];
+        const untracked: { file: ReviewFile; originalIndex: number }[] = [];
+        files.forEach((file, index) => {
+            if (file.staged) {
+                staged.push({ file, originalIndex: index });
+            } else if (file.untracked) {
+                untracked.push({ file, originalIndex: index });
+            } else {
+                changed.push({ file, originalIndex: index });
+            }
+        });
+        return { staged, changed, untracked };
+    }, [files]);
+
     return (
         <div className="h-full flex flex-col overflow-hidden border-r border-border bg-surface">
             <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted border-b border-border">
                 Files
             </div>
             <div className="flex-1 overflow-y-auto">
-                {files.map((file, index) => (
-                    <JumpListItem
-                        key={file.path}
-                        file={file}
-                        isActive={index === activeIndex}
-                        isCollapsed={collapsedMap.get(file.path) ?? false}
-                        onClick={() => onJump(index)}
-                    />
-                ))}
+                {categories.staged.length > 0 && (
+                    <>
+                        <SectionHeader label="Staged" count={categories.staged.length} />
+                        {categories.staged.map(({ file, originalIndex }) => (
+                            <JumpListItem
+                                key={file.path}
+                                file={file}
+                                isActive={originalIndex === activeIndex}
+                                isCollapsed={collapsedMap.get(file.path) ?? false}
+                                onClick={() => onJump(originalIndex)}
+                            />
+                        ))}
+                    </>
+                )}
+                {categories.changed.length > 0 && (
+                    <>
+                        <SectionHeader label="Changed" count={categories.changed.length} />
+                        {categories.changed.map(({ file, originalIndex }) => (
+                            <JumpListItem
+                                key={file.path}
+                                file={file}
+                                isActive={originalIndex === activeIndex}
+                                isCollapsed={collapsedMap.get(file.path) ?? false}
+                                onClick={() => onJump(originalIndex)}
+                            />
+                        ))}
+                    </>
+                )}
+                {categories.untracked.length > 0 && (
+                    <>
+                        <SectionHeader label="Untracked" count={categories.untracked.length} />
+                        {categories.untracked.map(({ file, originalIndex }) => (
+                            <JumpListItem
+                                key={file.path}
+                                file={file}
+                                isActive={originalIndex === activeIndex}
+                                isCollapsed={collapsedMap.get(file.path) ?? false}
+                                onClick={() => onJump(originalIndex)}
+                            />
+                        ))}
+                    </>
+                )}
             </div>
         </div>
     );

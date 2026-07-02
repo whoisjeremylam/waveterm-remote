@@ -7,15 +7,16 @@ type ReviewHeaderProps = {
     fileCount: number;
     totalAdditions: number;
     totalDeletions: number;
+    filterLabel?: string;
     onExit: () => void;
 };
 
-export const ReviewHeader = memo(({ fileCount, totalAdditions, totalDeletions, onExit }: ReviewHeaderProps) => (
+export const ReviewHeader = memo(({ fileCount, totalAdditions, totalDeletions, filterLabel, onExit }: ReviewHeaderProps) => (
     <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-surface">
         <div className="flex items-center gap-2 text-xs">
             <i className="fa-solid fa-eye text-muted" />
             <span className="font-medium text-secondary">
-                Review: {fileCount} {fileCount === 1 ? "file" : "files"}
+                Review{filterLabel ? ` ${filterLabel}` : ""}: {fileCount} {fileCount === 1 ? "file" : "files"}
             </span>
             {totalAdditions > 0 && (
                 <span className="text-green-400">+{totalAdditions}</span>
