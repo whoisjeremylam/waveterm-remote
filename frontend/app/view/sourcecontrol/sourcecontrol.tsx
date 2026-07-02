@@ -446,7 +446,7 @@ const CommitInput = memo(({ model, hasStagedChanges, hasUnpushedCommits }: {
     return (
         <div className="flex flex-col gap-2">
             <textarea
-                className="w-full px-2 py-1.5 text-xs bg-surface border border-border rounded resize-none outline-none focus:border-zinc-500 placeholder:text-muted overflow-hidden text-ellipsis"
+                className="w-full px-2 py-1.5 text-xs bg-surface border border-border rounded resize-none outline-none focus:border-zinc-500 placeholder:text-muted overflow-hidden text-ellipsis [&::placeholder]:whitespace-nowrap [&::placeholder]:overflow-hidden [&::placeholder]:text-ellipsis"
                 placeholder="Commit message (Ctrl+Enter to commit)"
                 rows={1}
                 value={commitMessage}
@@ -840,7 +840,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
                         {filteredUnstaged.length > 0 && (
                             <div>
                                 <SectionHeader
-                                    label="Changes"
+                                    label="Changed"
                                     count={filteredUnstaged.length}
                                     expanded={unstagedExpanded}
                                     onToggle={() => setUnstagedExpanded(!unstagedExpanded)}
