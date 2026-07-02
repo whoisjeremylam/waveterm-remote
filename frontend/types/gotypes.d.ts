@@ -347,6 +347,7 @@ declare global {
         path: string;
         staged?: boolean;
         untracked?: boolean;
+        fullFile?: boolean;
     };
 
     // wshrpc.CommandGitPushData

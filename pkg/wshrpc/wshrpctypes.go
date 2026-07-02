@@ -885,6 +885,7 @@ type CommandGitDiffData struct {
 	Path      string `json:"path"`                // file path
 	Staged    bool   `json:"staged,omitempty"`    // true for staged diff (git diff --cached)
 	Untracked bool   `json:"untracked,omitempty"` // true for untracked files (read content directly)
+	FullFile  bool   `json:"fullFile,omitempty"`  // true to return full file content (not just diff hunks)
 }
 
 type GitDiffResponse struct {

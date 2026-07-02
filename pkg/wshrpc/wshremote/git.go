@@ -121,6 +121,11 @@ func (impl *ServerImpl) GitDiffCommand(ctx context.Context, data wshrpc.CommandG
 		}, nil
 	}
 
+	// For full file mode, get the complete original and modified content
+	if data.FullFile {
+		return impl.fullFileDiff(ctx, dir, path, data.Staged)
+	}
+
 	var args []string
 	if data.Staged {
 		args = []string{"diff", "--cached", "--", path}
@@ -148,6 +153,52 @@ func (impl *ServerImpl) GitDiffCommand(ctx context.Context, data wshrpc.CommandG
 		Language: language,
 		Hunks:    hunks,
 	}, nil
+}
+
+// fullFileDiff returns the complete original and modified file content
+func (impl *ServerImpl) fullFileDiff(ctx context.Context, dir, path string, staged bool) (*wshrpc.GitDiffResponse, error) {
+	language := detectLanguage(path)
+
+	var args []string
+	if staged {
+		args = []string{"diff", "--cached", "--", path}
+	} else {
+		args = []string{"diff", "--", path}
+	}
+	diffOutput, _ := runGitCommand(ctx, dir, args...)
+	hunks := parseDiffHunks(diffOutput)
+
+	var original, modified string
+	if staged {
+		original = gitShow(ctx, dir, "HEAD:"+path)
+		modified = gitShow(ctx, dir, ":"+path)
+	} else {
+		original = gitShow(ctx, dir, ":"+path)
+		fullPath := filepath.Join(dir, path)
+		content, err := os.ReadFile(fullPath)
+		if err == nil {
+			modified = string(content)
+		}
+	}
+
+	return &wshrpc.GitDiffResponse{
+		Original: original,
+		Modified: modified,
+		Language: language,
+		Hunks:    hunks,
+	}, nil
+}
+
+// gitShow returns the content of a git object (e.g., HEAD:path or :path)
+// Returns empty string on any error (e.g., file doesn't exist at that revision)
+func gitShow(ctx context.Context, dir, object string) string {
+	cmd := exec.CommandContext(ctx, "git", "show", object)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return string(output)
 }
 
 // GitStageCommand stages files: git add -A -- <paths>
