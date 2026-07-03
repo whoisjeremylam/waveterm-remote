@@ -1702,6 +1702,18 @@ func IsBlockTermDurable(block *waveobj.Block) bool {
 		return false
 	}
 
+	// 2.5. Durable shells require wsh's connserver route. If wsh is disabled,
+	// fall back to non-durable ShellController which works without wsh.
+	if connName != "" {
+		if opts, err := remote.ParseOpts(connName); err == nil {
+			if sshConn := conncontroller.MaybeGetConn(opts); sshConn != nil {
+				if !sshConn.WshEnabled.Load() {
+					return false
+				}
+			}
+		}
+	}
+
 	// 3. Check config hierarchy: blockmeta → connection → global (default true)
 	// Check block meta first
 	if val, exists := block.Meta[waveobj.MetaKey_TermDurable]; exists {

@@ -1601,9 +1601,15 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 			// User explicitly opted out of wsh — OK to continue without it
 			conn.Infof(ctx, "wsh not enabled: %s\n", wshResult.NoWshReason)
 		} else if wshResult.WshError != nil {
-			// wsh startup failed after retries — fail the connection to avoid poisoned state
-			conn.Infof(ctx, "wsh startup failed, connection will be marked as error: %v\n", wshResult.WshError)
-			return fmt.Errorf("wsh startup failed: %w", wshResult.WshError)
+			// wsh startup failed — clean up stale domain socket listener and continue without wsh
+			conn.WithLock(func() {
+				if conn.DomainSockListener != nil {
+					conn.DomainSockListener.Close()
+					conn.DomainSockListener = nil
+					conn.DomainSockName = ""
+				}
+			})
+			conn.Infof(ctx, "wsh startup failed, continuing without wsh: %v\n", wshResult.WshError)
 		} else {
 			conn.Infof(ctx, "wsh not enabled: %s\n", wshResult.NoWshReason)
 		}
