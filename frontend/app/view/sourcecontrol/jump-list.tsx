@@ -82,7 +82,7 @@ export const JumpList = memo(({ files, activeIndex, collapsedMap, onJump }: Jump
     }, [files]);
 
     return (
-        <div className="h-full flex flex-col overflow-hidden border-r border-border bg-surface">
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden border-r border-border bg-surface">
             <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted border-b border-border">
                 Files
             </div>
