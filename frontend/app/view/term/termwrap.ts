@@ -254,6 +254,8 @@ export class TermWrap {
     hoveredLinkUri: string | null = null;
     onLinkHover?: (uri: string | null, mouseX: number, mouseY: number) => void;
 
+    _visibilityChangeHandler: (() => void) | null = null;
+
     // Paste deduplication
     // xterm.js paste() method triggers onData event, which can cause duplicate sends
     lastPasteData: string = "";
@@ -773,10 +775,32 @@ export class TermWrap {
                 this.heldData = [];
             }
         }
+        this._visibilityChangeHandler = () => {
+            if (document.visibilityState === "visible") {
+                this.refreshAfterVisibilityChange();
+            }
+        };
+        document.addEventListener("visibilitychange", this._visibilityChangeHandler);
         this.runProcessIdleTimeout();
     }
 
+    refreshAfterVisibilityChange() {
+        // After sleep/resume, the IntersectionObserver may not fire to unpause rendering.
+        // Bypass the paused check by directly calling the renderer's renderRows().
+        const core = (this.terminal as any)._core;
+        const renderer = core?._renderService?._renderer?.value;
+        if (renderer && typeof renderer.renderRows === "function") {
+            renderer.renderRows(0, this.terminal.rows - 1);
+        }
+        // Also trigger a fit in case dimensions changed while hidden
+        this.fitAddon.fit();
+    }
+
     dispose() {
+        if (this._visibilityChangeHandler) {
+            document.removeEventListener("visibilitychange", this._visibilityChangeHandler);
+            this._visibilityChangeHandler = null;
+        }
         this._writtenImageHashes.clear();
         this.promptMarkers.forEach((marker) => {
             try {
