@@ -24,10 +24,12 @@ type FileDiffSectionProps = {
 
 export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggleCollapse, onStage, onRevert, onRegisterRef, onVisible, onEditorRef }: FileDiffSectionProps) => {
     const containerRef = useRef<HTMLDivElement>(null);
+    const contentRef = useRef<HTMLDivElement>(null);
     const [shouldMount, setShouldMount] = useState(false);
     const [diff, setDiff] = useState<GitDiffResponse | null>(null);
     const [diffError, setDiffError] = useState(false);
     const [diffEditor, setDiffEditor] = useState<monaco.editor.IStandaloneDiffEditor | null>(null);
+    const [contentHeight, setContentHeight] = useState<number | undefined>(undefined);
     const stagedRef = useRef(file.staged);
     const viewMode = jotai.useAtomValue(model.viewModeAtom);
 
@@ -40,6 +42,21 @@ export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggle
             : diff.original.split("\n").length + diff.modified.split("\n").length;
         return Math.max(120, lineCount * 18 + 40);
     }, [diff, viewMode]);
+
+    // Track rendered height of diff content for placeholder when unmounted
+    useEffect(() => {
+        const el = contentRef.current;
+        if (!el) return;
+
+        const observer = new ResizeObserver(([entry]) => {
+            const height = entry.contentRect.height;
+            if (height > 0) {
+                setContentHeight(height);
+            }
+        });
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, [shouldMount, diff]);
 
     // Reset diff when staged state changes (critical #3)
     useEffect(() => {
@@ -213,7 +230,7 @@ export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggle
 
             {/* Diff content (lazy) */}
             {!isCollapsed && shouldMount && (
-                <div className="overflow-hidden relative">
+                <div ref={contentRef} className="overflow-hidden relative">
                     {diff ? (
                         <div
                             className="relative"
@@ -260,6 +277,11 @@ export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggle
                         </div>
                     )}
                 </div>
+            )}
+
+            {/* Placeholder when unmounted — preserves scroll height */}
+            {!isCollapsed && !shouldMount && contentHeight > 0 && (
+                <div style={{ height: contentHeight }} />
             )}
 
             {isCollapsed && (
