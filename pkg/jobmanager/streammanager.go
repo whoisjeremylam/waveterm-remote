@@ -372,8 +372,16 @@ func (sm *StreamManager) handleReadData(data []byte) {
 		sm.lock.Lock()
 		if err != nil || sm.diskFile != diskFile {
 			if err != nil && sm.diskFile == diskFile {
+				// Disk write failed (e.g. ENOSPC) or file was deactivated mid-write.
+				// Nil the file and reset disk seq state so stale diskEndSeq does not
+				// inflate ClientConnected's effectiveEnd bound. Bump drainGen to kill
+				// any running drain goroutine before the file is closed.
 				diskPath := diskFile.Name()
 				sm.diskFile = nil
+				sm.diskStartSeq = 0
+				sm.diskEndSeq = 0
+				sm.diskReadPos = 0
+				sm.drainGen++
 				go func() {
 					diskFile.Close()
 					os.Remove(diskPath)
@@ -382,7 +390,12 @@ func (sm *StreamManager) handleReadData(data []byte) {
 			sm.lock.Unlock()
 		} else {
 			sm.diskEndSeq += int64(n)
-			sm.drainCond.Signal()
+			// Only signal senderLoop when connected. During disconnect, senderLoop is
+			// parked in drainCond.Wait() and each signal wakes it uselessly. The disk
+			// write does not touch CirBuf, so senderLoop has nothing to read.
+			if sm.connected {
+				sm.drainCond.Signal()
+			}
 			sm.lock.Unlock()
 			return
 		}
@@ -517,8 +530,9 @@ func (sm *StreamManager) drainDiskToCirBuf(myGen int64) {
 		for written < len(data) {
 			sm.lock.Lock()
 			stillConnected := sm.connected
+			stillMyGen := sm.drainGen == myGen
 			sm.lock.Unlock()
-			if !stillConnected {
+			if !stillConnected || !stillMyGen {
 				return
 			}
 
