@@ -3,7 +3,7 @@
 
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./connectiondropdown.scss";
 
@@ -34,13 +34,11 @@ export const ConnectionDropdown = memo(function ConnectionDropdown({
         });
     }, [anchorRef]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         updatePosition();
         window.addEventListener("resize", updatePosition);
-        window.addEventListener("scroll", updatePosition, true);
         return () => {
             window.removeEventListener("resize", updatePosition);
-            window.removeEventListener("scroll", updatePosition, true);
         };
     }, [updatePosition]);
 
@@ -60,13 +58,15 @@ export const ConnectionDropdown = memo(function ConnectionDropdown({
 
     useEffect(() => {
         function handleClickOutside(e: MouseEvent) {
+            const anchor = anchorRef?.current;
+            if (anchor && anchor.contains(e.target as Node)) return;
             if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
                 onClose();
             }
         }
         document.addEventListener("mousedown", handleClickOutside);
         return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, [onClose]);
+    }, [onClose, anchorRef]);
 
     return createPortal(
         <div ref={dropdownRef} className="connection-dropdown" style={posStyle}>

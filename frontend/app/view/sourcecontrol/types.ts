@@ -1,0 +1,32 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+export type SelectedFile = {
+    path: string;
+    staged: boolean;
+    untracked?: boolean;
+};
+
+export type ReviewFile = GitFileChange & {
+    staged: boolean;
+    untracked?: boolean;
+    additions: number;
+    deletions: number;
+};
+
+export type FileTreeNode = {
+    id: string;
+    name: string;
+    path: string;
+    status: GitFileChange;
+    isDirectory: boolean;
+    children?: FileTreeNode[];
+};
+
+export type DiffHunk = {
+    header: string;
+    modifiedStart: number;
+    modifiedCount: number;
+    originalStart: number;
+    originalCount: number;
+};

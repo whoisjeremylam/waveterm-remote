@@ -11,6 +11,7 @@ import * as WOS from "@/store/wos";
 import { atom, useAtomValue } from "jotai";
 import * as React from "react";
 import { useMemo } from "react";
+import { TabUserInputPromptOverlay } from "@/app/tab/tabuserinputpromptoverlay";
 
 const tileGapSizeAtom = atom((get) => {
     const settings = get(atoms.settingsAtom);

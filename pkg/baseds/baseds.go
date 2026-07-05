@@ -14,11 +14,12 @@ type RpcInputChType struct {
 }
 
 type Badge struct {
-	BadgeId   string  `json:"badgeid"` // must be a uuidv7
+	BadgeId   string  `json:"badgeid"`           // must be a uuidv7
 	Icon      string  `json:"icon"`
 	Color     string  `json:"color,omitempty"`
 	Priority  float64 `json:"priority"`
 	PidLinked bool    `json:"pidlinked,omitempty"`
+	Rotation  float64 `json:"rotation,omitempty"` // degrees 0-360, applied via CSS transform
 }
 
 type BadgeEvent struct {

@@ -47,6 +47,7 @@ func MakeConnMonitor(conn *SSHConn, client *ssh.Client) *ConnMonitor {
 		cancelFunc:    cancelFunc,
 		inputNotifyCh: make(chan int64, 1),
 	}
+	cm.LastActivityTime.Store(time.Now().UnixMilli())
 	go cm.keepAliveMonitor()
 	return cm
 }

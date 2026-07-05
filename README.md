@@ -33,6 +33,7 @@ This fork is optimized for remote development workflows with a focus on macOS.
 - **Bug fixes** — Fixed tmux mouse integration lost on durable SSH session reconnect (commit `01f5073d`, issue #2); fixed crash on tab close after SSH session exit (commit `0cd6489b`)
 - **Image rendering** — Inline image display via `@xterm/addon-image` supporting Sixel, iTerm2 (IIP), and Kitty protocols. Tools like `chafa`, `imgcat`, and pi-tui can render images directly in the terminal
 - **SSH port forwarding** — Local and remote port forwarding via SSH config (`LocalForward`/`RemoteForward`)
+- **Source control widget** — Visual git interface in the sidebar with staged/unstaged/untracked file lists, side-by-side Monaco diffs, stage/unstage files and hunks, commit, and push authentication. Works on any connected remote host via wsh RPC. Includes a directory dropdown to browse repos across connections.
 - **Planned changes** — Remote file paste (image/drag-drop for SSH sessions), SSH config as source of truth for connections
 
 ![WaveTerm Screenshot](./assets/wave-screenshot.webp)

@@ -58,7 +58,7 @@ type WidgetPropsType = {
     env: WidgetsEnv;
 };
 
-const TOGGLE_WIDGETS = ["preview", "processviewer"];
+const TOGGLE_WIDGETS = ["preview", "sourcecontrol", "sysinfo", "processviewer"];
 
 function toggleWidgetVisibility(viewType: string): boolean {
     const layoutModel = getLayoutModelForStaticTab();
@@ -70,7 +70,7 @@ function toggleWidgetVisibility(viewType: string): boolean {
         if (!blockId) continue;
         const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
         if (blockData?.meta?.view === viewType) {
-            layoutModel.focusNode(leaf.id);
+            layoutModel.closeNode(leaf.id);
             return true;
         }
     }

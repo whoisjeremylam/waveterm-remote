@@ -57,6 +57,11 @@ type UserInputHandler struct {
 	Channels map[string](chan *UserInputResponse)
 }
 
+// OrphanedPasswords stores user-submitted passwords that arrived after the
+// original GetUserInput goroutine timed out. Keyed by connName.
+var OrphanedPasswords = make(map[string]string)
+var orphanedPasswordsLock sync.Mutex
+
 type FrontendProvider struct{}
 
 func (ui *UserInputHandler) registerChannel() (string, chan *UserInputResponse) {
@@ -193,4 +198,29 @@ func GetUserInput(ctx context.Context, request *UserInputRequest) (*UserInputRes
 
 func SetUserInputProvider(provider UserInputProvider) {
 	defaultProvider = provider
+}
+
+// CacheOrphanedPassword stores a password from a user input response that arrived
+// after the original GetUserInput goroutine timed out. The conncontroller checks
+// this cache in connectInternal before prompting the user.
+func CacheOrphanedPassword(connName string, password string) {
+	if connName == "" || password == "" {
+		return
+	}
+	orphanedPasswordsLock.Lock()
+	defer orphanedPasswordsLock.Unlock()
+	OrphanedPasswords[connName] = password
+}
+
+// GetOrphanedPassword retrieves and clears a cached orphaned password for connName.
+// Returns nil if no orphaned password exists.
+func GetOrphanedPassword(connName string) *string {
+	orphanedPasswordsLock.Lock()
+	defer orphanedPasswordsLock.Unlock()
+	pw, ok := OrphanedPasswords[connName]
+	if !ok {
+		return nil
+	}
+	delete(OrphanedPasswords, connName)
+	return &pw
 }

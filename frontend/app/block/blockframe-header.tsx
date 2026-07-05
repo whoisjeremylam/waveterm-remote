@@ -206,93 +206,106 @@ const HeaderEndIcons = React.memo(({ viewModel, nodeModel, blockId }: HeaderEndI
 });
 HeaderEndIcons.displayName = "HeaderEndIcons";
 
-const BlockFrame_Header = ({
-    nodeModel,
-    viewModel,
-    preview,
-    connBtnRef,
-    changeConnModalAtom,
-    error,
-}: BlockFrameProps & { changeConnModalAtom: jotai.PrimitiveAtom<boolean>; error?: Error }) => {
-    const waveEnv = useWaveEnv<BlockEnv>();
-    const metaView = jotai.useAtomValue(waveEnv.getBlockMetaKeyAtom(nodeModel.blockId, "view"));
-    const metaFrameTitle = jotai.useAtomValue(waveEnv.getBlockMetaKeyAtom(nodeModel.blockId, "frame:title"));
-    const metaFrameIcon = jotai.useAtomValue(waveEnv.getBlockMetaKeyAtom(nodeModel.blockId, "frame:icon"));
-    const metaConnection = jotai.useAtomValue(waveEnv.getBlockMetaKeyAtom(nodeModel.blockId, "connection"));
-    let viewName = util.useAtomValueSafe(viewModel?.viewName) ?? blockViewToName(metaView);
-    let viewIconUnion = util.useAtomValueSafe(viewModel?.viewIcon) ?? blockViewToIcon(metaView);
-    const preIconButton = util.useAtomValueSafe(viewModel?.preIconButton);
-    const useTermHeader = util.useAtomValueSafe(viewModel?.useTermHeader);
-    const termConfigedDurable = util.useAtomValueSafe(viewModel?.termConfigedDurable);
-    const hideViewName = util.useAtomValueSafe(viewModel?.hideViewName);
-    const badge = jotai.useAtomValue(getBlockBadgeAtom(useTermHeader ? nodeModel.blockId : null));
-    const magnified = jotai.useAtomValue(nodeModel.isMagnified);
-    const prevMagifiedState = React.useRef(magnified);
-    const manageConnection = util.useAtomValueSafe(viewModel?.manageConnection);
-    const iconColor = jotai.useAtomValue(waveEnv.getBlockMetaKeyAtom(nodeModel.blockId, "icon:color"));
-    const dragHandleRef = preview ? null : nodeModel.dragHandleRef;
-    const isTerminalBlock = metaView === "term";
-    viewName = metaFrameTitle ?? viewName;
-    viewIconUnion = metaFrameIcon ?? viewIconUnion;
+const BlockFrame_Header = React.memo(
+    ({
+        nodeModel,
+        viewModel,
+        preview,
+        connBtnRef,
+        changeConnModalAtom,
+        error,
+    }: BlockFrameProps & { changeConnModalAtom: jotai.PrimitiveAtom<boolean>; error?: Error }) => {
+        const waveEnv = useWaveEnv<BlockEnv>();
+        const metaView = jotai.useAtomValue(waveEnv.getBlockMetaKeyAtom(nodeModel.blockId, "view"));
+        const metaFrameTitle = jotai.useAtomValue(waveEnv.getBlockMetaKeyAtom(nodeModel.blockId, "frame:title"));
+        const metaFrameIcon = jotai.useAtomValue(waveEnv.getBlockMetaKeyAtom(nodeModel.blockId, "frame:icon"));
+        const metaConnection = jotai.useAtomValue(waveEnv.getBlockMetaKeyAtom(nodeModel.blockId, "connection"));
+        let viewName = util.useAtomValueSafe(viewModel?.viewName) ?? blockViewToName(metaView);
+        let viewIconUnion = util.useAtomValueSafe(viewModel?.viewIcon) ?? blockViewToIcon(metaView);
+        const preIconButton = util.useAtomValueSafe(viewModel?.preIconButton);
+        const useTermHeader = util.useAtomValueSafe(viewModel?.useTermHeader);
+        const termConfigedDurable = util.useAtomValueSafe(viewModel?.termConfigedDurable);
+        const hideViewName = util.useAtomValueSafe(viewModel?.hideViewName);
+        const badge = jotai.useAtomValue(getBlockBadgeAtom(useTermHeader ? nodeModel.blockId : null));
+        const magnified = jotai.useAtomValue(nodeModel.isMagnified);
+        const prevMagifiedState = React.useRef(magnified);
+        const manageConnection = util.useAtomValueSafe(viewModel?.manageConnection);
+        const iconColor = jotai.useAtomValue(waveEnv.getBlockMetaKeyAtom(nodeModel.blockId, "icon:color"));
+        const dragHandleRef = preview ? null : nodeModel.dragHandleRef;
+        const isTerminalBlock = metaView === "term";
+        viewName = metaFrameTitle ?? viewName;
+        viewIconUnion = metaFrameIcon ?? viewIconUnion;
 
-    React.useEffect(() => {
-        if (magnified && !preview && !prevMagifiedState.current) {        }
-        prevMagifiedState.current = magnified;
-    }, [magnified]);
+        React.useEffect(() => {
+            if (magnified && !preview && !prevMagifiedState.current) {        }
+            prevMagifiedState.current = magnified;
+        }, [magnified]);
 
-    const viewIconElem = getViewIconElem(viewIconUnion, iconColor);
+        const viewIconElem = getViewIconElem(viewIconUnion, iconColor);
 
-    return (
-        <div
-            className={cn("block-frame-default-header", useTermHeader && "!pl-[2px]")}
-            data-role="block-header"
-            ref={dragHandleRef}
-            onContextMenu={(e) => handleHeaderContextMenu(e, nodeModel.blockId, viewModel, nodeModel, waveEnv)}
-        >
-            {!useTermHeader && (
-                <>
-                    {preIconButton && <IconButton decl={preIconButton} className="block-frame-preicon-button" />}
-                    <div className="block-frame-default-header-iconview">
-                        {viewIconElem}
-                        {viewName && !hideViewName && <div className="block-frame-view-type">{viewName}</div>}
+        return (
+            <div
+                className={cn("block-frame-default-header", useTermHeader && "!pl-[2px]")}
+                data-role="block-header"
+                ref={dragHandleRef}
+                onContextMenu={(e) => handleHeaderContextMenu(e, nodeModel.blockId, viewModel, nodeModel, waveEnv)}
+            >
+                {!useTermHeader && (
+                    <>
+                        {preIconButton && <IconButton decl={preIconButton} className="block-frame-preicon-button" />}
+                        <div className="block-frame-default-header-iconview">
+                            {viewIconElem}
+                            {viewName && !hideViewName && <div className="block-frame-view-type">{viewName}</div>}
+                        </div>
+                    </>
+                )}
+                {manageConnection && (
+                    <ConnectionButton
+                        ref={connBtnRef}
+                        key="connbutton"
+                        connection={metaConnection}
+                        changeConnModalAtom={changeConnModalAtom}
+                        isTerminalBlock={isTerminalBlock}
+                    />
+                )}
+                {useTermHeader && termConfigedDurable != null && (
+                    <DurableSessionFlyover
+                        key="durable-status"
+                        blockId={nodeModel.blockId}
+                        viewModel={viewModel}
+                        placement="bottom"
+                        divClassName="iconbutton disabled text-[13px] ml-[-4px]"
+                    />
+                )}
+                {useTermHeader && (
+                    <PortForwardStatusIndicator
+                        key="port-forward-status"
+                        blockId={nodeModel.blockId}
+                        placement="bottom"
+                        divClassName="iconbutton disabled text-[13px] flex items-center gap-0.5"
+                    />
+                )}
+                {useTermHeader && badge && (
+                    <div className="pointer-events-none flex items-center px-1" style={{ color: badge.color || "#fbbf24" }}>
+                        <i
+                            className={makeIconClass(badge.icon, true, { defaultIcon: "circle-small" })}
+                            style={
+                                badge.rotation != null
+                                    ? {
+                                          transform: `rotate(${badge.rotation}deg)`,
+                                          transition: "transform 0.1s ease",
+                                      }
+                                    : undefined
+                            }
+                        />
                     </div>
-                </>
-            )}
-            {manageConnection && (
-                <ConnectionButton
-                    ref={connBtnRef}
-                    key="connbutton"
-                    connection={metaConnection}
-                    changeConnModalAtom={changeConnModalAtom}
-                    isTerminalBlock={isTerminalBlock}
-                />
-            )}
-            {useTermHeader && termConfigedDurable != null && (
-                <DurableSessionFlyover
-                    key="durable-status"
-                    blockId={nodeModel.blockId}
-                    viewModel={viewModel}
-                    placement="bottom"
-                    divClassName="iconbutton disabled text-[13px] ml-[-4px]"
-                />
-            )}
-            {useTermHeader && (
-                <PortForwardStatusIndicator
-                    key="port-forward-status"
-                    blockId={nodeModel.blockId}
-                    placement="bottom"
-                    divClassName="iconbutton disabled text-[13px] flex items-center gap-0.5"
-                />
-            )}
-            {useTermHeader && badge && (
-                <div className="pointer-events-none flex items-center px-1" style={{ color: badge.color || "#fbbf24" }}>
-                    <i className={makeIconClass(badge.icon, true, { defaultIcon: "circle-small" })} />
-                </div>
-            )}
-            <HeaderTextElems viewModel={viewModel} blockId={nodeModel.blockId} preview={preview} error={error} />
-            <HeaderEndIcons viewModel={viewModel} nodeModel={nodeModel} blockId={nodeModel.blockId} />
-        </div>
-    );
-};
+                )}
+                <HeaderTextElems viewModel={viewModel} blockId={nodeModel.blockId} preview={preview} error={error} />
+                <HeaderEndIcons viewModel={viewModel} nodeModel={nodeModel} blockId={nodeModel.blockId} />
+            </div>
+        );
+    }
+);
+BlockFrame_Header.displayName = "BlockFrame_Header";
 
 export { BlockFrame_Header };

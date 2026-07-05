@@ -1,10 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { globalStore } from "@/app/store/jotaiStore";
-import * as WOS from "@/app/store/wos";
 import { Tooltip } from "@/app/element/tooltip";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
@@ -127,31 +125,6 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
         }
     }, [workspace, tabIds]);
 
-    useEffect(() => {
-        const pendingConn = pendingConnectionRef.current;
-        if (!pendingConn || !workspace?.tabids?.length) {
-            prevTabIdsRef.current = tabIds;
-            return;
-        }
-        const prevTabIds = prevTabIdsRef.current;
-        const newTabId = tabIds.find((id) => !prevTabIds.includes(id));
-        prevTabIdsRef.current = tabIds;
-        if (!newTabId) {
-            return;
-        }
-        pendingConnectionRef.current = null;
-        fireAndForget(async () => {
-            const tabOref = WOS.makeORef("tab", newTabId);
-            const tabData = globalStore.get(WOS.getWaveObjectAtom<Tab>(tabOref));
-            const blockId = tabData?.blockids?.[0];
-            if (blockId) {
-                await RpcApi.SetMetaCommand(TabRpcClient, {
-                    oref: WOS.makeORef("block", blockId),
-                    meta: { connection: pendingConn },
-                });
-            }
-        });
-    }, [tabIds, workspace]);
 
     const saveTabsPosition = useCallback(() => {
         const tabs = tabRefs.current;
@@ -521,9 +494,6 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
         []
     );
 
-    const pendingConnectionRef = useRef<string | null>(null);
-    const prevTabIdsRef = useRef<string[]>([]);
-
     const handleAddTab = () => {
         if (showConnectionDropdown) {
             setShowConnectionDropdown(false);
@@ -534,10 +504,7 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
 
     const handleSelectConnection = async (connName: string) => {
         setShowConnectionDropdown(false);
-        if (connName) {
-            pendingConnectionRef.current = connName;
-        }
-        env.electron.createTab();
+        env.electron.createTab(connName);
         tabsWrapperRef.current.style.setProperty("--tabs-wrapper-transition", "width 0.1s ease");
         updateScrollDebounced();
         setNewTabIdDebounced(null);
