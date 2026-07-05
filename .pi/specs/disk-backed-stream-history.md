@@ -144,15 +144,25 @@ The reconnect flow (`restartStreaming` → `JobPrepareConnectCommand` → `Prepa
 `connectToStreamHelper_withlock` → `ClientConnected`) is largely unchanged:
 
 1. Client sends `currentSeq` (its last known position from local persisted file)
-2. `ClientConnected` calculates effective head position: `max(buf.HeadPos(), diskEndSeq)`
-3. If `clientSeq < effectiveHeadPos`, client is behind — gap logic unchanged
-4. Returns `effectiveHeadPos` as `serverSeq`
-5. **New**: If disk file exists and `clientSeq < diskEndSeq`, start a `diskDrain`
+2. `ClientConnected` consumes CirBuf up to `clientSeq` (when `clientSeq > headPos`),
+   then returns `max(headPos_after_consume, clientSeq)` as `serverSeq`.
+   - When `clientSeq < headPos` (client behind CirBuf head), `serverSeq = headPos` and
+     the client records a gap of `headPos - clientSeq`.
+   - When `clientSeq >= headPos` and within CirBuf, CirBuf is consumed to `clientSeq` and
+     `serverSeq = clientSeq` (no gap; client resumes from CirBuf).
+   - When `clientSeq >= headPos` but beyond CirBuf (within disk range), CirBuf is drained
+     via `SetTotalSize(clientSeq)` + `Consume(Size())`, `serverSeq = clientSeq`, and the
+     disk drain goroutine feeds the remaining disk data into CirBuf.
+   - Note: `diskEndSeq` is NOT used in the `serverSeq` formula. It only expands the bounds
+     check (`effectiveEnd = max(headPos + bufSize, diskEndSeq)`) so that a `clientSeq`
+     within the disk range is accepted. Using `max(headPos, diskEndSeq)` here would
+     over-count the gap and cause the client to drop drained data (see review issue N1).
+3. **New**: If disk file exists and `clientSeq < diskEndSeq`, start a `diskDrain`
    goroutine that reads from disk and writes to CirBuf
-6. Client-side `restartStreaming` handles the gap as before (`totalGap` update)
-7. Client calls `JobStartStreamCommand` to begin receiving
-8. `senderLoop` reads from CirBuf (which is being filled by diskDrain goroutine)
-9. When disk is fully drained, close and delete disk file, resume live PTY → CirBuf
+4. Client-side `restartStreaming` handles the gap as before (`totalGap` update)
+5. Client calls `JobStartStreamCommand` to begin receiving
+6. `senderLoop` reads from CirBuf (which is being filled by diskDrain goroutine)
+7. When disk is fully drained, close and delete disk file, resume live PTY → CirBuf
 
 **Sequence during disk drain**:
 
@@ -222,10 +232,11 @@ network sender. This keeps the `senderLoop` unchanged — it always reads from C
     │                              PrepareConnect()
     │                                │
     │                                ├─ ClientConnected(clientSeq)
-    │                                │   ├─ effectiveHead = max(headPos, diskEndSeq)
-    │                                │   ├─ if clientSeq < effectiveHead → gap
-    │                                │   ├─ if diskFile exists → start diskDrain goroutine
-    │                                │   └─ return effectiveHead as serverSeq
+    │                                │   ├─ consume CirBuf up to clientSeq (if clientSeq > headPos)
+    │                                │   ├─ effectiveEnd = max(headPos + bufSize, diskEndSeq) [bounds check only]
+    │                                │   ├─ serverSeq = max(headPos_after_consume, clientSeq)
+    │                                │   ├─ if diskFile exists && clientSeq < diskEndSeq → start diskDrain
+    │                                │   └─ return serverSeq
     │                                │
     │                                └─ rtnData.Seq = serverSeq
     │
@@ -250,7 +261,7 @@ network sender. This keeps the `senderLoop` unchanged — it always reads from C
 
 | File | Changes |
 |------|---------|
-| `pkg/jobmanager/streammanager.go` | Add `diskFile`, `diskStartSeq`, `diskEndSeq`, `diskReadPos` fields to `StreamManager`. Modify `handleReadData` to write full PTY chunk to disk via `diskFile.Write` when `diskFile != nil` (not routed through CirBuf byte-by-byte path). Modify `handleEOF` to use `max(buf.TotalSize(), diskEndSeq)` for `eofPos`. Modify `prepareNextPacket` to defer terminal packet when `diskFile != nil`. Modify `ClientConnected` to expand bounds check with `diskEndSeq`, calculate `effectiveHead = max(headPos, diskEndSeq)`, start `diskDrain` goroutine, and sync `totalSize` when client is ahead of CirBuf. Modify `ClientDisconnected` to call `activateDiskBuffering`. Add `activateDiskBuffering()`, `drainDiskToCirBuf()` goroutine, `deactivateDiskBuffering()`. Add `CirBuf.SetTotalSize(int64)` for drain-completion sync. Modify `senderLoop` to call `handleSendFailure()` on `SendData` error. Modify `StreamManager.Close()` to close and delete disk file. |
+| `pkg/jobmanager/streammanager.go` | Add `diskFile`, `diskStartSeq`, `diskEndSeq`, `diskReadPos`, `drainGen` fields to `StreamManager`. Modify `handleReadData` to write full PTY chunk to disk via `diskFile.Write` when `diskFile != nil` (not routed through CirBuf byte-by-byte path); on write error, nil the file, reset disk seq state, and bump `drainGen` to kill any running drain. Modify `handleEOF` to use `max(buf.TotalSize(), diskEndSeq)` for `eofPos`. Modify `prepareNextPacket` to defer terminal packet when `diskFile != nil`. Modify `ClientConnected` to expand bounds check with `diskEndSeq` (`effectiveEnd = max(headPos + bufSize, diskEndSeq)`), consume CirBuf up to `clientSeq`, return `max(headPos_after_consume, clientSeq)` as `serverSeq`, start `diskDrain` goroutine, and sync `totalSize` when client is ahead of CirBuf. Modify `ClientDisconnected` to call `activateDiskBuffering` and bump `drainGen`. Add `activateDiskBuffering()`, `drainDiskToCirBuf()` goroutine (generation-guarded before each `WriteAvailable`), `deactivateDiskBuffering()`. Add `CirBuf.SetTotalSize(int64)` for drain-completion sync. Modify `senderLoop` to call `handleSendFailure()` on `SendData` error. Modify `StreamManager.Close()` to close and delete disk file. |
 | `pkg/jobmanager/streammanager.go` (interface) | Change `DataSender.SendData` return type from void to `error`. Update `senderLoop` to handle error return. |
 | `pkg/jobmanager/cirbuf.go` | Add `SetTotalSize(int64)` method to allow external synchronization of absolute Seq counter for drain completion (Edge Case 12). |
 | `pkg/jobmanager/mainserverconn.go` | Update `routedDataSender.SendData` to return error with 5s timeout goroutine. |
@@ -286,9 +297,15 @@ file is meaningless.
 
 **Scenario**: Remote disk runs out of space while writing to `<jobid>.stream`.
 
-**Handling**: `diskFile.Write()` returns `ENOSPC`. Catch the error, close the disk file,
-set `diskFile = nil`, fall back to CirBuf async mode (discard old data, preserve last 2 MB).
-Log a warning: `"disk full, falling back to CirBuf async mode"`.
+**Handling**: `diskFile.Write()` returns `ENOSPC` (or any write error). `handleReadData`
+catches the error, sets `diskFile = nil`, **resets `diskStartSeq`/`diskEndSeq`/`diskReadPos`
+to 0**, bumps `drainGen` (to kill any running drain goroutine before the file is closed),
+and spawns a goroutine to `Close()` + `os.Remove()` the file. The data then falls through
+to the normal CirBuf `WriteAvailable` path. Resetting the disk seq fields is essential:
+a stale `diskEndSeq` would inflate `ClientConnected`'s `effectiveEnd` bound and accept a
+`clientSeq` beyond any actual data, producing a gap with no backing data. The disk data
+written before the error is lost (the file is removed); subsequent PTY output is preserved
+in CirBuf (2 MB async during disconnect, or the sync window during connected+drain).
 
 ### 3. Mid-Reconnect Concurrent Access
 

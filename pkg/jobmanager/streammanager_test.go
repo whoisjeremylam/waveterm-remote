@@ -351,11 +351,11 @@ func (sr *slowReader) Read(p []byte) (n int, err error) {
 }
 
 type blockingSender struct {
-	mu       sync.Mutex
-	blockCh  chan struct{}
-	packets  []wshrpc.CommandStreamData
-	sendErr  error
-	timeout  time.Duration
+	mu      sync.Mutex
+	blockCh chan struct{}
+	packets []wshrpc.CommandStreamData
+	sendErr error
+	timeout time.Duration
 }
 
 func newBlockingSender() *blockingSender {
@@ -422,7 +422,7 @@ func TestDiskBufferingWritesToDisk(t *testing.T) {
 	}
 
 	// Verify data is on disk
-contents, err := os.ReadFile(diskPath)
+	contents, err := os.ReadFile(diskPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1168,4 +1168,242 @@ func TestDrainStartedWhenClientSeqWithinCirBufAndDiskHasMore(t *testing.T) {
 	}
 
 	sm.Close()
+}
+
+// TestDrainGenGuardBeforeWriteAvailable verifies that when drainGen is bumped
+// while a drain goroutine is parked in WriteAvailable's wait channel, the
+// goroutine exits BEFORE calling WriteAvailable again (no duplicate CirBuf
+// data, no stale diskReadPos advancement). This covers review issue N2.
+func TestDrainGenGuardBeforeWriteAvailable(t *testing.T) {
+	sm := MakeStreamManager()
+
+	tmpDir := t.TempDir()
+	diskPath := tmpDir + "/test.stream"
+	f, err := os.Create(diskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.Write([]byte("gen-guard-data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	f2, _ := os.OpenFile(diskPath, os.O_RDWR, 0644)
+	sm.lock.Lock()
+	sm.diskFile = f2
+	sm.diskStartSeq = 0
+	sm.diskEndSeq = 14
+	sm.diskReadPos = 0
+	sm.connected = true
+	sm.dataSender = &testWriter{}
+	sm.streamId = "test"
+	// Cork: window=0 so WriteAvailable blocks immediately
+	sm.buf.SetEffectiveWindow(true, 0)
+	gen := sm.drainGen
+	sm.lock.Unlock()
+
+	doneCh := make(chan struct{})
+	go func() {
+		sm.drainDiskToCirBuf(gen)
+		close(doneCh)
+	}()
+
+	// Wait for the drain goroutine to block on WriteAvailable (window=0)
+	time.Sleep(50 * time.Millisecond)
+
+	// Bump generation (simulates ClientDisconnected's drainGen++)
+	sm.lock.Lock()
+	sm.drainGen++
+	sm.lock.Unlock()
+
+	// Uncork: grow the window so WriteAvailable's wait channel is closed.
+	// The stale goroutine unblocks and must exit WITHOUT writing to CirBuf.
+	sm.buf.SetEffectiveWindow(true, CwndSize)
+
+	select {
+	case <-doneCh:
+		// expected: goroutine exited via gen guard
+	case <-time.After(time.Second):
+		t.Fatal("drain goroutine did not exit after gen bump")
+	}
+
+	sm.lock.Lock()
+	bufSize := sm.buf.Size()
+	drp := sm.diskReadPos
+	sm.lock.Unlock()
+
+	if bufSize != 0 {
+		t.Errorf("expected CirBuf empty (stale goroutine must not write), got %d bytes", bufSize)
+	}
+	if drp != 0 {
+		t.Errorf("expected diskReadPos=0 (stale goroutine must not advance it), got %d", drp)
+	}
+
+	sm.Close()
+}
+
+// TestMultipleReconnectCycles verifies Edge Case 4: a partial drain (diskReadPos
+// advanced) is preserved across a disconnect/reconnect. The second reconnect
+// resumes from diskReadPos (never moves backward) and delivers only the
+// remaining disk data, with no duplication.
+func TestMultipleReconnectCycles(t *testing.T) {
+	sm := MakeStreamManager()
+
+	tmpDir := t.TempDir()
+	diskPath := tmpDir + "/test.stream"
+	f, err := os.Create(diskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 20 bytes on disk
+	data := strings.Repeat("a", 20)
+	_, err = f.Write([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	f2, _ := os.OpenFile(diskPath, os.O_RDWR, 0644)
+	sm.lock.Lock()
+	sm.diskFile = f2
+	sm.diskStartSeq = 0
+	sm.diskEndSeq = 20
+	// Simulate a prior partial drain that already delivered bytes 0..8
+	sm.diskReadPos = 8
+	sm.lock.Unlock()
+
+	tw := &testWriter{}
+	sm.dataSender = tw
+	sm.streamId = "cycle2"
+
+	// Client reconnects at clientSeq=8 (already has bytes 0..8)
+	serverSeq, err := sm.ClientConnected("cycle2", tw, CwndSize, 8)
+	if err != nil {
+		t.Fatalf("ClientConnected failed: %v", err)
+	}
+	if serverSeq != 8 {
+		t.Fatalf("expected serverSeq=8, got %d", serverSeq)
+	}
+
+	sm.lock.Lock()
+	newDiskReadPos := sm.diskReadPos
+	sm.lock.Unlock()
+	if newDiskReadPos < 8 {
+		t.Errorf("diskReadPos moved backward: expected >=8, got %d", newDiskReadPos)
+	}
+
+	// Allow the drain goroutine to deliver the remaining 12 bytes
+	time.Sleep(150 * time.Millisecond)
+
+	allData := ""
+	for _, pkt := range tw.GetPackets() {
+		if pkt.Data64 != "" {
+			allData += decodeData(pkt.Data64)
+		}
+	}
+	if len(allData) != 12 {
+		t.Errorf("expected 12 bytes (seq 8..20), got %d", len(allData))
+	}
+
+	sm.Close()
+}
+
+// TestDiskWriteErrorResetsDiskSeqFields verifies that on disk write failure,
+// the disk seq fields (diskStartSeq/diskEndSeq/diskReadPos) are reset so a
+// stale diskEndSeq does not inflate ClientConnected's effectiveEnd bound, and
+// drainGen is bumped to kill any running drain goroutine.
+func TestDiskWriteErrorResetsDiskSeqFields(t *testing.T) {
+	sm := MakeStreamManager()
+
+	tmpDir := t.TempDir()
+	diskPath := tmpDir + "/test.stream"
+	f, err := os.Create(diskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm.lock.Lock()
+	sm.diskFile = f
+	sm.diskStartSeq = 100
+	sm.diskEndSeq = 150
+	sm.diskReadPos = 120
+	sm.drainGen = 5
+	sm.lock.Unlock()
+
+	// Close the fd so Write fails
+	f.Close()
+
+	sm.handleReadData([]byte("fallback"))
+
+	sm.lock.Lock()
+	diskFile := sm.diskFile
+	diskStartSeq := sm.diskStartSeq
+	diskEndSeq := sm.diskEndSeq
+	diskReadPos := sm.diskReadPos
+	drainGen := sm.drainGen
+	sm.lock.Unlock()
+
+	if diskFile != nil {
+		t.Error("expected diskFile nil after write error")
+	}
+	if diskStartSeq != 0 || diskEndSeq != 0 || diskReadPos != 0 {
+		t.Errorf("expected disk seq fields reset to 0, got start=%d end=%d readPos=%d",
+			diskStartSeq, diskEndSeq, diskReadPos)
+	}
+	if drainGen != 6 {
+		t.Errorf("expected drainGen incremented to 6, got %d", drainGen)
+	}
+
+	// Data should have fallen through to CirBuf
+	if sm.buf.Size() == 0 {
+		t.Error("expected data in CirBuf after disk write failure")
+	}
+
+	sm.Close()
+}
+
+// TestCloseDuringDrainExitsGracefully verifies that Close() called while a
+// drain goroutine is running causes the goroutine to exit without deadlock or
+// panic (review issue N3 — acceptable shutdown path).
+func TestCloseDuringDrainExitsGracefully(t *testing.T) {
+	sm := MakeStreamManager()
+
+	tmpDir := t.TempDir()
+	diskPath := tmpDir + "/test.stream"
+	f, err := os.Create(diskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.Write([]byte("close-during-drain"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	f2, _ := os.OpenFile(diskPath, os.O_RDWR, 0644)
+	sm.lock.Lock()
+	sm.diskFile = f2
+	sm.diskStartSeq = 0
+	sm.diskEndSeq = 18
+	sm.diskReadPos = 0
+	sm.connected = true
+	sm.buf.SetEffectiveWindow(true, CwndSize)
+	gen := sm.drainGen
+	sm.lock.Unlock()
+
+	doneCh := make(chan struct{})
+	go func() {
+		sm.drainDiskToCirBuf(gen)
+		close(doneCh)
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	sm.Close()
+
+	select {
+	case <-doneCh:
+		// expected: drain exited
+	case <-time.After(time.Second):
+		t.Fatal("drain goroutine did not exit after Close")
+	}
 }

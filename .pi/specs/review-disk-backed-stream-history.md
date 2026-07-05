@@ -243,7 +243,7 @@ The inner write loop in `drainDiskToCirBuf` checks `stillConnected` BEFORE `Writ
 
 **Mitigation**: Read `drainGen` into the same lock-section snapshot as `connected` at the top of the inner loop, and guard the write body with `generation == myGen` (same pattern as the `connected` guard). Then the old goroutine exits at the guard instead of after `WriteAvailable`.
 
-**Status**: Unfixed. Low urgency — the window is a single inner-loop iteration between `stillConnected` check and `WriteAvailable`.
+**Status**: **Fixed (round 4).** `drainDiskToCirBuf` now captures `stillMyGen := sm.drainGen == myGen` alongside `stillConnected` and returns before `WriteAvailable` if the generation changed. Test: `TestDrainGenGuardBeforeWriteAvailable`.
 
 ### Issue N3: `drainDiskToCirBuf` doesn't check `closed`
 
@@ -253,7 +253,7 @@ The inner write loop in `drainDiskToCirBuf` checks `stillConnected` BEFORE `Writ
 
 **Impact**: Negligible — this is the shutdown path. No data corruption, no goroutine leak. The drain goroutine exits gracefully on the next `ReadAt` error.
 
-**Status**: Unfixed. Acceptable for shutdown path.
+**Status**: Unfixed. Acceptable for shutdown path. Test `TestCloseDuringDrainExitsGracefully` verifies the drain goroutine exits gracefully (no deadlock/panic) when `Close()` is called mid-drain.
 
 ### Issue N4: `senderLoop` wake-spin on `drainCond.Signal()` during disconnect
 
@@ -277,7 +277,7 @@ if sm.connected {
 
 The `drainCond.Signal()` in the CirBuf fallthrough path (line 398) already has natural rate-limiting because `WriteAvailable` in sync mode blocks when window is full — so writes happen at senderLoop drain rate, not at raw PTY rate.
 
-**Status**: Unfixed. Low impact.
+**Status**: **Fixed (round 4).** `handleReadData`'s disk write path now gates `drainCond.Signal()` on `sm.connected`. During disconnect, `senderLoop` is parked in `drainCond.Wait()` and is no longer woken on every disk write.
 
 ### Issue N5: Corked reconnect with no disk file
 
@@ -291,9 +291,49 @@ This works correctly, but the spec's reconnect flow diagram doesn't explicitly m
 
 ### New test gaps identified (round 3)
 
-| Gap | Description |
-|-----|-------------|
-| Generation guard before `WriteAvailable` | Test race: gen changes between connected snapshot and Write, verifies no duplicate CirBuf data |
-| Corked → uncorked drain awakening | Full test: cork `ClientConnected`, verify drain blocks on `WriteAvailable`, uncork via `SetRwndSize`, verify drain proceeds |
-| `senderLoop` wake-spin during disconnect | Performance test: verify `drainCond.Signal()` not called unnecessarily during disconnected mode |
-| `Close()` concurrent with drain | Verify drain goroutine exits gracefully when `Close()` is called mid-drain |
+| Gap | Status |
+|-----|--------|
+| Generation guard before `WriteAvailable` | ✅ `TestDrainGenGuardBeforeWriteAvailable` (round 4) |
+| Corked → uncorked drain awakening | ✅ `TestTerminalPacketDeferredDuringDrain` already covers cork→uncork via `SetRwndSize` |
+| `senderLoop` wake-spin during disconnect | ✅ Covered by code fix (round 4); not separately tested (performance, not correctness) |
+| `Close()` concurrent with drain | ✅ `TestCloseDuringDrainExitsGracefully` (round 4) |
+
+---
+
+## Fixes Applied — Round 4 (2026-07-05)
+
+### N2 — Generation guard before `WriteAvailable` (fixed)
+
+`drainDiskToCirBuf`'s inner write loop now captures `stillMyGen := sm.drainGen == myGen` in the same lock-section snapshot as `stillConnected`, and returns before calling `WriteAvailable` if the generation changed. This prevents a stale drain goroutine from writing to CirBuf after `ClientDisconnected` bumped `drainGen`, which would otherwise produce duplicate stream data when the new drain goroutine re-reads the same disk bytes from the unchanged `diskReadPos`.
+
+### N4 — `senderLoop` wake-spin during disconnect (fixed)
+
+`handleReadData`'s disk write path now gates `drainCond.Signal()` on `sm.connected`. During disconnect, `senderLoop` is parked in `drainCond.Wait()` (the `!connected` path of `prepareNextPacket`); signalling on every disk write woke it uselessly. The disk write does not touch CirBuf, so `senderLoop` has nothing to read until reconnect.
+
+### ENOSPC stale `diskEndSeq` (new finding, fixed)
+
+`handleReadData`'s disk write error path (e.g. `ENOSPC`, or the deactivation-race fallthrough) previously nil'd `diskFile` but left `diskStartSeq`/`diskEndSeq`/`diskReadPos` at their stale values. A stale `diskEndSeq` inflated `ClientConnected`'s `effectiveEnd = max(headPos + bufSize, diskEndSeq)`, which could accept a `clientSeq` beyond any actual data (disk file removed) and produce a gap with no backing data. The error path now resets all three disk seq fields to 0 and bumps `drainGen` to kill any running drain goroutine before the file is closed. Test: `TestDiskWriteErrorResetsDiskSeqFields`.
+
+### Spec — `ClientConnected` effective head formula (S1/N1, fixed)
+
+The spec's Part C step 2 and reconnect-flow diagram said `effectiveHead = max(headPos, diskEndSeq)`, returned as `serverSeq`. The code correctly returns `max(headPos_after_consume, clientSeq)`. Using `diskEndSeq` in the formula over-counts the gap: with `clientSeq=100` and `diskEndSeq=200`, the spec returns 200, the client records gap=100 and sets `expectedNextSeq=200`, then drops all drained data starting at `seq=100` because `100 < 200`. The spec doc has been corrected to match the code.
+
+### Spec — Edge Case 2 (Disk Full) corrected
+
+The spec said ENOSPC "falls back to CirBuf async mode". The actual behaviour: nil the file, reset disk seq state, bump `drainGen`, and fall through to the normal CirBuf `WriteAvailable` path (in whatever mode CirBuf is in — async during disconnect, sync during connected+drain). The spec now documents the reset of disk seq fields and explains why it is necessary.
+
+### New tests added (round 4)
+
+| Test | What it verifies |
+|------|-----------------|
+| `TestDrainGenGuardBeforeWriteAvailable` | Stale drain goroutine (gen bumped while parked in `WriteAvailable`'s wait channel) exits without writing to CirBuf or advancing `diskReadPos` |
+| `TestMultipleReconnectCycles` | Edge Case 4: partial drain (`diskReadPos=8`) preserved across reconnect; second reconnect resumes from 8 and delivers 12 bytes (seq 8..20) with no duplication |
+| `TestDiskWriteErrorResetsDiskSeqFields` | ENOSPC/write-error path nil's `diskFile`, resets `diskStartSeq`/`diskEndSeq`/`diskReadPos` to 0, bumps `drainGen`, falls through to CirBuf |
+| `TestCloseDuringDrainExitsGracefully` | `Close()` mid-drain causes the drain goroutine to exit without deadlock or panic |
+
+### Remaining unfixed
+
+- **N3** (`drainDiskToCirBuf` doesn't check `closed`): acceptable for the shutdown path. The drain goroutine exits on the next `ReadAt` error (file closed by `Close()`'s goroutine) or the `diskFile == nil` check. `TestCloseDuringDrainExitsGracefully` confirms graceful exit.
+- **N5** (corked reconnect with no disk file): correct behaviour, spec documentation gap only.
+- **Gap 3** (no max disk file size guard): acknowledged out-of-scope in the spec.
+- **`disconnectFromStreamHelper` + `activateDiskBuffering` integration test**: requires jobmanager-level scaffolding (real `JobManager`, `MainServerConn`, domain socket). The `activateDiskBuffering` call site is covered by code inspection (`jobmanager.go:187` and `:218` both call it after `ClientDisconnected`); a dedicated integration test is left as future work.
