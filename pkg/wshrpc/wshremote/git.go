@@ -107,7 +107,72 @@ func (impl *ServerImpl) GitDiffCommand(ctx context.Context, data wshrpc.CommandG
 	if data.Untracked {
 		fullPath := filepath.Join(dir, path)
 		fmt.Printf("[SCM] Reading untracked file: %s\n", fullPath)
-		content, err := os.ReadFile(fullPath)
+
+		fi, err := os.Stat(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("file not found: %s", path)
+			}
+			return nil, fmt.Errorf("failed to stat file: %w", err)
+		}
+		if fi.IsDir() {
+			return nil, fmt.Errorf("path is a directory: %s", path)
+		}
+		fileSize := fi.Size()
+
+		// Read first 512 bytes for binary detection
+		isBinary := false
+		if fileSize > 0 {
+			f, err := os.Open(fullPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to open file: %w", err)
+			}
+			head := make([]byte, 512)
+			n, readErr := f.Read(head)
+			f.Close()
+			if readErr == nil {
+				isBinary = isBinaryContent(head[:n])
+			}
+		}
+
+		if isBinary {
+			fmt.Printf("[SCM] Detected binary file: %s (%d bytes)\n", path, fileSize)
+			language := detectLanguage(path)
+			return &wshrpc.GitDiffResponse{
+				Original: "",
+				Modified: "",
+				Language: language,
+				IsBinary: true,
+				FileSize: fileSize,
+			}, nil
+		}
+
+		const maxUntrackedFileSize = 1 << 20 // 1MB
+		var content []byte
+		if fileSize > maxUntrackedFileSize {
+			f, err := os.Open(fullPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to open file: %w", err)
+			}
+			content = make([]byte, maxUntrackedFileSize)
+			n, readErr := f.Read(content)
+			f.Close()
+			if readErr != nil {
+				return nil, fmt.Errorf("failed to read file: %w", readErr)
+			}
+			content = content[:n]
+			fmt.Printf("[SCM] Truncated file %s: %d / %d bytes\n", path, n, fileSize)
+			language := detectLanguage(path)
+			return &wshrpc.GitDiffResponse{
+				Original:    "",
+				Modified:    string(content),
+				Language:    language,
+				IsTruncated: true,
+				FileSize:    fileSize,
+			}, nil
+		}
+
+		content, err = os.ReadFile(fullPath)
 		if err != nil {
 			fmt.Printf("[SCM] Failed to read file: %v\n", err)
 			return nil, fmt.Errorf("failed to read file: %w", err)
@@ -829,6 +894,19 @@ func parseUnifiedDiff(diff string) (string, string) {
 	}
 
 	return original.String(), modified.String()
+}
+
+// isBinaryContent returns true if the data contains null bytes or non-text content
+func isBinaryContent(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	for _, b := range data {
+		if b == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // detectLanguage returns the Monaco language ID based on file extension

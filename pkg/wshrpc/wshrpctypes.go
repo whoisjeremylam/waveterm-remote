@@ -889,10 +889,13 @@ type CommandGitDiffData struct {
 }
 
 type GitDiffResponse struct {
-	Original string        `json:"original"`
-	Modified string        `json:"modified"`
-	Language string        `json:"language"` // detected from file extension
-	Hunks    []GitDiffHunk `json:"hunks,omitempty"`
+	Original    string        `json:"original"`
+	Modified    string        `json:"modified"`
+	Language    string        `json:"language"`              // detected from file extension
+	Hunks       []GitDiffHunk `json:"hunks,omitempty"`
+	IsBinary    bool          `json:"isBinary,omitempty"`    // true if file contains binary content
+	IsTruncated bool          `json:"isTruncated,omitempty"` // true if content was truncated for size
+	FileSize    int64         `json:"fileSize,omitempty"`    // total file size in bytes
 }
 
 // Git staging operations

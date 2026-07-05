@@ -1010,6 +1010,9 @@ declare global {
         modified: string;
         language: string;
         hunks?: GitDiffHunk[];
+        isBinary?: boolean;
+        isTruncated?: boolean;
+        fileSize?: number;
     };
 
     // wshrpc.GitFileChange

@@ -159,6 +159,12 @@ export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggle
     const stageLabel = file.untracked ? "Stage" : (isStaged ? "Unstage" : "Stage");
     const isDone = isStaged || (file.additions === 0 && file.deletions === 0);
 
+    const formatBytes = (bytes: number): string => {
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1 << 20) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / (1 << 20)).toFixed(1)} MB`;
+    };
+
     return (
         <div
             ref={containerRef}
@@ -223,39 +229,61 @@ export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggle
             {!isCollapsed && shouldMount && (
                 <div ref={contentRef} className="overflow-hidden relative">
                     {diff ? (
-                        <div
-                            className="relative"
-                            style={{
-                                height: editorHeight ? `${editorHeight}px` : "200px",
-                                minHeight: "80px",
-                                opacity: isDone ? 0.6 : 1,
-                                transition: "opacity 0.3s",
-                            }}
-                        >
-                            <MonacoDiffViewer
-                                original={diff.original}
-                                modified={diff.modified}
-                                language={diff.language}
-                                path={file.path}
-                                options={diffViewerOptions}
-                                onMount={handleMount}
-                            />
-                            {diffEditor && diff.hunks && diff.hunks.length > 0 && (
-                                <DiffGutter
-                                    diffEditor={diffEditor}
-                                    hunks={diff.hunks.map(h => ({
-                                        header: h.header,
-                                        modifiedStart: h.modifiedStart,
-                                        modifiedCount: h.modifiedCount,
-                                        originalStart: h.originalStart,
-                                        originalCount: h.originalCount,
-                                    }))}
-                                    isStaged={isStaged}
-                                    onStageHunk={(hunkIndex) => model.stageHunk(file.path, hunkIndex)}
-                                    onRevertHunk={(hunkIndex) => model.revertHunk(file.path, hunkIndex, isStaged)}
+                        diff.isBinary ? (
+                            <div
+                                className="flex flex-col items-center justify-center gap-1.5 py-4 text-xs text-muted border-t border-border"
+                                style={{ minHeight: "80px" }}
+                            >
+                                <i className="fa-solid fa-file-binary text-lg opacity-50" />
+                                <span>Binary file</span>
+                                {diff.fileSize != null && diff.fileSize > 0 && (
+                                    <span className="text-[10px] opacity-50">{formatBytes(diff.fileSize)}</span>
+                                )}
+                            </div>
+                        ) : (
+                            <div
+                                className="relative"
+                                style={{
+                                    height: editorHeight ? `${editorHeight}px` : "200px",
+                                    minHeight: "80px",
+                                    opacity: isDone ? 0.6 : 1,
+                                    transition: "opacity 0.3s",
+                                }}
+                            >
+                                {diff.isTruncated && (
+                                    <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] text-muted border-b border-border">
+                                        <i className="fa-solid fa-scissors" />
+                                        <span>
+                                            Showing first 1 MB{": "}
+                                            {diff.fileSize != null ? `of ${formatBytes(diff.fileSize)}` : ""}
+                                        </span>
+                                    </div>
+                                )}
+                                <MonacoDiffViewer
+                                    original={diff.original}
+                                    modified={diff.modified}
+                                    language={diff.language}
+                                    path={file.path}
+                                    options={diffViewerOptions}
+                                    onMount={handleMount}
                                 />
-                            )}
-                        </div>
+                                {diffEditor && diff.hunks && diff.hunks.length > 0 && (
+                                    <DiffGutter
+                                        diffEditor={diffEditor}
+                                        hunks={diff.hunks.map(h => ({
+                                            header: h.header,
+                                            modifiedStart: h.modifiedStart,
+                                            modifiedCount: h.modifiedCount,
+                                            originalStart: h.originalStart,
+                                            originalCount: h.originalCount,
+                                        }))}
+                                        isStaged={isStaged}
+                                        onStageHunk={(hunkIndex) => model.stageHunk(file.path, hunkIndex)}
+                                        onRevertHunk={(hunkIndex) => model.revertHunk(file.path, hunkIndex, isStaged)}
+                                    />
+                                )}
+                            </div>
+                        )
                     ) : diffError ? (
                         <div className="flex items-center justify-center py-4 text-xs text-muted">
                             <i className="fa-solid fa-triangle-exclamation mr-2" />
