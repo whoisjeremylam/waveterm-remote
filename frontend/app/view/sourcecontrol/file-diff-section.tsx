@@ -139,21 +139,12 @@ export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggle
         }
     }, [diffEditor]);
 
-    // Dispose Monaco model on unmount
+    // Unregister editor ref on unmount
     useEffect(() => {
         return () => {
             onEditorRef(file.path, null);
-            if (diffEditor) {
-                const m = diffEditor.getModel();
-                if (m) {
-                    m.original.dispose();
-                    m.modified.dispose();
-                }
-                diffEditor.setModel(null);
-                diffEditor.dispose();
-            }
         };
-    }, [diffEditor, file.path, onEditorRef]);
+    }, [file.path, onEditorRef]);
 
     const diffViewerOptions = useMemo(() => ({
         renderSideBySide: viewMode === "side-by-side",

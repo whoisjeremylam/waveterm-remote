@@ -149,11 +149,11 @@ export function MonacoDiffViewer({ original, modified, language, path, options, 
             const diff = diffRef.current;
             if (diff) {
                 const model = diff.getModel();
+                diff.setModel(null);
                 if (model) {
                     model.original.dispose();
                     model.modified.dispose();
                 }
-                diff.setModel(null);
                 diff.dispose();
                 diffRef.current = null;
             }
@@ -167,6 +167,7 @@ export function MonacoDiffViewer({ original, modified, language, path, options, 
 
         // Dispose old models
         const oldModel = diff.getModel();
+        diff.setModel(null);
         if (oldModel) {
             oldModel.original.dispose();
             oldModel.modified.dispose();
