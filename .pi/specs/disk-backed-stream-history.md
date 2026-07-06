@@ -80,10 +80,26 @@ buffering for history preservation.
 - Stale data packets from leaked goroutines arrive with old `Seq` numbers; the client-side
   stream reader ignores out-of-order packets
 
-**Timeout value**: 5 seconds. This is a balance:
-- Short enough that the CirBuf (64 KB) won't fill completely before timeout fires
-  (at ~13 KB/s of PTY output, 64 KB fills in ~5s)
-- Long enough to avoid false positives during normal TCP congestion
+**Timeout value**: 5 seconds. This bounds the **maximum freeze duration** of the
+remote process — it is *not* calibrated to the CirBuf fill rate. The mechanism:
+
+- The 5s timer starts when a `SendData` call first blocks (network backpressure has
+  reached the sender).
+- For a **fast-output process**, the CirBuf and kernel PTY buffer fill in milliseconds,
+  so the remote process freezes almost immediately after `SendData` blocks. The 5s
+  timer then fires, `handleSendFailure` disconnects, and `readLoop` switches to disk.
+  The kernel PTY buffer drains, and the remote process's `write()` unblocks. **Freeze
+  ≈ 5s.**
+- For a **slow-output process**, the 5s timer may fire *before* the CirBuf fills and
+  the remote process freezes. In that case the timeout preempts the freeze entirely.
+  **Freeze ≈ 0–5s.**
+
+In all cases the remote process freezes for **at most 5 seconds**, versus the previous
+behavior of freezing for the entire suspend duration (hours, until TCP keepalive closes
+the SSH channel). The CirBuf fill rate only affects *how quickly the process freezes
+after `SendData` blocks*, not *whether the timeout unblocks it*.
+
+5s is also long enough to avoid false positives during normal TCP congestion.
 
 ### Part B: Disk-Backed History
 
