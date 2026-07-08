@@ -101,13 +101,12 @@ func TestAttemptReconnectSuccess(t *testing.T) {
 	defer cleanupTestConn(conn)
 
 	// Mock connectInternal so we don't need a real SSH server
-	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+	conn.testConnectInternalHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
 		c.WithLock(func() {
 			c.Status = Status_Connected
 		})
 		return nil
 	}
-	defer func() { connectInternalTestHook = nil }()
 
 	ctx := context.Background()
 	err := AttemptReconnect(ctx, conn.GetName())
@@ -124,10 +123,9 @@ func TestAttemptReconnectConnectFailure(t *testing.T) {
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
-	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+	conn.testConnectInternalHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
 		return fmt.Errorf("mock connect failure")
 	}
-	defer func() { connectInternalTestHook = nil }()
 
 	ctx := context.Background()
 	err := AttemptReconnect(ctx, conn.GetName())
@@ -155,11 +153,10 @@ func TestGetStallDisconnectThresholdMsFromConfig(t *testing.T) {
 	defer cleanupTestConn(conn)
 	cm := makeTestMonitor(conn)
 
-	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+	conn.testGetConfigHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		threshold := 15
 		return wconfig.ConnKeywords{ConnStallDisconnectThreshold: &threshold}, true
 	}
-	defer func() { getConnectionConfigTestHook = nil }()
 
 	ms := cm.getStallDisconnectThresholdMs()
 	if ms != 15000 {
@@ -186,10 +183,9 @@ func TestShouldAutoDisconnectOnStallRespectsConfig(t *testing.T) {
 	cm := makeTestMonitor(conn)
 
 	disabled := false
-	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+	conn.testGetConfigHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		return wconfig.ConnKeywords{ConnStallAutoDisconnect: &disabled}, true
 	}
-	defer func() { getConnectionConfigTestHook = nil }()
 
 	if cm.shouldAutoDisconnectOnStall() {
 		t.Fatalf("expected false when config disabled")
@@ -220,10 +216,9 @@ func TestDisconnectOnStallSkipsWhenDisabled(t *testing.T) {
 	cm := makeTestMonitor(conn)
 
 	disabled := false
-	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+	conn.testGetConfigHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		return wconfig.ConnKeywords{ConnStallAutoDisconnect: &disabled}, true
 	}
-	defer func() { getConnectionConfigTestHook = nil }()
 
 	cm.disconnectOnStall()
 	time.Sleep(100 * time.Millisecond)
@@ -1003,10 +998,9 @@ func TestCachedPasswordClearedOnAuthFailure(t *testing.T) {
 	conn.cachePassword("wrong-password")
 
 	// Mock connectInternal to return auth failure
-	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+	conn.testConnectInternalHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
 		return fmt.Errorf("unable to authenticate")
 	}
-	defer func() { connectInternalTestHook = nil }()
 
 	ctx := context.Background()
 	conn.Connect(ctx, &wconfig.ConnKeywords{})
@@ -1227,13 +1221,12 @@ func TestEnsureConnection_ErrorWithCachedPassword(t *testing.T) {
 	conn.cachePassword("cached-secret")
 
 	// Mock connectInternal to succeed this time (simulating cached password working)
-	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+	conn.testConnectInternalHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
 		c.WithLock(func() {
 			c.Status = Status_Connected
 		})
 		return nil
 	}
-	defer func() { connectInternalTestHook = nil }()
 
 	ctx := context.Background()
 	err := EnsureConnection(ctx, conn.GetName())
@@ -1264,7 +1257,7 @@ func TestConnect_CachesPasswordOnSuccess(t *testing.T) {
 	defer cleanupTestConn(conn)
 
 	// Mock connectInternal to simulate password being used
-	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+	conn.testConnectInternalHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
 		// Simulate: password was used during handshake
 		c.cachePassword("used-password")
 		c.WithLock(func() {
@@ -1272,7 +1265,6 @@ func TestConnect_CachesPasswordOnSuccess(t *testing.T) {
 		})
 		return nil
 	}
-	defer func() { connectInternalTestHook = nil }()
 
 	ctx := context.Background()
 	err := conn.Connect(ctx, &wconfig.ConnKeywords{})
@@ -1290,13 +1282,12 @@ func TestConnect_SetsCooldown(t *testing.T) {
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
-	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+	conn.testConnectInternalHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
 		c.WithLock(func() {
 			c.Status = Status_Connected
 		})
 		return nil
 	}
-	defer func() { connectInternalTestHook = nil }()
 
 	ctx := context.Background()
 	conn.Connect(ctx, &wconfig.ConnKeywords{})
@@ -1360,10 +1351,9 @@ func TestCanAutoReconnect_BatchMode(t *testing.T) {
 	defer cleanupTestConn(conn)
 
 	batchMode := true
-	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+	conn.testGetConfigHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		return wconfig.ConnKeywords{SshBatchMode: &batchMode}, true
 	}
-	defer func() { getConnectionConfigTestHook = nil }()
 
 	status := conn.DeriveConnStatus()
 	if !status.CanAutoReconnect {
@@ -1377,10 +1367,9 @@ func TestCanAutoReconnect_PasswordSecretStore(t *testing.T) {
 	defer cleanupTestConn(conn)
 
 	secretName := "my-secret"
-	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+	conn.testGetConfigHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		return wconfig.ConnKeywords{SshPasswordSecretName: &secretName}, true
 	}
-	defer func() { getConnectionConfigTestHook = nil }()
 
 	status := conn.DeriveConnStatus()
 	if !status.CanAutoReconnect {
@@ -1393,12 +1382,11 @@ func TestCanAutoReconnect_KeyOnlyAuth(t *testing.T) {
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
-	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+	conn.testGetConfigHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		return wconfig.ConnKeywords{
 			SshPreferredAuthentications: []string{"publickey"},
 		}, true
 	}
-	defer func() { getConnectionConfigTestHook = nil }()
 
 	status := conn.DeriveConnStatus()
 	if !status.CanAutoReconnect {
@@ -1412,13 +1400,12 @@ func TestCanAutoReconnect_PasswordAuthDisabled(t *testing.T) {
 	defer cleanupTestConn(conn)
 
 	falseVal := false
-	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+	conn.testGetConfigHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		return wconfig.ConnKeywords{
 			SshPasswordAuthentication:        &falseVal,
 			SshKbdInteractiveAuthentication: &falseVal,
 		}, true
 	}
-	defer func() { getConnectionConfigTestHook = nil }()
 
 	status := conn.DeriveConnStatus()
 	if !status.CanAutoReconnect {
@@ -1447,11 +1434,10 @@ func TestCanAutoReconnect_NilAuthSettings_InteractiveNeeded(t *testing.T) {
 	// Connection is known but auth settings are nil (not explicitly set).
 	// SSH defaults: PasswordAuthentication=yes, KbdInteractiveAuthentication=yes.
 	// So interactive auth is needed → canAutoReconnect=false.
-	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+	conn.testGetConfigHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		// Return empty config — both SshPasswordAuthentication and SshKbdInteractiveAuthentication are nil
 		return wconfig.ConnKeywords{}, true
 	}
-	defer func() { getConnectionConfigTestHook = nil }()
 
 	status := conn.DeriveConnStatus()
 	if status.CanAutoReconnect {
@@ -1565,10 +1551,9 @@ func TestCanAutoReconnect_HasConnected_NoPasswordSecret(t *testing.T) {
 	// Config: empty (all auth settings nil → SSH defaults: password/kbd enabled)
 	// but no password secret. Previously this returned false (interactive);
 	// with the HasConnected heuristic, it returns true.
-	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+	conn.testGetConfigHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		return wconfig.ConnKeywords{}, true
 	}
-	defer func() { getConnectionConfigTestHook = nil }()
 
 	status := conn.DeriveConnStatus()
 	if !status.CanAutoReconnect {
@@ -1590,10 +1575,9 @@ func TestCanAutoReconnect_HasConnected_WithPasswordSecret(t *testing.T) {
 	})
 
 	secretName := "my-secret"
-	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+	conn.testGetConfigHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		return wconfig.ConnKeywords{SshPasswordSecretName: &secretName}, true
 	}
-	defer func() { getConnectionConfigTestHook = nil }()
 
 	status := conn.DeriveConnStatus()
 	if !status.CanAutoReconnect {
@@ -1612,10 +1596,9 @@ func TestCanAutoReconnect_NeverConnected_StillInteractive(t *testing.T) {
 	defer cleanupTestConn(conn)
 
 	// LastConnectTime is 0 (never connected) — makeTestConn does not set it
-	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+	conn.testGetConfigHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		return wconfig.ConnKeywords{}, true
 	}
-	defer func() { getConnectionConfigTestHook = nil }()
 
 	status := conn.DeriveConnStatus()
 	if status.CanAutoReconnect {
