@@ -66,7 +66,7 @@
 - [ ] **Visibility-driven reconnect & auto-reconnect fixes** (spec: [[.pi/specs/visibility-driven-reconnect.md]], design: [[.pi/specs/reconnection-design.md]])
   - [x] Change 1: Fix `needsInteractiveAuth` / `canAutoReconnectLocked` — key-based connections wrongly classified as interactive (add `HasConnected && no password secret` short-circuit)
   - [x] Change 2: Don't clear cached password on stall auto-disconnect (`CloseInvoluntary` for involuntary disconnects)
-  - [ ] Change 3: Visibility-driven reconnect — fire `ConnConnectCommand` on tab switch / app focus for disconnected blocks
+  - [x] Change 3: Visibility-driven reconnect — fire `ConnEnsureCommand` on tab switch / app focus for disconnected blocks (`frontend/app/tab/visibilityreconnect.tsx`, mounted in `workspace.tsx`)
   - [ ] Change 4: Serialize password prompts per-window (backend semaphore in `userinput.go`)
   - [ ] Change 5: Tune scheduler bounds (15min cap for silent-reconnectable) + early-stop on `auth-failed`
   - [x] Change 6: Verify `HandleSystemResume` benefits from Changes 1+2 — stall path now uses `CloseInvoluntary` (Change 2); `needsInteractiveAuth` returns false for key-based (Change 1). Code-complete, pending manual validation.
