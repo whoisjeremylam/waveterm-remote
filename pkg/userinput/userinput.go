@@ -62,6 +62,38 @@ type UserInputHandler struct {
 var OrphanedPasswords = make(map[string]string)
 var orphanedPasswordsLock sync.Mutex
 
+// windowPromptLocks provides per-window serialization for SSH auth prompts
+// (password, keyboard-interactive, passphrase). When visibility-driven
+// reconnect fires EnsureConnection for multiple disconnected password
+// connections on the same tab, each Connect() may reach its password
+// callback concurrently. Without serialization, the frontend would show
+// all prompts simultaneously. By acquiring a per-window lock before
+// sending the prompt to the frontend, only one prompt is shown at a time;
+// the next connection's prompt appears after the first resolves (connect,
+// cancel, or timeout).
+var windowPromptLocks = make(map[string]*sync.Mutex)
+var windowPromptLocksMu sync.Mutex
+
+// acquireWindowPromptLock returns (and lazily creates) the per-window mutex
+// for serializing SSH auth prompts. The caller must unlock it.
+func acquireWindowPromptLock(windowId string) *sync.Mutex {
+	windowPromptLocksMu.Lock()
+	defer windowPromptLocksMu.Unlock()
+	if lock, ok := windowPromptLocks[windowId]; ok {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	windowPromptLocks[windowId] = lock
+	return lock
+}
+
+// isSSHAuthPrompt returns true if the prompt type is an SSH authentication
+// prompt that should be serialized per-window (password, keyboard-interactive,
+// or passphrase). Confirm dialogs and other prompt types are not serialized.
+func isSSHAuthPrompt(promptType string) bool {
+	return promptType == "password" || promptType == "keyboard-interactive" || promptType == "passphrase"
+}
+
 type FrontendProvider struct{}
 
 func (ui *UserInputHandler) registerChannel() (string, chan *UserInputResponse) {
@@ -172,6 +204,31 @@ func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputR
 			}
 			scopes = allWindows
 		}
+	}
+
+	// Serialize SSH auth prompts (password, keyboard-interactive, passphrase)
+	// per-window: only one such prompt is shown at a time per window. This
+	// prevents multiple disconnected connections on the same tab from prompting
+	// simultaneously during visibility-driven reconnect. The user sees one
+	// prompt at a time; the next connection's prompt appears after this one
+	// resolves (connect, cancel, or timeout).
+	//
+	// Best-effort: if we couldn't determine a single window (fallback to
+	// all-windows), skip serialization — prompts may appear simultaneously,
+	// which is the pre-existing behavior. Non-auth prompts (confirm dialogs)
+	// are never serialized.
+	//
+	// Note: the SSH handshake timeout (60s, DefaultConnectionTimeout) covers
+	// the password callback. If a previous prompt holds the lock for a long
+	// time, a later connection's handshake may time out while waiting. That
+	// connection will retry on the next visibility-driven reconnect event —
+	// acceptable degradation in exchange for one-prompt-at-a-time UX.
+	var windowPromptLock *sync.Mutex
+	if isSSHAuthPrompt(request.PromptType) && len(scopes) >= 1 {
+		windowPromptLock = acquireWindowPromptLock(scopes[0])
+		windowPromptLock.Lock()
+		defer windowPromptLock.Unlock()
+		log.Printf("[PW-PROMPT] acquired window prompt lock for window=%q connName=%q requestId=%q", scopes[0], request.ConnName, request.RequestId)
 	}
 
 	MainUserInputHandler.sendRequestToFrontend(request, scopes)
