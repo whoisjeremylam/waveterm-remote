@@ -63,6 +63,15 @@
     - No native modules, zero build risk, cross-platform automatically
   - Edge cases (P2): respect manual disconnect, reconnect UI indicator
 
+- [ ] **Visibility-driven reconnect & auto-reconnect fixes** (spec: [[.pi/specs/visibility-driven-reconnect.md]], design: [[.pi/specs/reconnection-design.md]])
+  - [x] Change 1: Fix `needsInteractiveAuth` / `canAutoReconnectLocked` — key-based connections wrongly classified as interactive (add `HasConnected && no password secret` short-circuit)
+  - [x] Change 2: Don't clear cached password on stall auto-disconnect (`CloseInvoluntary` for involuntary disconnects)
+  - [ ] Change 3: Visibility-driven reconnect — fire `ConnConnectCommand` on tab switch / app focus for disconnected blocks
+  - [ ] Change 4: Serialize password prompts per-window (backend semaphore in `userinput.go`)
+  - [ ] Change 5: Tune scheduler bounds (15min cap for silent-reconnectable) + early-stop on `auth-failed`
+  - [x] Change 6: Verify `HandleSystemResume` benefits from Changes 1+2 — stall path now uses `CloseInvoluntary` (Change 2); `needsInteractiveAuth` returns false for key-based (Change 1). Code-complete, pending manual validation.
+  - Root cause: `needsInteractiveAuth` infers interactive auth from SSH default flags (password/kbd-interactive enabled when nil), not from whether the connection has authenticated via key before. Key-based connections never auto-reconnect on wake; `disconnectOnStall` → `Close()` clears the cached password ~10s after wake.
+
 - [x] **Tmux mouse integration lost on durable session reconnect** — FIXED 2026-05-19
   - Bug: tmux mouse mode (click to switch windows, wheel scrollback, click-drag select) works in new sessions but NOT in reconnected durable sessions after full WaveTerm restart
   - Repro: close WaveTerm completely → restart → durable sessions reconnect → tmux mouse integration disabled

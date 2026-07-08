@@ -187,3 +187,27 @@
 3. Remote file paste (image paste + drag-drop for SSH sessions) — primary use case: pi / Claude Code TUI
 4. MOSH/tsshd support (backlog, if roaming becomes a real pain point)
 
+
+## 2026-07-07: Reconnection System Design — Visibility-Driven Reconnect & Auto-Reconnect Heuristic Fix
+
+**Decision:** Adopt a two-mechanism reconnection model and fix the `needsInteractiveAuth` heuristic.
+
+**Context:** Key-based SSH connections never auto-reconnect on sleep/wake because `needsInteractiveAuth` / `canAutoReconnectLocked` infer "needs interactive auth" from SSH's default auth-method flags (password/kbd-interactive enabled when nil), not from whether the connection has authenticated via key before. Additionally, there is no reconnect trigger on tab switch / app focus — the user must click "Reconnect" manually. The stall auto-disconnect path also clears the cached password, defeating silent reconnect for password connections after wake.
+
+**Two mechanisms:**
+- **Mechanism A (background scheduler):** bounded retry loop for connections that can reconnect silently. Existing, but now correctly classifies key-based connections as silent.
+- **Mechanism B (visibility-driven):** new — fire `ConnConnectCommand` on tab switch / app focus for disconnected blocks. The user's attention is the natural rate limiter.
+
+**Heuristic fix:** A connection can reconnect silently if it has connected successfully before (`LastConnectTime > 0`) and no password secret is configured — in addition to the existing cache/secret/batch checks. This covers key-based connections. SSH tries keys first on reconnect; a key failure falls back to the password callback (rare, correct to surface).
+
+**Cache preservation:** `Close()` is split into `Close()` (explicit disconnect — clears cache) and `CloseInvoluntary()` (stall/TCP drop — preserves cache). Only `auth-failed` and explicit disconnect clear the cached password.
+
+**Password prompt serialization:** Multiple connections needing passwords on one tab prompt sequentially (backend per-window semaphore in `userinput.go`), not simultaneously.
+
+**Consequences:**
+- Key-based connections auto-reconnect on wake and via background scheduler
+- Tab switch / app focus heals disconnected connections without a manual click
+- Cached password survives involuntary disconnects (sleep/wake, stall)
+- Password prompts remain one-per-connection, serialized per tab
+
+**Docs:** [[.pi/specs/reconnection-design.md]] (design), [[.pi/specs/visibility-driven-reconnect.md]] (spec)

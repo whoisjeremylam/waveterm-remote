@@ -17,6 +17,8 @@ Most developer terminals assume code is installed, built, and tested locally. Th
 - [[specs/remove-telemetry.md]] — Remove all telemetry, analytics, and tracking
 - [[specs/remove-waveai.md]] — Remove/disable all Wave AI features
 - [[specs/portforwarding.md]] — SSH port forwarding (`LocalForward` / `RemoteForward`)
+- [[specs/reconnection-design.md]] — Reconnection system design (scenarios, interactive login, UX)
+- [[specs/visibility-driven-reconnect.md]] — Visibility-driven reconnect & auto-reconnect heuristic fix (spec)
 
 ## Context & Decisions
 

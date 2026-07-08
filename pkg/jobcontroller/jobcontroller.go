@@ -586,8 +586,10 @@ func HandleSystemResume(ctx context.Context) {
 			if err == nil {
 				conn := conncontroller.MaybeGetConn(connOpts)
 				if conn != nil {
-					// Close synchronously — ensures status is Disconnected before we attempt reconnect
-					conn.Close()
+					// Close synchronously — ensures status is Disconnected before we attempt reconnect.
+					// Involuntary disconnect — preserve the cached password so the
+					// immediate AttemptReconnect below can reuse it silently.
+					conn.CloseInvoluntary()
 				}
 			}
 		}
@@ -651,11 +653,41 @@ func needsInteractiveAuth(connName string) bool {
 		}
 	}
 
+	// A connection that has connected successfully before AND has no password
+	// secret configured has proven it can authenticate via key (or otherwise
+	// non-interactively). SSH tries keys first on reconnect; if the key fails,
+	// it falls back to the password callback, which may prompt — but that is
+	// rare and correct to surface. This prevents key-based connections from
+	// being wrongly classified as interactive (SSH defaults password /
+	// keyboard-interactive to enabled when nil) and thus never auto-reconnecting.
+	if hasConnectedSuccessfully(connName) && connConfig.SshPasswordSecretName == nil {
+		return false
+	}
+
 	// Check if password or keyboard-interactive auth is enabled (both default true).
 	// When nil (not explicitly set in config), treat as enabled per SSH defaults.
 	passwordAuth := connConfig.SshPasswordAuthentication == nil || utilfn.SafeDeref(connConfig.SshPasswordAuthentication)
 	kbdAuth := connConfig.SshKbdInteractiveAuthentication == nil || utilfn.SafeDeref(connConfig.SshKbdInteractiveAuthentication)
 	return passwordAuth || kbdAuth
+}
+
+// hasConnectedSuccessfully returns true if the connection has connected at
+// least once before (LastConnectTime > 0). Used by needsInteractiveAuth to
+// infer key-based / non-interactive auth for connections that have proven
+// they don't need a password.
+func hasConnectedSuccessfully(connName string) bool {
+	if conncontroller.IsLocalConnName(connName) {
+		return false
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return false
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn == nil {
+		return false
+	}
+	return conn.HasConnected()
 }
 
 func onConnectionDown(connName string) {

@@ -234,6 +234,24 @@ func (conn *SSHConn) FireConnChangeEvent() {
 }
 
 func (conn *SSHConn) Close() error {
+	return conn.closeInternal(true /* clearPassword */)
+}
+
+// CloseInvoluntary disconnects the connection WITHOUT clearing the cached
+// password. It is used by non-user-initiated disconnect paths (stall
+// auto-disconnect, system-resume stall handling) so that a subsequent
+// reconnect can reuse the cached password silently. Only explicit user
+// disconnect (Close) and auth-failed (clearCachedPassword called directly
+// from Connect) should clear the cached password.
+func (conn *SSHConn) CloseInvoluntary() error {
+	return conn.closeInternal(false /* clearPassword */)
+}
+
+// closeInternal is the shared disconnect path. When clearPassword is true,
+// the cached password is wiped (explicit user disconnect). When false, it is
+// preserved (involuntary disconnect — stall, sleep/wake) so reconnect can
+// reuse it.
+func (conn *SSHConn) closeInternal(clearPassword bool) error {
 	conn.lifecycleLock.Lock()
 	defer conn.lifecycleLock.Unlock()
 
@@ -244,8 +262,10 @@ func (conn *SSHConn) Close() error {
 		}
 		conn.ConnHealthStatus = ConnHealthStatus_Good
 	})
-	// Clear cached password on explicit disconnect
-	conn.clearCachedPassword()
+	if clearPassword {
+		// Clear cached password on explicit disconnect
+		conn.clearCachedPassword()
+	}
 	// Fire event BEFORE closeInternal_withlifecyclelock so the UI updates
 	// even if client.Close() blocks on a dead network connection.
 	conn.FireConnChangeEvent()
@@ -353,6 +373,20 @@ func (conn *SSHConn) GetLastErrorCode() string {
 	conn.lock.Lock()
 	defer conn.lock.Unlock()
 	return conn.LastErrorCode
+}
+
+// HasConnected returns true if the connection has connected successfully at
+// least once (LastConnectTime > 0). Used by needsInteractiveAuth /
+// canAutoReconnectLocked to infer key-based / non-interactive auth: a
+// connection that has connected before without a password secret configured
+// has proven it can authenticate via key, so it can be auto-reconnected
+// silently. SSH will try keys first on reconnect; a key failure falls back
+// to the password callback, which may prompt — but that is rare and correct
+// to surface.
+func (conn *SSHConn) HasConnected() bool {
+	conn.lock.Lock()
+	defer conn.lock.Unlock()
+	return conn.LastConnectTime > 0
 }
 
 func (conn *SSHConn) OpenDomainSocketListener(ctx context.Context) error {
@@ -1086,6 +1120,18 @@ func (conn *SSHConn) canAutoReconnectLocked() bool {
 		if !hasInteractive {
 			return true // only key-based auth configured
 		}
+	}
+	// A connection that has connected successfully before AND has no password
+	// secret configured has proven it can authenticate via key (or otherwise
+	// non-interactively). SSH tries keys first on reconnect; a key failure
+	// falls back to the password callback, which may prompt — but that is rare
+	// and correct to surface. This prevents key-based connections from being
+	// wrongly classified as interactive (SSH defaults password /
+	// keyboard-interactive to enabled when nil) and thus never auto-reconnecting.
+	// NOTE: canAutoReconnectLocked holds conn.lock, so read LastConnectTime
+	// directly (do not call HasConnected(), which would deadlock).
+	if conn.LastConnectTime > 0 && (connConfig.SshPasswordSecretName == nil || *connConfig.SshPasswordSecretName == "") {
+		return true
 	}
 	// Check if password or keyboard-interactive auth is enabled (both default true).
 	// When nil (not explicitly set in config), treat as enabled per SSH defaults.
