@@ -68,7 +68,7 @@
   - [x] Change 2: Don't clear cached password on stall auto-disconnect (`CloseInvoluntary` for involuntary disconnects)
   - [x] Change 3: Visibility-driven reconnect — fire `ConnEnsureCommand` on tab switch / app focus for disconnected blocks (`frontend/app/tab/visibilityreconnect.tsx`, mounted in `workspace.tsx`)
   - [x] Change 4: Serialize password prompts per-window (backend semaphore in `userinput.go`)
-  - [ ] Change 5: Tune scheduler bounds (15min cap for silent-reconnectable) + early-stop on `auth-failed`
+  - [x] Change 5: Tune scheduler bounds (15min cap for silent-reconnectable via `ConnReconnectMaxDurationSilent`) + early-stop on `auth-failed` and `connection-refused`
   - [x] Change 6: Verify `HandleSystemResume` benefits from Changes 1+2 — stall path now uses `CloseInvoluntary` (Change 2); `needsInteractiveAuth` returns false for key-based (Change 1). Code-complete, pending manual validation.
   - Root cause: `needsInteractiveAuth` infers interactive auth from SSH default flags (password/kbd-interactive enabled when nil), not from whether the connection has authenticated via key before. Key-based connections never auto-reconnect on wake; `disconnectOnStall` → `Close()` clears the cached password ~10s after wake.
 

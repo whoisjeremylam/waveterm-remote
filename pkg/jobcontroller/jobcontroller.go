@@ -120,7 +120,8 @@ var (
 )
 
 const ConnReconnectInterval              = 5 * time.Second
-const ConnReconnectMaxDuration           = 5 * time.Minute
+const ConnReconnectMaxDuration           = 5 * time.Minute  // cap for interactive-attempt connections (defensive; interactive conns rarely reach the scheduler post-fix-#1)
+const ConnReconnectMaxDurationSilent     = 15 * time.Minute // cap for silently-reconnectable connections (key-based / cached password) — silent retries are cheap
 const ConnReconnectAggressiveInterval    = 3 * time.Second
 const ConnReconnectAggressiveDuration    = 2 * time.Minute
 
@@ -790,12 +791,21 @@ func clearRetryState(connName string) {
 func scheduleConnectionReconnect(connName string) {
 	log.Printf("[conn:%s] reconnect scheduler started", connName)
 	startTime := time.Now()
+	// Silently-reconnectable connections (key-based / cached password) get a
+	// longer cap — silent retries are cheap and the user isn't bothered.
+	// Interactive-attempt connections get the shorter default cap (defensive;
+	// interactive conns rarely reach the scheduler post-fix-#1 since
+	// needsInteractiveAuth gates onConnectionDown).
+	maxDuration := ConnReconnectMaxDuration
+	if !needsInteractiveAuth(connName) {
+		maxDuration = ConnReconnectMaxDurationSilent
+	}
 	aggressiveMode := false
 	var aggressiveUntil time.Time
 	attempt := 0
 
 	for {
-		if time.Since(startTime) > ConnReconnectMaxDuration {
+		if time.Since(startTime) > maxDuration {
 			log.Printf("[conn:%s] reconnect scheduler reached max duration, stopping", connName)
 			clearRetryState(connName)
 			return
@@ -837,6 +847,27 @@ func scheduleConnectionReconnect(connName string) {
 			if err != nil {
 				isNetErr := isNetworkUnreachableError(err)
 				log.Printf("[conn:%s] scheduler attempt failed in %v (net-unreachable=%v): %v", connName, attemptDuration, isNetErr, err)
+
+				// Early termination: auth-failed means the server is up but
+				// rejecting credentials. Retrying won't help — the user must
+				// fix credentials. The requestPasswordRePrompt goroutine
+				// handles re-prompting; the scheduler should exit.
+				errorCode, errorSubCode := remote.ClassifyConnError(err)
+				if errorCode == remote.ConnErrCode_AuthFailed {
+					log.Printf("[conn:%s] auth-failed during reconnect, stopping scheduler (server rejecting credentials)", connName)
+					clearRetryState(connName)
+					return
+				}
+				// Early termination: connection-refused means the server is
+				// reachable but the SSH service is not accepting connections
+				// (port closed, daemon stopped, firewall rejecting). Retrying
+				// every 5s is wasteful — visibility-driven reconnect will retry
+				// on the next tab switch / app focus when the user returns.
+				if errorCode == remote.ConnErrCode_Dial && errorSubCode == remote.DialSubCode_Refused {
+					log.Printf("[conn:%s] connection refused during reconnect, stopping scheduler (server not accepting connections)", connName)
+					clearRetryState(connName)
+					return
+				}
 
 				// Update retry state with failure info and next attempt time
 				interval := ConnReconnectInterval
