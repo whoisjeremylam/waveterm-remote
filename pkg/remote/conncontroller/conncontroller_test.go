@@ -1484,3 +1484,141 @@ func TestDeriveConnStatus_IncludesCanAutoReconnect(t *testing.T) {
 		t.Fatal("expected CanAutoReconnect=false after clearing cache")
 	}
 }
+
+// --- Change 2 tests: CloseInvoluntary preserves cached password ---
+
+// TestCloseInvoluntary_PreservesCachedPassword verifies that CloseInvoluntary
+// (used by stall auto-disconnect and HandleSystemResume) does NOT clear the
+// cached password. This is the core fix for sleep/wake losing the cached
+// password: an involuntary disconnect must preserve it so reconnect can reuse
+// it silently.
+func TestCloseInvoluntary_PreservesCachedPassword(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("secret123")
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected password to be cached before CloseInvoluntary")
+	}
+
+	conn.CloseInvoluntary()
+	time.Sleep(100 * time.Millisecond)
+
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected cached password to be PRESERVED after CloseInvoluntary")
+	} else if *pw != "secret123" {
+		t.Fatalf("expected cached password 'secret123' to be preserved, got %q", *pw)
+	}
+
+	if status := conn.GetStatus(); status != Status_Disconnected {
+		t.Fatalf("expected Status=Disconnected after CloseInvoluntary, got %s", status)
+	}
+}
+
+// TestDisconnectOnStall_PreservesCachedPassword verifies that the stall
+// auto-disconnect path (disconnectOnStall → CloseInvoluntary) preserves the
+// cached password. This is the regression test for the sleep/wake bug: the
+// stall monitor fires after a network drop, and previously Close() wiped the
+// cached password, turning a reconnectable password connection into one that
+// requires a prompt.
+func TestDisconnectOnStall_PreservesCachedPassword(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+	cm := makeTestMonitor(conn)
+
+	conn.cachePassword("stall-secret")
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected password to be cached before stall disconnect")
+	}
+
+	cm.disconnectOnStall()
+	time.Sleep(100 * time.Millisecond)
+
+	if status := conn.GetStatus(); status != Status_Disconnected {
+		t.Fatalf("expected Status=Disconnected after stall disconnect, got %s", status)
+	}
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected cached password to be PRESERVED after stall disconnect (CloseInvoluntary)")
+	} else if *pw != "stall-secret" {
+		t.Fatalf("expected cached password 'stall-secret' to be preserved, got %q", *pw)
+	}
+}
+
+// --- Change 1 tests: HasConnected heuristic in canAutoReconnectLocked ---
+
+// TestCanAutoReconnect_HasConnected_NoPasswordSecret verifies the key fix: a
+// connection that has connected successfully before (LastConnectTime > 0) with
+// no password secret configured is auto-reconnectable, even though SSH defaults
+// password/kbd-interactive auth to enabled. This is the key-based connection
+// case — SSH will try keys first on reconnect; a key failure falls back to the
+// password callback, which is rare and correct to surface.
+func TestCanAutoReconnect_HasConnected_NoPasswordSecret(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	// Simulate a connection that has connected successfully before
+	conn.WithLock(func() {
+		conn.LastConnectTime = time.Now().UnixMilli()
+	})
+
+	// Config: empty (all auth settings nil → SSH defaults: password/kbd enabled)
+	// but no password secret. Previously this returned false (interactive);
+	// with the HasConnected heuristic, it returns true.
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+
+	status := conn.DeriveConnStatus()
+	if !status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=true for key-based connection that has connected before (HasConnected && no password secret)")
+	}
+}
+
+// TestCanAutoReconnect_HasConnected_WithPasswordSecret confirms that a
+// connection with a password secret is auto-reconnectable via the existing
+// secret-store check, regardless of HasConnected. This is a regression guard
+// to ensure the new HasConnected branch doesn't break the secret-store path.
+func TestCanAutoReconnect_HasConnected_WithPasswordSecret(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	conn.WithLock(func() {
+		conn.LastConnectTime = time.Now().UnixMilli()
+	})
+
+	secretName := "my-secret"
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{SshPasswordSecretName: &secretName}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+
+	status := conn.DeriveConnStatus()
+	if !status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=true when password secret is configured")
+	}
+}
+
+// TestCanAutoReconnect_NeverConnected_StillInteractive verifies the conservative
+// side of the heuristic: a connection that has NEVER connected (LastConnectTime
+// = 0) with default auth settings (password/kbd enabled, no secret) is still
+// classified as interactive. This prevents auto-reconnect from retrying a
+// first-connect that would prompt.
+func TestCanAutoReconnect_NeverConnected_StillInteractive(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	// LastConnectTime is 0 (never connected) — makeTestConn does not set it
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+
+	status := conn.DeriveConnStatus()
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false for never-connected connection with default auth (conservative)")
+	}
+}

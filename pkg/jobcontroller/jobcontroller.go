@@ -114,6 +114,7 @@ var (
 	reconcileOnUpTestHook            func(connName string)
 	reconcileOnDownTestHook          func(connName string)
 	hasRunningDurableJobsTestHook    func(ctx context.Context, connName string) bool
+	needsInteractiveAuthConfigTestHook func(connName string) (*wconfig.ConnKeywords, bool)
 
 	// active connection-reconnect schedulers (deduplication for onConnectionDown)
 	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
@@ -622,9 +623,17 @@ func needsInteractiveAuth(connName string) bool {
 		return false
 	}
 
-	config := wconfig.GetWatcher().GetFullConfig()
-	connConfig, ok := config.Connections[connName]
-	if !ok {
+	var connConfig *wconfig.ConnKeywords
+	var ok bool
+	if needsInteractiveAuthConfigTestHook != nil {
+		connConfig, ok = needsInteractiveAuthConfigTestHook(connName)
+	} else {
+		config := wconfig.GetWatcher().GetFullConfig()
+		cfg, configOk := config.Connections[connName]
+		connConfig = &cfg
+		ok = configOk
+	}
+	if !ok || connConfig == nil {
 		return true // safe default: assume interactive auth needed
 	}
 

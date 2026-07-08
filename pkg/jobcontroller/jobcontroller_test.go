@@ -16,6 +16,7 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/util/ds"
 	"github.com/wavetermdev/waveterm/pkg/wps"
 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
+	"github.com/wavetermdev/waveterm/pkg/wconfig"
 )
 func TestShouldAttemptAutoReconnect(t *testing.T) {
 	// Reset global state
@@ -568,5 +569,78 @@ func TestNeedsInteractiveAuth_Defaults(t *testing.T) {
 	result := needsInteractiveAuth("user@default-host:22")
 	if !result {
 		t.Fatalf("expected true with default auth settings")
+	}
+}
+
+// --- Change 1 tests: HasConnected heuristic in needsInteractiveAuth ---
+
+// TestNeedsInteractiveAuth_HasConnected_NoSecret verifies the key fix: a
+// connection that has connected successfully before (LastConnectTime > 0) with
+// no password secret configured is classified as non-interactive, even though
+// SSH defaults password/kbd-interactive auth to enabled. This is the key-based
+// connection case — the scheduler and HandleSystemResume should auto-reconnect
+// it without prompting.
+func TestNeedsInteractiveAuth_HasConnected_NoSecret(t *testing.T) {
+	// Register a connection in the conncontroller map with LastConnectTime > 0
+	connOpts, err := remote.ParseOpts("user@hasconnected-host:22")
+	if err != nil {
+		t.Fatalf("ParseOpts error: %v", err)
+	}
+	conn := conncontroller.GetConn(connOpts)
+	defer func() {
+		// Clean up: disconnect and remove from map
+		conn.CloseInvoluntary()
+		conncontroller.DisconnectClient(connOpts)
+	}()
+	conn.WithLock(func() {
+		conn.LastConnectTime = time.Now().UnixMilli()
+	})
+
+	// Config: empty (all auth settings nil → SSH defaults: password/kbd enabled)
+	// but no password secret. Previously needsInteractiveAuth returned true
+	// (interactive); with the HasConnected heuristic, it returns false.
+	needsInteractiveAuthConfigTestHook = func(connName string) (*wconfig.ConnKeywords, bool) {
+		if connName != "user@hasconnected-host:22" {
+			return nil, false
+		}
+		cfg := wconfig.ConnKeywords{}
+		return &cfg, true
+	}
+	defer func() { needsInteractiveAuthConfigTestHook = nil }()
+
+	result := needsInteractiveAuth("user@hasconnected-host:22")
+	if result {
+		t.Fatal("expected needsInteractiveAuth=false for key-based connection that has connected before (HasConnected && no password secret)")
+	}
+}
+
+// TestNeedsInteractiveAuth_NeverConnected_StillInteractive verifies the
+// conservative side: a connection that has NEVER connected (LastConnectTime =
+// 0) with default auth settings is still classified as interactive. This
+// prevents the scheduler from auto-retrying a first-connect that would prompt.
+func TestNeedsInteractiveAuth_NeverConnected_StillInteractive(t *testing.T) {
+	connOpts, err := remote.ParseOpts("user@neverconnected-host:22")
+	if err != nil {
+		t.Fatalf("ParseOpts error: %v", err)
+	}
+	conn := conncontroller.GetConn(connOpts)
+	defer func() {
+		conn.CloseInvoluntary()
+		conncontroller.DisconnectClient(connOpts)
+	}()
+
+	// LastConnectTime is 0 (never connected) — GetConn does not set it
+	needsInteractiveAuthConfigTestHook = func(connName string) (*wconfig.ConnKeywords, bool) {
+		if connName != "user@neverconnected-host:22" {
+			return nil, false
+		}
+		cfg := wconfig.ConnKeywords{}
+		return &cfg, true
+	}
+	defer func() { needsInteractiveAuthConfigTestHook = nil }()
+
+	result := needsInteractiveAuth("user@neverconnected-host:22")
+	if !result {
+		t.Fatal("expected needsInteractiveAuth=true for never-connected connection with default auth (conservative)")
 	}
 }
