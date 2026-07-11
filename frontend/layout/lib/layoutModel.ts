@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { FocusManager } from "@/app/store/focusManager";
-import { getSettingsKeyAtom } from "@/app/store/global";
+import { getSettingsKeyAtom, isHiddenBlock } from "@/app/store/global";
 import { BlockService } from "@/app/store/services";
 import * as WOS from "@/app/store/wos";
 import { atomWithThrottle, boundNumber, fireAndForget } from "@/util/util";
@@ -424,6 +424,11 @@ export class LayoutModel {
 
         for (const blockId of tab.blockids || []) {
             if (!layoutBlockIds.has(blockId)) {
+                // Skip blocks that are hidden (toggled closed but kept alive).
+                // Their ViewModel is stashed in the hidden block registry.
+                if (isHiddenBlock(blockId)) {
+                    continue;
+                }
                 console.log("Cleaning up orphaned block:", blockId);
                 if (this.onNodeDelete) {
                     await this.onNodeDelete({ blockId });
@@ -1289,6 +1294,47 @@ export class LayoutModel {
         };
         this.treeReducer(deleteAction);
         await this.onNodeDelete?.(nodeToDelete.data);
+    }
+
+    /**
+     * Hide a node from the layout without deleting the underlying block.
+     * Removes the node from the layout tree but does NOT call onNodeDelete (which
+     * would call DeleteBlock). The block object and its ViewModel survive in the
+     * hidden block registry, allowing the block to be re-inserted later via
+     * insertExistingNode. Used by widget keep-alive toggle.
+     */
+    hideNode(nodeId: string) {
+        const nodeToDelete = findNode(this.treeState.rootNode, nodeId);
+        if (!nodeToDelete) {
+            console.error("unable to hide node, cannot find it in tree", nodeId);
+            return;
+        }
+        if (nodeId === this.magnifiedNodeId) {
+            this.magnifyNodeToggle(nodeId);
+        }
+        const deleteAction: LayoutTreeDeleteNodeAction = {
+            type: LayoutTreeActionType.DeleteNode,
+            nodeId: nodeId,
+        };
+        // Remove from tree WITHOUT calling onNodeDelete — the key difference from closeNode.
+        // treeReducer handles updateTree + persistToBackend.
+        this.treeReducer(deleteAction);
+    }
+
+    /**
+     * Re-insert an existing block (by blockId) into the layout as a new leaf.
+     * Does NOT create a new block — the block object must already exist (e.g., it
+     * was previously hidden via hideNode and stashed in the hidden block registry).
+     * Used by widget keep-alive toggle to restore a hidden widget.
+     */
+    insertExistingNode(blockId: string, opts?: { focused?: boolean }) {
+        const insertNodeAction: LayoutTreeInsertNodeAction = {
+            type: LayoutTreeActionType.InsertNode,
+            node: newLayoutNode(undefined, undefined, undefined, { blockId }),
+            magnified: false,
+            focused: opts?.focused ?? true,
+        };
+        this.treeReducer(insertNodeAction);
     }
 
     /**

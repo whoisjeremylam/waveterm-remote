@@ -353,6 +353,17 @@ declare global {
 
         // Cleans up resources when the block is disposed.
         dispose?: () => void;
+
+        // The block ID associated with this view model.
+        blockId?: string;
+
+        // Called when the block is hidden (toggled closed but kept alive).
+        // The ViewModel should reduce polling frequency and release transient resources.
+        onHide?: () => void;
+
+        // Called when a hidden block is shown again (toggled open).
+        // The ViewModel should trigger an immediate refresh and restore active polling.
+        onShow?: () => void;
     }
 
     // jotai doesn't export this type :/

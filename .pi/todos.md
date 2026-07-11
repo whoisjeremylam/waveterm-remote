@@ -333,17 +333,20 @@ Full VS Code SCM diff view feature analysis done on `~/project/vscode`. Source f
 
 ### Widget Keep-Alive
 
-- [ ] Implement widget hide/show (spec: [[specs/widget-keepalive.md]])
-  - [ ] Add `onHide()`/`onShow()` to ViewModel interface (`custom.d.ts`)
-  - [ ] Add `hiddenBlockModels` registry to `global.ts`
-  - [ ] Add `hideNode()` / `insertExistingNode()` to `layoutModel.ts`
-  - [ ] Modify `toggleWidgetVisibility` in `widgets.tsx` to hide instead of close
-  - [ ] Modify `handleWidgetSelect` to reuse hidden blocks
-  - [ ] Modify `BlockInner` cleanup in `block.tsx` to check deleted vs hidden
-  - [ ] Implement `onHide()`/`onShow()` in `SourceControlViewModel` (poll backoff 3s→30s)
-  - [ ] Implement `onHide()`/`onShow()` in `PreviewModel` (refresh on show)
+- [x] Implement widget hide/show (spec: [[specs/widget-keepalive.md]]) — implemented 2026-07-08
+  - [x] Add `onHide()`/`onShow()` to ViewModel interface (`custom.d.ts`)
+  - [x] Add `hiddenBlockModels` registry + `hiddenBlockIds` set to `global.ts`
+  - [x] Add `hideNode()` / `insertExistingNode()` to `layoutModel.ts`
+  - [x] Modify `cleanupOrphanedBlocks` in `layoutModel.ts` to skip hidden blocks
+  - [x] Modify `toggleWidgetVisibility` in `widgets.tsx` to hide instead of close
+  - [x] Modify `handleWidgetSelect` to reuse hidden blocks
+  - [x] Modify `BlockInner`/`SubBlockInner` cleanup in `block.tsx` to skip dispose when hidden
+  - [x] Implement `onHide()`/`onShow()` in `SourceControlViewModel` (poll backoff 3s→30s)
+  - [x] Implement `onHide()`/`onShow()` in `PreviewModel` (refresh on show)
+  - [x] Implement `onHide()`/`onShow()` in `ProcessViewerViewModel` (stop/restart polling)
   - [ ] Test: toggle preserves view mode, selected file, diff cache, commit message
   - [ ] Test: in-flight stage/commit survives toggle
   - [ ] Test: poll backoff while hidden (30s, not 3s)
   - [ ] Test: refresh on show catches up on changes
   - [ ] Test: true block deletion (X button) still disposes ViewModel
+  - [ ] Test: multiple connections (hide SCM for conn A, open for conn B → new block, not reuse)

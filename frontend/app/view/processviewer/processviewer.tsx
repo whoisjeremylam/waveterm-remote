@@ -450,6 +450,24 @@ export class ProcessViewerViewModel implements ViewModel {
         ];
     }
 
+    onHide() {
+        // Stop polling while hidden to reduce resource usage.
+        // Widget state (sort, search, selection) is preserved.
+        if (this.cancelPoll) {
+            this.cancelPoll();
+            this.cancelPoll = null;
+        }
+    }
+
+    onShow() {
+        // Restart polling (startPolling calls doOneFetch immediately).
+        if (this.cancelPoll) {
+            this.cancelPoll();
+            this.cancelPoll = null;
+        }
+        this.startPolling();
+    }
+
     dispose() {
         this.disposed = true;
         if (this.cancelPoll) {

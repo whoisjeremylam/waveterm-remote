@@ -923,4 +923,14 @@ export class PreviewModel implements ViewModel {
     async formatRemoteUri(path: string, get: Getter): Promise<string> {
         return formatRemoteUri(path, await get(this.connection));
     }
+
+    onHide() {
+        // No polling to pause; nothing to do for preview.
+    }
+
+    onShow() {
+        // Trigger re-fetch of current file/directory by bumping refreshVersion.
+        // The fileContent atom subscribes to refreshVersion and will re-fetch.
+        globalStore.set(this.refreshVersion, globalStore.get(this.refreshVersion) + 1);
+    }
 }

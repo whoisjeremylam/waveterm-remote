@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Tooltip } from "@/app/element/tooltip";
-import { getFocusedTerminalConnection } from "@/app/store/global";
+import {
+    getBlockComponentModel,
+    getFocusedTerminalConnection,
+    getHiddenBlockModel,
+    hideBlockModel,
+    removeHiddenBlockModel,
+} from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import * as WOS from "@/app/store/wos";
@@ -70,7 +76,22 @@ function toggleWidgetVisibility(viewType: string): boolean {
         if (!blockId) continue;
         const blockData = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId)));
         if (blockData?.meta?.view === viewType) {
-            layoutModel.closeNode(leaf.id);
+            // Get the ViewModel and connection before hiding
+            const bcm = getBlockComponentModel(blockId);
+            const viewModel = bcm?.viewModel;
+            const connection = blockData?.meta?.connection;
+
+            // Call onHide to pause/reduce polling
+            viewModel?.onHide?.();
+
+            // Stash the ViewModel in the hidden registry BEFORE hiding (so
+            // isHiddenBlock returns true when the BlockInner cleanup fires)
+            if (viewModel) {
+                hideBlockModel(viewType, connection, { viewModel });
+            }
+
+            // Remove from layout tree without deleting the block (keep-alive)
+            layoutModel.hideNode(leaf.id);
             return true;
         }
     }
@@ -79,14 +100,27 @@ function toggleWidgetVisibility(viewType: string): boolean {
 
 async function handleWidgetSelect(widget: WidgetConfigType, env: WidgetsEnv) {
     const viewType = widget.blockdef?.meta?.view;
+    const focusedConn = getFocusedTerminalConnection() ?? undefined;
     if (TOGGLE_WIDGETS.includes(viewType)) {
+        // First: if a hidden block exists for this view type + connection, reuse it
+        const hiddenBcm = getHiddenBlockModel(viewType, focusedConn);
+        if (hiddenBcm?.viewModel?.blockId) {
+            const blockId = hiddenBcm.viewModel.blockId;
+            const layoutModel = getLayoutModelForStaticTab();
+            if (layoutModel) {
+                removeHiddenBlockModel(viewType, focusedConn);
+                layoutModel.insertExistingNode(blockId, { focused: true });
+                hiddenBcm.viewModel.onShow?.();
+                return;
+            }
+        }
+        // Second: if a visible block exists, toggle it closed (hide)
         if (toggleWidgetVisibility(viewType)) {
             return;
         }
     }
     const blockDef = { ...widget.blockdef };
     if (!blockDef.meta?.connection) {
-        const focusedConn = getFocusedTerminalConnection();
         if (focusedConn) {
             blockDef.meta = { ...blockDef.meta, connection: focusedConn };
         }

@@ -14,7 +14,7 @@ import { ErrorBoundary } from "@/element/errorboundary";
 import { CenteredDiv } from "@/element/quickelems";
 import { useDebouncedNodeInnerRect } from "@/layout/index";
 import { counterInc } from "@/store/counters";
-import { getBlockComponentModel, registerBlockComponentModel, unregisterBlockComponentModel } from "@/store/global";
+import { getBlockComponentModel, isHiddenBlock, registerBlockComponentModel, unregisterBlockComponentModel } from "@/store/global";
 import { makeORef } from "@/store/wos";
 import { focusedBlockId, getElemAsStr } from "@/util/focusutil";
 import { isBlank, useAtomValueSafe } from "@/util/util";
@@ -276,6 +276,11 @@ const BlockInner = memo((props: BlockProps & { viewType: string }) => {
     }
     useEffect(() => {
         return () => {
+            // If the block is hidden (toggled closed but kept alive), skip dispose.
+            // The ViewModel is stashed in the hidden block registry for reuse on toggle-open.
+            if (isHiddenBlock(props.nodeModel.blockId)) {
+                return;
+            }
             unregisterBlockComponentModel(props.nodeModel.blockId);
             viewModel?.dispose?.();
         };
@@ -311,6 +316,10 @@ const SubBlockInner = memo((props: SubBlockProps & { viewType: string }) => {
     }
     useEffect(() => {
         return () => {
+            // If the block is hidden (toggled closed but kept alive), skip dispose.
+            if (isHiddenBlock(props.nodeModel.blockId)) {
+                return;
+            }
             unregisterBlockComponentModel(props.nodeModel.blockId);
             viewModel?.dispose?.();
         };

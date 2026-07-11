@@ -644,6 +644,20 @@ export class SourceControlViewModel implements ViewModel {
         this.fetchStatus();
     }
 
+    onHide() {
+        // Reduce poll interval to 30s while hidden
+        this.stopPolling();
+        this.pollInterval = 30000;
+        this.startPolling();
+    }
+
+    onShow() {
+        // Restore fast polling and trigger immediate refresh
+        this.stopPolling();
+        this.pollInterval = 3000;
+        this.startPolling(); // startPolling calls fetchStatus() immediately
+    }
+
     dispose() {
         this.disposed = true;
         this.stopPolling();

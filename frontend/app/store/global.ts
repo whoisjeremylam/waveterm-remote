@@ -574,6 +574,42 @@ function getBlockComponentModel(blockId: string): BlockComponentModel {
     return blockComponentModelMap.get(blockId);
 }
 
+// --- Hidden block registry ---
+// Blocks that are hidden (toggled closed but kept alive).
+// Keyed by viewType + ":" + connection, so toggling the same widget type for the same
+// connection reuses the hidden block instead of creating a new one.
+const hiddenBlockModels = new Map<string, BlockComponentModel>();
+// Set of hidden block IDs, used by cleanupOrphanedBlocks to skip hidden blocks.
+const hiddenBlockIds = new Set<string>();
+
+function getHiddenBlockKey(viewType: string, connection: string | undefined): string {
+    return `${viewType}:${connection ?? "local"}`;
+}
+
+function hideBlockModel(viewType: string, connection: string | undefined, bcm: BlockComponentModel) {
+    hiddenBlockModels.set(getHiddenBlockKey(viewType, connection), bcm);
+    if (bcm.viewModel?.blockId) {
+        hiddenBlockIds.add(bcm.viewModel.blockId);
+    }
+}
+
+function getHiddenBlockModel(viewType: string, connection: string | undefined): BlockComponentModel | undefined {
+    return hiddenBlockModels.get(getHiddenBlockKey(viewType, connection));
+}
+
+function removeHiddenBlockModel(viewType: string, connection: string | undefined): BlockComponentModel | undefined {
+    const bcm = hiddenBlockModels.get(getHiddenBlockKey(viewType, connection));
+    hiddenBlockModels.delete(getHiddenBlockKey(viewType, connection));
+    if (bcm?.viewModel?.blockId) {
+        hiddenBlockIds.delete(bcm.viewModel.blockId);
+    }
+    return bcm;
+}
+
+function isHiddenBlock(blockId: string): boolean {
+    return hiddenBlockIds.has(blockId);
+}
+
 function getAllBlockComponentModels(): BlockComponentModel[] {
     return Array.from(blockComponentModelMap.values());
 }
@@ -791,12 +827,15 @@ export {
     getBlockUploadStateAtom,
     setBlockUploadState,
     getTabMetaKeyAtom,
+    hideBlockModel,
     getConfigBackgroundAtom,
     getConnConfigKeyAtom,
     getConnStatusAtom,
     getFocusedBlockId,
     getFocusedTerminalConnection,
     getFocusedTerminalCwd,
+    getHiddenBlockModel,
+    getHiddenBlockKey,
     getHostName,
     getLocalHostDisplayNameAtom,
     getObjectId,
@@ -807,6 +846,7 @@ export {
     getUserName,
     globalPrimaryTabStartup,
     globalStore,
+    isHiddenBlock,
     initGlobal,
     initGlobalWaveEventSubs,
     isDev,
@@ -816,6 +856,7 @@ export {
     readAtom,
     refocusNode,
     registerBlockComponentModel,
+    removeHiddenBlockModel,
     replaceBlock,
     setActiveTab,
     setNodeFocus,

@@ -246,3 +246,25 @@
 - screen + `cd` → `cmd:cwd` updates
 - non-tmux regression (OSC 7 path unchanged)
 - SCM widget shows correct repo under tmux
+
+## 2026-07-08: Widget keep-alive — implemented
+
+**Implemented** the widget keep-alive design per [[specs/widget-keepalive.md]].
+
+**Files modified:**
+- `frontend/types/custom.d.ts` — Added `blockId?`, `onHide?()`, `onShow?()` to `ViewModel` interface
+- `frontend/app/store/global.ts` — Added `hiddenBlockModels` map + `hiddenBlockIds` set + helper functions (`hideBlockModel`, `getHiddenBlockModel`, `removeHiddenBlockModel`, `isHiddenBlock`, `getHiddenBlockKey`)
+- `frontend/layout/lib/layoutModel.ts` — Added `hideNode()` (removes from layout without `DeleteBlock`), `insertExistingNode()` (re-inserts existing block), modified `cleanupOrphanedBlocks` to skip hidden blocks
+- `frontend/app/workspace/widgets.tsx` — `toggleWidgetVisibility` now hides (not closes), `handleWidgetSelect` reuses hidden blocks before creating new ones
+- `frontend/app/block/block.tsx` — `BlockInner`/`SubBlockInner` cleanup skips `dispose` when `isHiddenBlock(blockId)` is true
+- `frontend/app/view/sourcecontrol/sourcecontrol-model.ts` — `onHide()` backs off poll to 30s, `onShow()` restores 3s + immediate `fetchStatus()`
+- `frontend/app/view/preview/preview-model.tsx` — `onShow()` bumps `refreshVersion` to trigger re-fetch
+- `frontend/app/view/processviewer/processviewer.tsx` — `onHide()` stops polling, `onShow()` restarts polling
+
+**Key design decisions:**
+- `hideNode` removes the node from the layout tree but does NOT call `onNodeDelete`/`DeleteBlock` — the block object survives in the backend
+- `cleanupOrphanedBlocks` checks `isHiddenBlock(blockId)` to skip hidden blocks (they're in `tab.blockids` but not in the layout tree)
+- `BlockInner` cleanup checks `isHiddenBlock(blockId)` — if true, skips `unregisterBlockComponentModel` + `dispose` so the ViewModel survives
+- `hiddenBlockModels` keyed by `viewType:connection` — toggling the same widget type for the same connection reuses the hidden block
+- `hideBlockModel` is called BEFORE `hideNode` so `isHiddenBlock` returns true when the React cleanup fires
+- Tab-close leak: hidden blocks' ViewModels are not disposed if the tab is closed while a widget is hidden (acceptable — 30s poll backoff minimizes resource impact)
