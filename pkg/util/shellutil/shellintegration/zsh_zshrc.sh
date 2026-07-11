@@ -70,7 +70,12 @@ _waveterm_si_compmode() {
 }
 
 _waveterm_si_osc7() {
-  _waveterm_si_blocked && return
+  if _waveterm_si_blocked; then
+    # Under tmux/screen, OSC 7 is absorbed by the multiplexer.
+    # Push cwd out-of-band via wsh's Unix socket instead.
+    wsh setmeta -b this "cmd:cwd=$PWD" 2>/dev/null
+    return
+  fi
   local encoded_pwd=$(_waveterm_si_urlencode "$PWD")
   printf '\033]7;file://localhost%s\007' "$encoded_pwd"  # OSC 7 - current directory
 }

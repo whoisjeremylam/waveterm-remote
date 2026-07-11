@@ -187,3 +187,62 @@
 3. Remote file paste (image paste + drag-drop for SSH sessions) — primary use case: pi / Claude Code TUI
 4. MOSH/tsshd support (backlog, if roaming becomes a real pain point)
 
+
+---
+
+## 2026-07-08: tmux CWD tracking via `wsh setmeta` (not passthrough, not RPC pull)
+
+**Context:** Inside tmux, shell integration suppresses OSC 7 (cwd tracking) because tmux absorbs escape sequences. `cmd:cwd` goes stale, breaking SCM/file widgets.
+
+**Options considered:**
+1. **tmux passthrough** (OSC 7 wrapped in `\ePtmux;...\e\\`) — rejected: requires `allow-passthrough on` in user's tmux config (off by default before tmux 3.3), fragile ESC-doubling, also need to un-gate OSC 16142 markers, version-dependent
+2. **Pull RPC** (`TmuxPaneInfoCommand` — frontend queries tmux via wsh) — rejected: needs new wsh RPC (version bump), must probe `$TMUX` in shell env (not wsh env), multi-session disambiguation, only fixes widgets not terminal header
+3. **Push via `wsh setmeta`** (shell integration calls `wsh setmeta -b this "cmd:cwd=$PWD"` under tmux) — **CHOSEN**
+
+**Why `wsh setmeta` wins:**
+- Uses the existing Unix domain socket RPC — bypasses tmux's pty entirely
+- `WAVETERM_BLOCKID` survives into tmux panes (verified live)
+- `wsh` is already on PATH in shell integration scripts
+- Zero frontend changes, zero new RPC, zero version bump
+- Same cadence as OSC 7 (prompt/cd), same consumers (`getFocusedTerminalCwd`, SCM `terminalCwd`, Preview `metaFilePath`)
+- Works under screen too (`_waveterm_si_blocked` detects both)
+
+**Decision:** Modify `_waveterm_si_osc7` in all 4 shell scripts (bash, zsh, fish, pwsh) to call `wsh setmeta` when blocked. For bash/pwsh (no chpwd hook), also modify precmd/prompt to call `_waveterm_si_osc7` even when blocked. See [[specs/tmux-cwd-tracking.md]].
+
+## 2026-07-08: Widget keep-alive (hide, not destroy) over serialize-on-toggle
+
+**Context:** Toggling SCM/Preview widgets fully destroys and recreates the block. State is lost (view mode, selected file, diff cache, commit message, in-flight operations).
+
+**Options considered:**
+1. **Serialize view-state on dispose, restore on recreate** — rejected: loading flash on every open, in-flight operations (staging/committing) behave incorrectly, diff cache lost
+2. **Keep-alive with poll backoff** — **CHOSEN**
+
+**Why keep-alive wins:**
+- In-flight operations (staging, committing, pushing) survive — correctness, not just UX
+- Diff cache preserved — instant file re-selection
+- 30s poll backoff while hidden limits resource cost
+- Refresh on show catches up on changes while hidden
+
+**Decision:** Replace `toggleWidgetVisibility`'s `closeNode` (which calls `DeleteBlock`) with `hideNode` (removes from layout, preserves block + ViewModel). Add `onHide()`/`onShow()` to ViewModel interface. See [[specs/widget-keepalive.md]].
+
+## 2026-07-08: tmux CWD tracking — implemented
+
+**Implemented** the `wsh setmeta` approach per [[specs/tmux-cwd-tracking.md]].
+
+**Files modified:**
+- `pkg/util/shellutil/shellintegration/bash_bashrc.sh` — `_waveterm_si_osc7` (wsh setmeta when blocked) + `_waveterm_si_precmd` (call osc7 when blocked, skip OSC 16142)
+- `pkg/util/shellutil/shellintegration/zsh_zshrc.sh` — `_waveterm_si_osc7` (wsh setmeta when blocked; chpwd hook already calls it directly)
+- `pkg/util/shellutil/shellintegration/fish_wavefish.sh` — `_waveterm_si_osc7` (wsh setmeta when blocked; on-variable PWD hook already calls it directly)
+- `pkg/util/shellutil/shellintegration/pwsh_wavepwsh.sh` — `_waveterm_si_osc7` (wsh setmeta when blocked) + `_waveterm_si_prompt` (call osc7 when blocked, skip OSC 16142)
+
+**Verification:**
+- bash syntax check passes (`bash -n`)
+- Go build passes (`go build ./...`) — shell scripts embedded via `//go:embed`
+- shellutil tests pass
+- zsh/fish/pwsh not installed locally for syntax check, but edits follow existing patterns
+
+**Pending manual testing** (requires running waveterm with the CI-built binary):
+- tmux + `cd` → `cmd:cwd` updates via `wsh getmeta -b this`
+- screen + `cd` → `cmd:cwd` updates
+- non-tmux regression (OSC 7 path unchanged)
+- SCM widget shows correct repo under tmux

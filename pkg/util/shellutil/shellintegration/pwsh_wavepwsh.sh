@@ -29,7 +29,12 @@ function Global:_waveterm_si_blocked {
 }
 
 function Global:_waveterm_si_osc7 {
-    if (_waveterm_si_blocked) { return }
+    if (_waveterm_si_blocked) {
+        # Under tmux/screen, OSC 7 is absorbed by the multiplexer.
+        # Push cwd out-of-band via wsh's Unix socket instead.
+        wsh setmeta -b this "cmd:cwd=$($PWD.Path)" 2>$null
+        return
+    }
     
     # Percent-encode the raw path as-is (handles UNC, drive letters, etc.)
     $encoded_pwd = [System.Uri]::EscapeDataString($PWD.Path)
@@ -39,7 +44,12 @@ function Global:_waveterm_si_osc7 {
 }
 
 function Global:_waveterm_si_prompt {
-    if (_waveterm_si_blocked) { return }
+    if (_waveterm_si_blocked) {
+        # Under tmux/screen, skip OSC 16142 sequences (they'd be absorbed)
+        # but still update cwd via wsh setmeta (called from _waveterm_si_osc7)
+        _waveterm_si_osc7
+        return
+    }
     
     if ($Global:_WAVETERM_SI_FIRSTPROMPT) {
 		# not sending uname

@@ -17,6 +17,8 @@ Most developer terminals assume code is installed, built, and tested locally. Th
 - [[specs/remove-telemetry.md]] — Remove all telemetry, analytics, and tracking
 - [[specs/remove-waveai.md]] — Remove/disable all Wave AI features
 - [[specs/portforwarding.md]] — SSH port forwarding (`LocalForward` / `RemoteForward`)
+- [[specs/tmux-cwd-tracking.md]] — CWD tracking under tmux/screen via `wsh setmeta`
+- [[specs/widget-keepalive.md]] — Widget state persistence across toggle (keep-alive with poll backoff)
 
 ## Context & Decisions
 

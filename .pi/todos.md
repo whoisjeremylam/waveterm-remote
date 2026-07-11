@@ -317,3 +317,33 @@ Full VS Code SCM diff view feature analysis done on `~/project/vscode`. Source f
 
 - Remove checks to `dl.waveterm.dev` (e.g., update checks, download URLs)
 - Evaluate which other local-first widgets to remove/diminish
+
+### tmux CWD Tracking
+
+- [x] Implement `wsh setmeta` cwd push in shell integration (spec: [[specs/tmux-cwd-tracking.md]]) — implemented 2026-07-08
+  - [x] Modify `bash_bashrc.sh`: `_waveterm_si_osc7` (wsh setmeta when blocked) + `_waveterm_si_precmd` (call osc7 when blocked)
+  - [x] Modify `zsh_zshrc.sh`: `_waveterm_si_osc7` (wsh setmeta when blocked)
+  - [x] Modify `fish_wavefish.sh`: `_waveterm_si_osc7` (wsh setmeta when blocked)
+  - [x] Modify `pwsh_wavepwsh.sh`: `_waveterm_si_osc7` (wsh setmeta when blocked) + `_waveterm_si_prompt` (call osc7 when blocked)
+  - [x] Go build passes (`./golang-1.26.2/bin/go build ./...`), shellutil tests pass
+  - [ ] Manual test: tmux + `cd` + verify `cmd:cwd` updates via `wsh getmeta -b this`
+  - [ ] Manual test: screen + `cd` + verify `cmd:cwd` updates
+  - [ ] Manual test: non-tmux regression (OSC 7 still works)
+  - [ ] Manual test: SCM widget shows correct repo under tmux
+
+### Widget Keep-Alive
+
+- [ ] Implement widget hide/show (spec: [[specs/widget-keepalive.md]])
+  - [ ] Add `onHide()`/`onShow()` to ViewModel interface (`custom.d.ts`)
+  - [ ] Add `hiddenBlockModels` registry to `global.ts`
+  - [ ] Add `hideNode()` / `insertExistingNode()` to `layoutModel.ts`
+  - [ ] Modify `toggleWidgetVisibility` in `widgets.tsx` to hide instead of close
+  - [ ] Modify `handleWidgetSelect` to reuse hidden blocks
+  - [ ] Modify `BlockInner` cleanup in `block.tsx` to check deleted vs hidden
+  - [ ] Implement `onHide()`/`onShow()` in `SourceControlViewModel` (poll backoff 3s→30s)
+  - [ ] Implement `onHide()`/`onShow()` in `PreviewModel` (refresh on show)
+  - [ ] Test: toggle preserves view mode, selected file, diff cache, commit message
+  - [ ] Test: in-flight stage/commit survives toggle
+  - [ ] Test: poll backoff while hidden (30s, not 3s)
+  - [ ] Test: refresh on show catches up on changes
+  - [ ] Test: true block deletion (X button) still disposes ViewModel

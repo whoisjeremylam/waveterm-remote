@@ -73,14 +73,24 @@ _waveterm_si_urlencode() {
 }
 
 _waveterm_si_osc7() {
-    _waveterm_si_blocked && return
+    if _waveterm_si_blocked; then
+        # Under tmux/screen, OSC 7 is absorbed by the multiplexer.
+        # Push cwd out-of-band via wsh's Unix socket instead.
+        wsh setmeta -b this "cmd:cwd=$PWD" 2>/dev/null
+        return
+    fi
     local encoded_pwd=$(_waveterm_si_urlencode "$PWD")
     printf '\033]7;file://localhost%s\007' "$encoded_pwd"
 }
 
 _waveterm_si_precmd() {
     local _waveterm_si_status=$?
-    _waveterm_si_blocked && return
+    if _waveterm_si_blocked; then
+        # Under tmux/screen, skip OSC 16142 sequences (they'd be absorbed)
+        # but still update cwd via wsh setmeta (called from _waveterm_si_osc7)
+        _waveterm_si_osc7
+        return
+    fi
     
     if [ "$_WAVETERM_SI_FIRSTPROMPT" -eq 1 ]; then
         local uname_info
