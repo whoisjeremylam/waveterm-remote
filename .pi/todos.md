@@ -63,6 +63,14 @@
     - No native modules, zero build risk, cross-platform automatically
   - Edge cases (P2): respect manual disconnect, reconnect UI indicator
 
+- [x] **wsh startup timeout fix (Layer 1+2) + stream-restart diagnostic logging** — 2026-07-12
+  - Symptom: durable terminals unresponsive after sleep/wake; Cmd+Shift+R doesn't help; app restart fixes it. "always disable wsh" overlay appeared in one instance.
+  - Layer 1: Decouple wsh startup timeout from connect context (`connectInternal` passes 30s `wshCtx` to `tryEnableWsh`, independent of the 5s connect context)
+  - Layer 2: Fail the connection on technical wsh failure (only `Disabled`/`UserDeclined` continue without wsh; technical `WshError` returns error → `Connect` sets `Status_Error` → scheduler retries)
+  - Diagnostic logging: `jobStreamHealth` map, `runOutputLoop` start/exit/bytes, `doReconnectJob` skip path with stream health, `handleRouteEvent` route-up without stream restart, `restartStreaming` success/failure, `connectInternal`/`startConnServerWithRetry` timing
+  - See [[decisions.md#2026-07-12-wsh-startup-timeout-fix-layer-12--stream-restart-diagnostic-logging]] for the Layer 3 hypothesis (failure mode B: Connected-but-no-stream)
+  - Branch: `fix/wsh-startup-timeout`
+
 - [x] **Tmux mouse integration lost on durable session reconnect** — FIXED 2026-05-19
   - Bug: tmux mouse mode (click to switch windows, wheel scrollback, click-drag select) works in new sessions but NOT in reconnected durable sessions after full WaveTerm restart
   - Repro: close WaveTerm completely → restart → durable sessions reconnect → tmux mouse integration disabled

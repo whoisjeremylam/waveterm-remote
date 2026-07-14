@@ -268,3 +268,72 @@
 - `hiddenBlockModels` keyed by `viewType:connection` — toggling the same widget type for the same connection reuses the hidden block
 - `hideBlockModel` is called BEFORE `hideNode` so `isHiddenBlock` returns true when the React cleanup fires
 - Tab-close leak: hidden blocks' ViewModels are not disposed if the tab is closed while a widget is hidden (acceptable — 30s poll backoff minimizes resource impact)
+
+## 2026-07-12: wsh startup timeout fix (Layer 1+2) + stream-restart diagnostic logging
+
+### Problem: Durable terminals unresponsive after sleep/wake or network blip
+
+Two failure modes manifest as "terminal stuck, typing doesn't appear, Cmd+Shift+R doesn't help, app restart fixes it":
+
+**Failure mode A — wsh-down zombie (fixed in this change):**
+After sleep/wake, the 5s reconnect context (shared across SSH handshake + wsh startup) expires during the wsh retry backoff. `connectInternal` swallowed the wsh failure and marked the conn `Connected` with no route registered. Jobs can't reconnect (`RemoteReconnectToJobManagerCommand` fails — no route), `SendInput` fails, terminal stuck forever (keepalive is pure SSH, reports `Good`). The "always disable wsh" overlay was the tell.
+
+**Failure mode B — Connected-but-no-stream (diagnostic logging added; fix pending):**
+wsh/route is up, the job is marked `Connected`, `SendInput` succeeds (typing reaches the remote shell, remote `StreamManager` buffers the echo), but no `runOutputLoop` is pulling the stream — nothing appears locally. Restart re-runs `restartStreaming` → remote replays the buffer → typed text appears.
+
+### Layer 1 fix: Decouple wsh startup timeout from connect context
+
+`connectInternal` now passes a fresh 30s context (`wshStartupTimeout`) to `tryEnableWsh`, independent of the 5s connect context. The 5s context bounds only the SSH handshake (`ConnectToClient`); wsh startup (NewSession, version read, JWT exchange, route registration, retry backoff) gets its own generous timeout.
+
+**File:** `pkg/remote/conncontroller/conncontroller.go` — `connectInternal` (~line 1610)
+
+### Layer 2 fix: Fail the connection on technical wsh failure
+
+`connectInternal` no longer swallows technical wsh failures as "Connected-without-wsh". Only `NoWshCode_Disabled` and `NoWshCode_UserDeclined` (intentional opt-out) continue without wsh. Technical failures (`WshError != nil`) return an error → `Connect` sets `Status_Error` → `closeInternal_withlifecyclelock` cleans up → scheduler retries with a fresh context. This prevents the zombie "Connected-without-route" state.
+
+**File:** `pkg/remote/conncontroller/conncontroller.go` — `connectInternal` wsh result handling (~line 1628)
+
+### Diagnostic logging added (for Layer 3 fix)
+
+Logging was added to confirm which path produces failure mode B (Connected-but-no-stream). All logs use `[job:%s]` or `[conn:%s]` prefixes.
+
+**conncontroller.go:**
+- `connectInternal`: logs `ConnectToClient` duration and `tryEnableWsh` duration/result
+- `startConnServerWithRetry`: logs ctx remaining time at each attempt (confirms Layer 1 — should show ~30s, not ~5s)
+
+**jobcontroller.go:**
+- `jobStreamHealth` map (`streamHealthInfo`): tracks per-job `active`, `startedAt`, `lastReadAt`, `totalBytes`, `streamId`
+- `runOutputLoop`: sets `active=true` on start, updates `lastReadAt`/`totalBytes` on each read, sets `active=false` on exit
+- `handleRouteEvent`: logs "route up: set Connected via route event (stream active=%v, streamId=%q) — stream NOT restarted here" — confirms Path 2
+- `doReconnectJob` skip path: logs "already connected, skipping reconnect (stream active=%v, lastRead=%v, streamId=%q, totalBytes=%d)" — if `active=false` or `lastRead` is stale, that's the smoking gun
+- `doReconnectJob` post-restartStreaming: logs success/failure — "restartStreaming failed after successful reconnect: ... (job left Connected without active stream)" confirms Path 1
+
+### Layer 3 hypothesis (pending log confirmation)
+
+Failure mode B has two paths, both leaving the job `Connected` with no active `runOutputLoop`:
+
+**Path 1 — `doReconnectJob` sets `Connected` before `restartStreaming` succeeds:**
+`doReconnectJob` calls `SetJobConnStatus(Connected)` then `restartStreaming`. If `restartStreaming` fails (PrepareConnect timeout, StartStream failure, route-not-ready), the job stays `Connected`-no-stream. Every subsequent `doReconnectJob` hits the "already connected, skipping" early return — the stream is never retried.
+
+**Path 2 — `handleRouteUpEvent` sets `Connected` without restarting the stream:**
+When the job's route re-registers independently of `doReconnectJob`, `handleRouteEvent` marks the job `Connected` and fires a status event but never calls `restartStreaming`. Later `doReconnectJob` calls skip (already connected).
+
+**Planned Layer 3 fixes (apply after logs confirm which path fires):**
+1. Move `SetJobConnStatus(Connected)` to after `restartStreaming` succeeds, or reset to `Disconnected` on failure
+2. Make the "already connected, skipping" guard stream-health-aware: if `jobStreamHealth.active == false`, don't skip — restart the stream
+3. `handleRouteUpEvent`: either don't mark `Connected` without a stream, or trigger `restartStreaming` when marking `Connected`
+4. (Optional) Stream-health watchdog in `runOutputLoop`: if no data for N seconds while `Connected`, trigger `restartStreaming`
+
+### How to read the logs
+
+After a sleep/wake cycle where the terminal is stuck, grep the backend logs for:
+```
+grep "already connected, skipping reconnect" <log>
+grep "route up: set Connected via route event" <log>
+grep "restartStreaming failed" <log>
+grep "output loop started\|output loop finished" <log>
+```
+- If "already connected, skipping" shows `active=false` → Path 1 (stream never started or died)
+- If "route up: set Connected via route event" fires but no "output loop started" follows → Path 2
+- If "restartStreaming failed" appears → Path 1 confirmed (restartStreaming error)
+- If "output loop started" appears but no "output loop finished" and no new "started" on reconnect → stream is alive but stalled (watchdog needed)

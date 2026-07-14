@@ -681,12 +681,25 @@ func (conn *SSHConn) StartConnServer(ctx context.Context, afterUpdate bool, useR
 
 const wshStartupMaxRetries = 3
 
+// wshStartupTimeout is the timeout for the wsh startup phase (tryEnableWsh),
+// decoupled from the connect context timeout. The connect context (typically 5s
+// for reconnects) bounds only the SSH handshake; wsh startup (SSH NewSession,
+// version read, JWT exchange, route registration) gets its own generous timeout
+// so post-wake reconnects have room to start the connserver without the connect
+// deadline expiring mid-backoff.
+const wshStartupTimeout = 30 * time.Second
+
 // startConnServerWithRetry wraps StartConnServer with retry logic to handle
 // transient failures (e.g., context deadline during sleep/wake cycles).
 // Retries up to wshStartupMaxRetries times with linear backoff.
 func (conn *SSHConn) startConnServerWithRetry(ctx context.Context, afterUpdate bool, useRouterMode bool) (bool, string, string, error) {
 	var lastErr error
 	for attempt := 0; attempt < wshStartupMaxRetries; attempt++ {
+		if deadline, ok := ctx.Deadline(); ok {
+			conn.Infof(ctx, "wsh startup attempt %d/%d (ctx remaining: %v)\n", attempt+1, wshStartupMaxRetries, time.Until(deadline))
+		} else {
+			conn.Infof(ctx, "wsh startup attempt %d/%d (no ctx deadline)\n", attempt+1, wshStartupMaxRetries)
+		}
 		if attempt > 0 {
 			conn.Infof(ctx, "wsh startup retry %d/%d (previous error: %v)\n", attempt+1, wshStartupMaxRetries, lastErr)
 			select {
@@ -1559,10 +1572,12 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 	if cachedPw != nil {
 		ctx = remote.ContextWithCachedPassword(ctx, cachedPw)
 	}
+	connectStart := time.Now()
 	client, _, sshKeywords, pwTracker, err := remote.ConnectToClient(ctx, conn.Opts, nil, 0, connFlags)
+	connectDuration := time.Since(connectStart)
 	if err != nil {
 		errorCode, _ := remote.ClassifyConnError(err)
-		conn.Infof(ctx, "ERROR ConnectToClient [%s]: %s\n", errorCode, remote.SimpleMessageFromPossibleConnectionError(err))
+		conn.Infof(ctx, "ERROR ConnectToClient [%s]: %s (duration=%v)\n", errorCode, remote.SimpleMessageFromPossibleConnectionError(err), connectDuration)
 		// Cache password even on non-auth failure (timeout, network error)
 		// so retry works without re-prompting. Only skip on auth-failed (wrong password).
 		if errorCode != "auth-failed" && pwTracker != nil && pwTracker.Used && pwTracker.Password != "" {
@@ -1576,6 +1591,7 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 		conn.cachePassword(pwTracker.Password)
 		conn.Infof(ctx, "cached password for future reconnection\n")
 	}
+	conn.Infof(ctx, "ConnectToClient completed in %v\n", connectDuration)
 	conn.WithLock(func() {
 		if conn.Monitor != nil {
 			conn.Monitor.Close()
@@ -1594,22 +1610,30 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 	fmtAddr := knownhosts.Normalize(fmt.Sprintf("%s@%s", client.User(), client.RemoteAddr().String()))
 	conn.Infof(ctx, "normalized knownhosts address: %s\n", fmtAddr)
 	clientDisplayName := fmt.Sprintf("%s (%s)", conn.GetName(), fmtAddr)
-	wshResult := conn.tryEnableWsh(ctx, clientDisplayName)
+	// Use a fresh, generous context for wsh startup, decoupled from the connect
+	// context. The connect context (typically 5s for reconnects) bounds only the
+	// SSH handshake; wsh startup (SSH NewSession, version read, JWT exchange,
+	// route registration) needs its own timeout so post-wake reconnects have room
+	// to start the connserver without the connect deadline expiring mid-backoff.
+	wshCtx, wshCancel := context.WithTimeout(context.Background(), wshStartupTimeout)
+	wshStart := time.Now()
+	wshResult := conn.tryEnableWsh(wshCtx, clientDisplayName)
+	wshCancel()
+	conn.Infof(ctx, "tryEnableWsh completed in %v (enabled=%v, code=%s, err=%v)\n", time.Since(wshStart), wshResult.WshEnabled, wshResult.NoWshCode, wshResult.WshError)
 	conn.persistWshInstalled(ctx, wshResult)
 	if !wshResult.WshEnabled {
 		if wshResult.NoWshCode == NoWshCode_Disabled || wshResult.NoWshCode == NoWshCode_UserDeclined {
 			// User explicitly opted out of wsh — OK to continue without it
 			conn.Infof(ctx, "wsh not enabled: %s\n", wshResult.NoWshReason)
 		} else if wshResult.WshError != nil {
-			// wsh startup failed — clean up stale domain socket listener and continue without wsh
-			conn.WithLock(func() {
-				if conn.DomainSockListener != nil {
-					conn.DomainSockListener.Close()
-					conn.DomainSockListener = nil
-					conn.DomainSockName = ""
-				}
-			})
-			conn.Infof(ctx, "wsh startup failed, continuing without wsh: %v\n", wshResult.WshError)
+			// wsh startup failed with a technical error. Fail the connection so the
+			// scheduler retries with a fresh context, rather than leaving the conn in
+			// a zombie "Connected-without-wsh" state where durable jobs can never
+			// reconnect (no route registered, RemoteReconnectToJobManagerCommand fails).
+			// closeInternal_withlifecyclelock (called by Connect on error) cleans up
+			// the SSH client, domain socket listener, and monitor.
+			conn.Infof(ctx, "wsh startup failed, failing connection (will retry): %v\n", wshResult.WshError)
+			return fmt.Errorf("wsh startup failed: %w", wshResult.WshError)
 		} else {
 			conn.Infof(ctx, "wsh not enabled: %s\n", wshResult.NoWshReason)
 		}

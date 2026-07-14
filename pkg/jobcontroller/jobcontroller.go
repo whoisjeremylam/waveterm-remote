@@ -83,6 +83,17 @@ type connStateManager struct {
 	reconcileCh chan struct{}
 }
 
+// streamHealthInfo tracks the health of a job's output stream (runOutputLoop).
+// Stored in jobStreamHealth for diagnosing Connected-but-no-stream states
+// (failure mode B: job marked Connected but no runOutputLoop pulling data).
+type streamHealthInfo struct {
+	active     bool
+	startedAt  time.Time
+	lastReadAt time.Time
+	totalBytes int64
+	streamId   string
+}
+
 type jobState struct {
 	stateLock       sync.Mutex
 	isConnecting    bool
@@ -100,6 +111,11 @@ var (
 	}
 
 	jobStreamIds = ds.MakeSyncMap[string]()
+
+	// jobStreamHealth tracks the health of each job's output stream (runOutputLoop).
+	// Used to diagnose whether a "Connected" job has an active stream pulling data
+	// from the remote, or is stuck in a Connected-but-no-stream state (failure mode B).
+	jobStreamHealth = ds.MakeSyncMap[streamHealthInfo]()
 
 	jobTerminationMessageWritten = ds.MakeSyncMap[bool]()
 
@@ -396,6 +412,12 @@ func handleRouteEvent(event *wps.WaveEvent, newStatus string) {
 				continue
 			}
 			sendBlockJobStatusEventByJob(ctx, job)
+
+			if newStatus == JobConnStatus_Connected {
+				health, _ := jobStreamHealth.GetEx(jobId)
+				log.Printf("[job:%s] route up: set Connected via route event (stream active=%v, streamId=%q) — stream NOT restarted here",
+					jobId, health.active, health.streamId)
+			}
 
 			if newStatus == JobConnStatus_Disconnected && job != nil && isJobManagerRunning(job) {
 				if shouldAttemptAutoReconnect(jobId) {
@@ -1148,10 +1170,21 @@ func handleAppendJobFile(ctx context.Context, jobId string, fileName string, dat
 func runOutputLoop(ctx context.Context, jobId string, streamId string, reader *streamclient.Reader) {
 	defer reader.Close()
 	defer func() {
-		log.Printf("[job:%s] [stream:%s] output loop finished", jobId, streamId)
+		health, _ := jobStreamHealth.GetEx(jobId)
+		if health.streamId == streamId {
+			health.active = false
+			jobStreamHealth.Set(jobId, health)
+		}
+		log.Printf("[job:%s] [stream:%s] output loop finished (totalBytes=%d)", jobId, streamId, health.totalBytes)
 	}()
 
 	log.Printf("[job:%s] [stream:%s] output loop started", jobId, streamId)
+	jobStreamHealth.Set(jobId, streamHealthInfo{
+		active:     true,
+		startedAt:  time.Now(),
+		lastReadAt: time.Now(),
+		streamId:   streamId,
+	})
 	buf := make([]byte, 4096)
 	for {
 		n, err := reader.Read(buf)
@@ -1161,6 +1194,12 @@ func runOutputLoop(ctx context.Context, jobId string, streamId string, reader *s
 			break
 		}
 		if n > 0 {
+			health, ok := jobStreamHealth.GetEx(jobId)
+			if ok && health.streamId == streamId {
+				health.lastReadAt = time.Now()
+				health.totalBytes += int64(n)
+				jobStreamHealth.Set(jobId, health)
+			}
 			appendErr := handleAppendJobFile(ctx, jobId, JobOutputFileName, buf[:n])
 			if appendErr != nil {
 				log.Printf("[job:%s] error appending data to WaveFS: %v", jobId, appendErr)
@@ -1413,7 +1452,9 @@ func doReconnectJob(ctx context.Context, jobId string, rtOpts *waveobj.RuntimeOp
 
 	_, err = CheckJobConnected(ctx, jobId)
 	if err == nil {
-		log.Printf("[job:%s] already connected, skipping reconnect", jobId)
+		health, _ := jobStreamHealth.GetEx(jobId)
+		log.Printf("[job:%s] already connected, skipping reconnect (stream active=%v, lastRead=%v, streamId=%q, totalBytes=%d)",
+			jobId, health.active, health.lastReadAt.Format(time.RFC3339), health.streamId, health.totalBytes)
 		return nil
 	}
 	log.Printf("[job:%s] not connected, proceeding with reconnect: %v", jobId, err)
@@ -1499,9 +1540,14 @@ func doReconnectJob(ctx context.Context, jobId string, rtOpts *waveobj.RuntimeOp
 	SetJobConnStatus(jobId, JobConnStatus_Connected)
 	sendBlockJobStatusEventByJob(ctx, job)
 
-
 	log.Printf("[job:%s] route established, restarting streaming", jobId)
-	return restartStreaming(ctx, jobId, true, rtOpts)
+	reconnectErr := restartStreaming(ctx, jobId, true, rtOpts)
+	if reconnectErr != nil {
+		log.Printf("[job:%s] restartStreaming failed after successful reconnect: %v (job left Connected without active stream)", jobId, reconnectErr)
+	} else {
+		log.Printf("[job:%s] restartStreaming succeeded", jobId)
+	}
+	return reconnectErr
 }
 
 func ReconnectJobsForConn(ctx context.Context, connName string) error {
