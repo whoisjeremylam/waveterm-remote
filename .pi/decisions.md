@@ -337,3 +337,49 @@ grep "output loop started\|output loop finished" <log>
 - If "route up: set Connected via route event" fires but no "output loop started" follows → Path 2
 - If "restartStreaming failed" appears → Path 1 confirmed (restartStreaming error)
 - If "output loop started" appears but no "output loop finished" and no new "started" on reconnect → stream is alive but stalled (watchdog needed)
+
+## 2026-07-15: Widget 'x' button keep-alive hide (SCM/Files widgets)
+
+**Decision:** The header 'x' (close) button now hides keep-alive widget views (`preview`, `sourcecontrol`, `sysinfo`, `processviewer`) instead of deleting them, matching the widget sidebar toggle behavior.
+
+**Context:** Previously the sidebar widget button toggled these views (hide/keep-alive via `hideNode` + hidden block registry), but the header 'x' button called `uxCloseBlock` (true delete). Users had no consistent way to hide-and-revive from the header.
+
+**Implementation:**
+- `app/store/global.ts`: added `keepAliveWidgetViews` set, `isKeepAliveWidgetView()`, and `hideBlockKeepAlive(blockId)` (mirrors `toggleWidgetVisibility`: calls `viewModel.onHide`, stashes in hidden registry, `layoutModel.hideNode`).
+- `app/block/blockframe-header.tsx`: 'x' button now calls `hideBlockKeepAlive(blockId)`; falls back to `uxCloseBlock` for non-keep-alive views. Tooltip shows "Hide" for keep-alive views, "Close" otherwise.
+- `app/workspace/widgets.tsx`: replaced local `TOGGLE_WIDGETS` array with shared `isKeepAliveWidgetView()` so sidebar and header stay in sync.
+- The cog-menu "Close Block" still calls `uxCloseBlock` (true delete) so users can still permanently close a widget.
+
+**Consequences:**
+- Hiding the last block in a tab leaves an empty tab (same as sidebar toggle; no auto-close). Consistent with existing behavior.
+- Re-show via sidebar button restores the hidden block (keep-alive registry keyed by `viewType:connection`).
+
+## 2026-07-15: Widget header dropdown + nav icons + SCM diff cache fix
+
+**Three follow-up changes to the widget header UX:**
+
+### A. Directory dropdown: browse-then-OK UX (`app/element/directorydropdown.tsx` + `.scss`)
+Previously clicking a directory in `DirectoryDropdown` immediately called `onSelect(path)`, navigating the main view AND reloading the dropdown — clunky. Refactored so the dropdown keeps a local `browsePath` state:
+- Clicking a directory updates `browsePath` locally (reloads entries); the main view does NOT refresh.
+- A breadcrumb header at the top shows the current browse path with an up-arrow (parent) button.
+- An **OK** button at the bottom commits the selection (`onSelect(browsePath)` + `onClose()`).
+- Click-outside still closes without committing (discard).
+- The selected entry is highlighted with a blue left accent (`.selected`).
+- Layout restructured: breadcrumb (pinned) + scrollable list + OK footer (pinned), so the OK button is always visible.
+- `currentPathRef` (unused) removed. API (`DirectoryDropdownProps`) unchanged — callers need no changes.
+- Applies to both Files and SCM widgets (shared component).
+
+### B. Home / cwd header icons (`preview-model.tsx`, `sourcecontrol-model.ts`)
+With 'x' now hiding (keep-alive) instead of deleting, reopening a widget restores the old directory, so there's no quick "reset" path. Added header end-icon buttons:
+- **Files widget** (`preview-model.tsx`): prepended `navIconButtons` (Home → `goHistory("~")`, Terminal → `goHistory(getFocusedTerminalCwd() ?? "~")`) to all three non-null `endIconButtons` branches (directory, markdown, other-file).
+- **SCM widget** (`sourcecontrol-model.ts`): added an `endIconButtons` atom returning a single "Go to Terminal Directory" button calling `changeDirectory(null)` (resets the user-cwd override to follow the focused terminal). No Home icon for SCM (Home is rarely a git repo).
+
+### C. SCM diff-view refresh bug (`sourcecontrol-model.ts`, `sourcecontrol.tsx`)
+**Bug:** In Review mode, switching directories via the dropdown returned stale diffs because `getDiffCacheKey()` didn't include `cwd`, and `handleDirectorySelect` didn't clear the diff cache or exit review mode.
+**Fix:**
+- `getDiffCacheKey()` now includes `cwd` (defense-in-depth): `` `${cwd}|${path}|...` ``
+- Added `userCwdAtom` as a class field (was a constructor-local closure) so it can be reset.
+- Added `changeDirectory(newPath)` model method: sets cwd (or resets `userCwdAtom` to null), closes dropdown, clears `selectedFileAtom`/`diffAtom`/`diffCacheAtom`, exits review mode, re-fetches status.
+- `handleDirectorySelect` in `sourcecontrol.tsx` now delegates to `model.changeDirectory(path)`.
+
+**Files changed:** `app/element/directorydropdown.tsx`, `app/element/directorydropdown.scss`, `app/view/preview/preview-model.tsx`, `app/view/sourcecontrol/sourcecontrol-model.ts`, `app/view/sourcecontrol/sourcecontrol.tsx`.

@@ -35,11 +35,12 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
     const [loading, setLoading] = useState(true);
     const [dirError, setDirError] = useState<string | null>(null);
     const [posStyle, setPosStyle] = useState<React.CSSProperties>({});
+    const [browsePath, setBrowsePath] = useState(currentPath);
     const dropdownRef = useRef<HTMLDivElement>(null);
-    const currentPathRef = useRef(currentPath);
 
+    // Reset browsePath when the widget's currentPath changes (e.g. dropdown reopened)
     useEffect(() => {
-        currentPathRef.current = currentPath;
+        setBrowsePath(currentPath);
     }, [currentPath]);
 
     const updatePosition = useCallback(() => {
@@ -112,9 +113,10 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
         [connection, dirsOnly]
     );
 
+    // Load entries from browsePath (local dropdown state), not currentPath
     useEffect(() => {
-        loadDirectories(currentPath);
-    }, [currentPath, loadDirectories]);
+        loadDirectories(browsePath);
+    }, [browsePath, loadDirectories]);
 
     useEffect(() => {
         function handleClickOutside(e: MouseEvent) {
@@ -131,39 +133,61 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
     const handleItemClick = useCallback(
         (e: React.MouseEvent, entry: DirEntry) => {
             e.stopPropagation();
-            onSelect(entry.path);
+            setBrowsePath(entry.path);
         },
-        [onSelect]
+        []
     );
 
     return createPortal(
         <div ref={dropdownRef} className="directory-dropdown" style={posStyle}>
-            {loading ? (
-                <div className="directory-dropdown-item">
-                    <span className="directory-item-name">Loading...</span>
-                </div>
-            ) : dirError ? (
-                <div className="directory-dropdown-item">
-                    <span className="directory-item-name">Error loading directories</span>
-                </div>
-            ) : entries.length === 0 ? (
-                <div className="directory-dropdown-item">
-                    <span className="directory-item-name">No directories</span>
-                </div>
-            ) : (
-                entries.map((entry) => (
-                    <div
-                        key={entry.path}
-                        className="directory-dropdown-item"
-                        onClick={(e) => handleItemClick(e, entry)}
-                    >
-                        <span className="directory-item-name">
-                            <i className={`fa-solid ${entry.name === ".." ? "fa-arrow-up" : entry.isdir ? "fa-folder" : "fa-file"}`} />
-                            {entry.name === ".." ? " Parent directory" : ` ${entry.name}`}
-                        </span>
+            <div className="directory-dropdown-breadcrumb">
+                {browsePath !== "/" && (
+                    <i
+                        className="fa-solid fa-arrow-up directory-dropdown-breadcrumb-up"
+                        onClick={() => setBrowsePath(browsePath.split("/").slice(0, -1).join("/") || "/")}
+                        title="Up to parent directory"
+                    />
+                )}
+                <span className="directory-dropdown-breadcrumb-path" title={browsePath}>{browsePath}</span>
+            </div>
+            <div className="directory-dropdown-list">
+                {loading ? (
+                    <div className="directory-dropdown-item">
+                        <span className="directory-item-name">Loading...</span>
                     </div>
-                ))
-            )}
+                ) : dirError ? (
+                    <div className="directory-dropdown-item">
+                        <span className="directory-item-name">Error loading directories</span>
+                    </div>
+                ) : entries.length === 0 ? (
+                    <div className="directory-dropdown-item">
+                        <span className="directory-item-name">No directories</span>
+                    </div>
+                ) : (
+                    entries.map((entry) => (
+                        <div
+                            key={entry.path}
+                            className={`directory-dropdown-item${entry.path === browsePath ? " selected" : ""}`}
+                            onClick={(e) => handleItemClick(e, entry)}
+                        >
+                            <span className="directory-item-name">
+                                <i className={`fa-solid ${entry.name === ".." ? "fa-arrow-up" : entry.isdir ? "fa-folder" : "fa-file"}`} />
+                                {entry.name === ".." ? " Parent directory" : ` ${entry.name}`}
+                            </span>
+                        </div>
+                    ))
+                )}
+            </div>
+            <button
+                type="button"
+                className="directory-dropdown-ok"
+                onClick={() => {
+                    onSelect(browsePath);
+                    onClose();
+                }}
+            >
+                OK
+            </button>
         </div>,
         document.body
     );

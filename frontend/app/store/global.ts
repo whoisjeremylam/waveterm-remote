@@ -610,6 +610,40 @@ function isHiddenBlock(blockId: string): boolean {
     return hiddenBlockIds.has(blockId);
 }
 
+// View types whose blocks are kept alive (hidden, not deleted) when toggled closed via
+// the widget sidebar button or the block header close ("x") button. Used by the widget
+// keep-alive toggle in widgets.tsx and by hideBlockKeepAlive below. Must stay in sync with
+// the sidebar toggle behavior in app/workspace/widgets.tsx.
+const keepAliveWidgetViews = new Set(["preview", "sourcecontrol", "sysinfo", "processviewer"]);
+
+function isKeepAliveWidgetView(viewType: string | undefined | null): viewType is string {
+    return !!viewType && keepAliveWidgetViews.has(viewType);
+}
+
+// Hide a block from the layout without deleting it, stashing its ViewModel in the hidden
+// block registry so it can be restored later (e.g. by clicking the widget sidebar button).
+// Returns true if the block was hidden (keep-alive), false if the block's view type is not a
+// keep-alive widget view (caller should fall back to a normal close).
+function hideBlockKeepAlive(blockId: string): boolean {
+    const layoutModel = getLayoutModelForStaticTab();
+    if (!layoutModel) return false;
+    const node = layoutModel.getNodeByBlockId(blockId);
+    if (!node) return false;
+    const blockAtom = WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId));
+    const blockData = globalStore.get(blockAtom);
+    const viewType = blockData?.meta?.view;
+    if (!isKeepAliveWidgetView(viewType)) return false;
+    const connection = blockData?.meta?.connection;
+    const bcm = getBlockComponentModel(blockId);
+    const viewModel = bcm?.viewModel;
+    viewModel?.onHide?.();
+    if (viewModel) {
+        hideBlockModel(viewType, connection, { viewModel });
+    }
+    layoutModel.hideNode(node.id);
+    return true;
+}
+
 function getAllBlockComponentModels(): BlockComponentModel[] {
     return Array.from(blockComponentModelMap.values());
 }
@@ -838,6 +872,7 @@ export {
     getHiddenBlockKey,
     getHostName,
     getLocalHostDisplayNameAtom,
+    hideBlockKeepAlive,
     getObjectId,
     getOrefMetaKeyAtom,
     getOverrideConfigAtom,
@@ -850,6 +885,7 @@ export {
     initGlobal,
     initGlobalWaveEventSubs,
     isDev,
+    isKeepAliveWidgetView,
     loadConnStatus,
     makeDefaultConnStatus,
     openLink,

@@ -14,7 +14,10 @@ import { PortForwardStatusIndicator } from "@/app/block/port-forward-status";
 import { getBlockBadgeAtom } from "@/app/store/badge";
 import {
     createBlockSplitHorizontally,
-    createBlockSplitVertically,    refocusNode,
+    createBlockSplitVertically,
+    hideBlockKeepAlive,
+    isKeepAliveWidgetView,
+    refocusNode,
     WOS,
 } from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
@@ -118,6 +121,7 @@ type HeaderEndIconsProps = {
 };
 
 const HeaderEndIcons = React.memo(({ viewModel, nodeModel, blockId }: HeaderEndIconsProps) => {
+    const isKeepAlive = isKeepAliveWidgetView(viewModel?.viewType);
     const blockEnv = useWaveEnv<BlockEnv>();
     const endIconButtons = util.useAtomValueSafe(viewModel?.endIconButtons);
     const magnified = jotai.useAtomValue(nodeModel.isMagnified);
@@ -197,8 +201,16 @@ const HeaderEndIcons = React.memo(({ viewModel, nodeModel, blockId }: HeaderEndI
     const closeDecl: IconButtonDecl = {
         elemtype: "iconbutton",
         icon: "xmark-large",
-        title: "Close",
-        click: () => uxCloseBlock(nodeModel.blockId),
+        title: isKeepAlive ? "Hide" : "Close",
+        click: () => {
+            // For keep-alive widget views (preview/sourcecontrol/sysinfo/processviewer),
+            // the close ("x") button hides the block without deleting it so it can be
+            // restored by clicking the widget sidebar button. Fall back to a normal close
+            // for all other view types (or if hideBlockKeepAlive can't find the block).
+            if (!hideBlockKeepAlive(nodeModel.blockId)) {
+                uxCloseBlock(nodeModel.blockId);
+            }
+        },
     };
     endIconsElem.push(<IconButton key="close" decl={closeDecl} className="block-frame-default-close" />);
 

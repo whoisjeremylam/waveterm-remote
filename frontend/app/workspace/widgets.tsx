@@ -7,6 +7,7 @@ import {
     getFocusedTerminalConnection,
     getHiddenBlockModel,
     hideBlockModel,
+    isKeepAliveWidgetView,
     removeHiddenBlockModel,
 } from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
@@ -64,7 +65,7 @@ type WidgetPropsType = {
     env: WidgetsEnv;
 };
 
-const TOGGLE_WIDGETS = ["preview", "sourcecontrol", "sysinfo", "processviewer"];
+
 
 function toggleWidgetVisibility(viewType: string): boolean {
     const layoutModel = getLayoutModelForStaticTab();
@@ -101,7 +102,7 @@ function toggleWidgetVisibility(viewType: string): boolean {
 async function handleWidgetSelect(widget: WidgetConfigType, env: WidgetsEnv) {
     const viewType = widget.blockdef?.meta?.view;
     const focusedConn = getFocusedTerminalConnection() ?? undefined;
-    if (TOGGLE_WIDGETS.includes(viewType)) {
+    if (isKeepAliveWidgetView(viewType)) {
         // First: if a hidden block exists for this view type + connection, reuse it
         const hiddenBcm = getHiddenBlockModel(viewType, focusedConn);
         if (hiddenBcm?.viewModel?.blockId) {

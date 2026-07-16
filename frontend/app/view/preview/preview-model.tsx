@@ -342,9 +342,24 @@ export class PreviewModel implements ViewModel {
             const mimeType = jotaiLoadableValue(get(this.fileMimeTypeLoadable), "");
             const loadableSV = get(this.loadableSpecializedView);
             const isCeView = loadableSV.state == "hasData" && loadableSV.data.specializedView == "codeedit";
+            const navIconButtons: IconButtonDecl[] = [
+                {
+                    elemtype: "iconbutton",
+                    icon: "house",
+                    title: "Go to Home",
+                    click: () => this.goHistory("~"),
+                },
+                {
+                    elemtype: "iconbutton",
+                    icon: "terminal",
+                    title: "Go to Terminal Directory",
+                    click: () => this.goHistory(getFocusedTerminalCwd() ?? "~"),
+                },
+            ];
             if (mimeType == "directory") {
                 const showHiddenFiles = get(this.showHiddenFiles);
                 return [
+                    ...navIconButtons,
                     {
                         elemtype: "iconbutton",
                         icon: showHiddenFiles ? "eye" : "eye-slash",
@@ -361,6 +376,7 @@ export class PreviewModel implements ViewModel {
                 ] as IconButtonDecl[];
             } else if (!isCeView && isMarkdownLike(mimeType)) {
                 return [
+                    ...navIconButtons,
                     {
                         elemtype: "iconbutton",
                         icon: "book",
@@ -377,6 +393,7 @@ export class PreviewModel implements ViewModel {
             } else if (!isCeView && mimeType) {
                 // For all other file types (text, code, etc.), add refresh button
                 return [
+                    ...navIconButtons,
                     {
                         elemtype: "iconbutton",
                         icon: "arrows-rotate",

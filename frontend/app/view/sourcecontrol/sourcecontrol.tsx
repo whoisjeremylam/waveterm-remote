@@ -588,11 +588,7 @@ export const SourceControlView = memo(({ model }: SourceControlViewProps) => {
     }, []);
 
     const handleDirectorySelect = useCallback((path: string) => {
-        globalStore.set(model.cwd, path);
-        globalStore.set(model.directoryDropdownOpen, false);
-        globalStore.set(model.selectedFileAtom, null);
-        globalStore.set(model.diffAtom, null);
-        model.fetchStatus();
+        model.changeDirectory(path);
     }, [model]);
 
     const handleDirectoryDropdownClose = useCallback(() => {

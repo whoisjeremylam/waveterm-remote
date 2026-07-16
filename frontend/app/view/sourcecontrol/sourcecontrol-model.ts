@@ -23,6 +23,7 @@ export class SourceControlViewModel implements ViewModel {
     noPadding = jotai.atom<boolean>(true);
     manageConnection = jotai.atom<boolean>(true);
     viewText: jotai.Atom<HeaderElem[]>;
+    endIconButtons: jotai.Atom<IconButtonDecl[]>;
 
     // State atoms
     statusAtom: jotai.PrimitiveAtom<GitStatusResponse | null>;
@@ -61,6 +62,7 @@ export class SourceControlViewModel implements ViewModel {
     connection: jotai.Atom<string>;
     cwd: jotai.PrimitiveAtom<string>;
     terminalCwd: jotai.Atom<string>;
+    userCwdAtom: jotai.PrimitiveAtom<string | null>;
     connStatus: jotai.Atom<ConnStatus>;
 
     // Polling
@@ -135,13 +137,14 @@ export class SourceControlViewModel implements ViewModel {
             return focusedCwd || "~";
         });
 
-        // User-selected CWD (overrides terminal CWD when set)
-        const userCwdAtom = jotai.atom<string | null>(null) as jotai.PrimitiveAtom<string | null>;
+        // User-selected CWD (overrides terminal CWD when set). Kept as a class field so
+        // changeDirectory(null) can reset it (revert to the focused terminal's cwd).
+        this.userCwdAtom = jotai.atom<string | null>(null) as jotai.PrimitiveAtom<string | null>;
 
         // CWD - writable, user selection takes priority over terminal CWD
         this.cwd = jotai.atom(
             (get) => {
-                const userCwd = get(userCwdAtom);
+                const userCwd = get(this.userCwdAtom);
                 if (userCwd !== null) {
                     return userCwd;
                 }
@@ -149,7 +152,7 @@ export class SourceControlViewModel implements ViewModel {
                 return terminalCwd || "~";
             },
             (_get, set, value: string) => {
-                set(userCwdAtom, value);
+                set(this.userCwdAtom, value);
             }
         ) as jotai.PrimitiveAtom<string>;
 
@@ -177,6 +180,24 @@ export class SourceControlViewModel implements ViewModel {
                 },
             ];
             return prevViewText;
+        });
+
+        // Header end-icon buttons: a single "reset to terminal directory" button.
+        // Home icon is omitted (Home is rarely a git repo). Resets the user-selected
+        // cwd override so the widget follows the focused terminal's cwd again.
+        this.endIconButtons = jotai.atom((get) => {
+            const connStatus = get(this.connStatus);
+            if (!connStatus?.connected) {
+                return null;
+            }
+            return [
+                {
+                    elemtype: "iconbutton",
+                    icon: "terminal",
+                    title: "Go to Terminal Directory",
+                    click: () => this.changeDirectory(null),
+                },
+            ] as IconButtonDecl[];
         });
 
         this.connStatus = jotai.atom((get) => {
@@ -514,7 +535,8 @@ export class SourceControlViewModel implements ViewModel {
     }
 
     getDiffCacheKey(path: string, staged: boolean, untracked: boolean): string {
-        return `${path}|${staged ? "staged" : "unstaged"}|${untracked ? "untracked" : ""}`;
+        const cwd = globalStore.get(this.cwd);
+        return `${cwd}|${path}|${staged ? "staged" : "unstaged"}|${untracked ? "untracked" : ""}`;
     }
 
     async fetchDiffCached(path: string, staged: boolean, untracked: boolean): Promise<GitDiffResponse | null> {
@@ -638,6 +660,26 @@ export class SourceControlViewModel implements ViewModel {
         if (updated.length > 0) {
             globalStore.set(this.reviewFilesAtom, updated);
         }
+    }
+
+    /**
+     * Change the SCM widget's working directory and reset all derived state.
+     * Pass null to reset to the focused terminal's cwd (clears the user-selected override).
+     * Clears the selected file, diff, diff cache, and review mode, then re-fetches status.
+     * Used by the directory dropdown (onSelect) and the "reset to terminal directory" header icon.
+     */
+    changeDirectory(newPath: string | null) {
+        if (newPath === null) {
+            globalStore.set(this.userCwdAtom, null);
+        } else {
+            globalStore.set(this.cwd, newPath);
+        }
+        globalStore.set(this.directoryDropdownOpen, false);
+        globalStore.set(this.selectedFileAtom, null);
+        globalStore.set(this.diffAtom, null);
+        globalStore.set(this.diffCacheAtom, new Map());
+        this.exitReview();
+        this.fetchStatus();
     }
 
     refresh() {
