@@ -126,19 +126,19 @@ var (
 	terminateJobManagerGroup singleflight.Group
 
 	// test hooks for unit testing auto-reconnect behavior
-	isConnectedTestHook              func(connName string) (bool, error)
-	reconcileOnUpTestHook            func(connName string)
-	reconcileOnDownTestHook          func(connName string)
-	hasRunningDurableJobsTestHook    func(ctx context.Context, connName string) bool
+	isConnectedTestHook           func(connName string) (bool, error)
+	reconcileOnUpTestHook         func(connName string)
+	reconcileOnDownTestHook       func(connName string)
+	hasRunningDurableJobsTestHook func(ctx context.Context, connName string) bool
 
 	// active connection-reconnect schedulers (deduplication for onConnectionDown)
 	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
 )
 
-const ConnReconnectInterval              = 5 * time.Second
-const ConnReconnectMaxDuration           = 5 * time.Minute
-const ConnReconnectAggressiveInterval    = 3 * time.Second
-const ConnReconnectAggressiveDuration    = 2 * time.Minute
+const ConnReconnectInterval = 5 * time.Second
+const ConnReconnectMaxDuration = 5 * time.Minute
+const ConnReconnectAggressiveInterval = 3 * time.Second
+const ConnReconnectAggressiveDuration = 2 * time.Minute
 
 func InitJobController() {
 	go connReconcileWorker()
@@ -632,52 +632,15 @@ func HandleSystemResume(ctx context.Context) {
 	}
 }
 
-// needsInteractiveAuth checks if a connection might require password or
-// keyboard-interactive authentication. When true, automatic reconnect
-// cannot succeed without user involvement, so the scheduler should skip it.
+// needsInteractiveAuth checks if a connection might require an interactive prompt
+// (password, key passphrase, or keyboard-interactive). When true, automatic
+// reconnect cannot succeed without user involvement, so the scheduler should
+// skip it. Delegates to conncontroller.CanReconnectWithoutPrompt, which uses
+// the runtime auth-prompt flag (set after a successful handshake) as the primary
+// signal and falls back to a ~/.ssh/config publickey check when the flag is
+// unknown (cold start or after an auth failure).
 func needsInteractiveAuth(connName string) bool {
-	// If a password is cached from a previous session, no interactive prompt is needed
-	if conncontroller.HasCachedPassword(connName) {
-		return false
-	}
-
-	config := wconfig.GetWatcher().GetFullConfig()
-	connConfig, ok := config.Connections[connName]
-	if !ok {
-		return true // safe default: assume interactive auth needed
-	}
-
-	// If batch mode is on, interactive prompts are suppressed —
-	// the attempt will just fail, so the scheduler can run (it won't block on user input)
-	if utilfn.SafeDeref(connConfig.SshBatchMode) {
-		return false
-	}
-
-	// If a password is stored in the secret store, no user prompt is needed
-	if connConfig.SshPasswordSecretName != nil && *connConfig.SshPasswordSecretName != "" {
-		return false
-	}
-
-	// Check if either interactive method is in the preferred auth order.
-	// If PreferredAuthentications is set, only those methods will be tried.
-	if connConfig.SshPreferredAuthentications != nil {
-		hasInteractive := false
-		for _, method := range connConfig.SshPreferredAuthentications {
-			if method == "password" || method == "keyboard-interactive" {
-				hasInteractive = true
-				break
-			}
-		}
-		if !hasInteractive {
-			return false // only key-based auth configured
-		}
-	}
-
-	// Check if password or keyboard-interactive auth is enabled (both default true).
-	// When nil (not explicitly set in config), treat as enabled per SSH defaults.
-	passwordAuth := connConfig.SshPasswordAuthentication == nil || utilfn.SafeDeref(connConfig.SshPasswordAuthentication)
-	kbdAuth := connConfig.SshKbdInteractiveAuthentication == nil || utilfn.SafeDeref(connConfig.SshKbdInteractiveAuthentication)
-	return passwordAuth || kbdAuth
+	return !conncontroller.CanReconnectWithoutPrompt(connName)
 }
 
 func onConnectionDown(connName string) {
@@ -1116,7 +1079,6 @@ func StartJob(ctx context.Context, params StartJobParams) (string, error) {
 		sendBlockJobStatusEventByJob(ctx, updatedJob)
 	}
 
-
 	go func() {
 		defer func() {
 			panichandler.PanicHandler("jobcontroller:runOutputLoop", recover())
@@ -1424,7 +1386,6 @@ func remoteTerminateJobManager(ctx context.Context, job *waveobj.Job) error {
 	} else {
 		sendBlockJobStatusEventByJob(ctx, updatedJob)
 	}
-
 
 	log.Printf("[job:%s] job manager terminated successfully", job.OID)
 	return nil

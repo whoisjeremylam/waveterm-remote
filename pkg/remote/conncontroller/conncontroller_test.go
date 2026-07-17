@@ -20,6 +20,10 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// reconnectTestMu serializes tests that set global test hooks
+// (getConnectionConfigTestHook, hasPublicKeyAuthForTest) to avoid races.
+var reconnectTestMu sync.Mutex
+
 // makeTestConn creates a minimal SSHConn suitable for unit tests.
 func makeTestConn(status string) *SSHConn {
 	conn := &SSHConn{
@@ -261,10 +265,10 @@ func TestStallStartTimeTracking(t *testing.T) {
 // mockConn implements ssh.Conn for testing waitForDisconnect.
 // Its Wait() method blocks until closeCh is closed, then returns waitErr.
 type mockConn struct {
-	closeCh  chan struct{}
-	waitErr  error
-	mu       sync.Mutex
-	closed   bool
+	closeCh chan struct{}
+	waitErr error
+	mu      sync.Mutex
+	closed  bool
 }
 
 func newMockConn() *mockConn {
@@ -286,12 +290,14 @@ func (m *mockConn) Close() error {
 	return nil
 }
 
-func (m *mockConn) User() string                                             { return "testuser" }
-func (m *mockConn) SessionID() []byte                                        { return []byte("testsession") }
-func (m *mockConn) ClientVersion() []byte                                    { return []byte("testclient") }
-func (m *mockConn) ServerVersion() []byte                                    { return []byte("testserver") }
-func (m *mockConn) RemoteAddr() net.Addr                                     { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 22} }
-func (m *mockConn) LocalAddr() net.Addr                                      { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345} }
+func (m *mockConn) User() string          { return "testuser" }
+func (m *mockConn) SessionID() []byte     { return []byte("testsession") }
+func (m *mockConn) ClientVersion() []byte { return []byte("testclient") }
+func (m *mockConn) ServerVersion() []byte { return []byte("testserver") }
+func (m *mockConn) RemoteAddr() net.Addr  { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 22} }
+func (m *mockConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345}
+}
 func (m *mockConn) SendRequest(name string, wantReply bool, payload []byte) (bool, []byte, error) {
 	return false, nil, fmt.Errorf("not implemented")
 }
@@ -583,10 +589,12 @@ func (h *halfCloseConn) CloseWrite() error {
 // because the dead SSH channel's EOF was never propagated as a TCP FIN.
 //
 // Real scenario:
-//   browser ←TCP→ localConn ←copyBoth→ remoteConn ←SSH→ wrangler
+//
+//	browser ←TCP→ localConn ←copyBoth→ remoteConn ←SSH→ wrangler
 //
 // Test simulation:
-//   browserSide ←TCP→ tunnelLocal ←copyBoth→ tunnelRemote ←TCP→ serverSide
+//
+//	browserSide ←TCP→ tunnelLocal ←copyBoth→ tunnelRemote ←TCP→ serverSide
 //
 // When the server closes its TCP connection, copyBoth should propagate
 // that EOF to the browser by calling CloseWrite on the local tunnel endpoint.
@@ -1343,11 +1351,15 @@ func TestCanAutoReconnect_CachedPassword(t *testing.T) {
 }
 
 func TestCanAutoReconnect_NoCachedPassword_UnknownConn(t *testing.T) {
-	t.Parallel()
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
-	// No cached password, connection not in config → false
+	// No cached password, connection not in config, no publickey in ssh config → false
+	hasPublicKeyAuthForTest = func(string) bool { return false }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
 	status := conn.DeriveConnStatus()
 	if status.CanAutoReconnect {
 		t.Fatal("expected CanAutoReconnect=false for unknown connection without cached password")
@@ -1355,7 +1367,8 @@ func TestCanAutoReconnect_NoCachedPassword_UnknownConn(t *testing.T) {
 }
 
 func TestCanAutoReconnect_BatchMode(t *testing.T) {
-	t.Parallel()
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
@@ -1372,7 +1385,8 @@ func TestCanAutoReconnect_BatchMode(t *testing.T) {
 }
 
 func TestCanAutoReconnect_PasswordSecretStore(t *testing.T) {
-	t.Parallel()
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
@@ -1389,7 +1403,8 @@ func TestCanAutoReconnect_PasswordSecretStore(t *testing.T) {
 }
 
 func TestCanAutoReconnect_KeyOnlyAuth(t *testing.T) {
-	t.Parallel()
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
@@ -1407,14 +1422,15 @@ func TestCanAutoReconnect_KeyOnlyAuth(t *testing.T) {
 }
 
 func TestCanAutoReconnect_PasswordAuthDisabled(t *testing.T) {
-	t.Parallel()
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
 	falseVal := false
 	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		return wconfig.ConnKeywords{
-			SshPasswordAuthentication:        &falseVal,
+			SshPasswordAuthentication:       &falseVal,
 			SshKbdInteractiveAuthentication: &falseVal,
 		}, true
 	}
@@ -1427,12 +1443,15 @@ func TestCanAutoReconnect_PasswordAuthDisabled(t *testing.T) {
 }
 
 func TestCanAutoReconnect_PasswordAuthEnabled_Default(t *testing.T) {
-	t.Parallel()
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
-	// Default: password auth enabled, no cached password → false
-	// (connection is unknown, so canAutoReconnectLocked returns false)
+	// Default: password auth enabled, no cached password, no publickey → false
+	hasPublicKeyAuthForTest = func(string) bool { return false }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
 	status := conn.DeriveConnStatus()
 	if status.CanAutoReconnect {
 		t.Fatal("expected CanAutoReconnect=false when password auth is enabled by default")
@@ -1440,18 +1459,21 @@ func TestCanAutoReconnect_PasswordAuthEnabled_Default(t *testing.T) {
 }
 
 func TestCanAutoReconnect_NilAuthSettings_InteractiveNeeded(t *testing.T) {
-	t.Parallel()
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
 	// Connection is known but auth settings are nil (not explicitly set).
 	// SSH defaults: PasswordAuthentication=yes, KbdInteractiveAuthentication=yes.
-	// So interactive auth is needed → canAutoReconnect=false.
+	// So interactive auth is needed → canAutoReconnect=false (no publickey fallback).
 	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
 		// Return empty config — both SshPasswordAuthentication and SshKbdInteractiveAuthentication are nil
 		return wconfig.ConnKeywords{}, true
 	}
 	defer func() { getConnectionConfigTestHook = nil }()
+	hasPublicKeyAuthForTest = func(string) bool { return false }
+	defer func() { hasPublicKeyAuthForTest = nil }()
 
 	status := conn.DeriveConnStatus()
 	if status.CanAutoReconnect {
@@ -1460,12 +1482,17 @@ func TestCanAutoReconnect_NilAuthSettings_InteractiveNeeded(t *testing.T) {
 }
 
 func TestDeriveConnStatus_IncludesCanAutoReconnect(t *testing.T) {
-	t.Parallel()
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
 	conn := makeTestConn(Status_Connected)
 	defer cleanupTestConn(conn)
 
+	// No publickey in ssh config for this test (isolate the cached-password logic)
+	hasPublicKeyAuthForTest = func(string) bool { return false }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
 	status := conn.DeriveConnStatus()
-	// Connected with no cached password → false
+	// Connected with no cached password, no publickey → false
 	if status.CanAutoReconnect {
 		t.Fatal("expected CanAutoReconnect=false for connected without cached password")
 	}
@@ -1482,5 +1509,169 @@ func TestDeriveConnStatus_IncludesCanAutoReconnect(t *testing.T) {
 	status = conn.DeriveConnStatus()
 	if status.CanAutoReconnect {
 		t.Fatal("expected CanAutoReconnect=false after clearing cache")
+	}
+}
+
+// --- CanReconnectWithoutPrompt / authPromptState Tests ---
+
+// makeTestConnWithPort creates a test conn with a unique port so parallel tests
+// don't share the same conn object in clientControllerMap.
+func makeTestConnWithPort(t *testing.T, port string, status string) *SSHConn {
+	conn := &SSHConn{
+		lock:             &sync.Mutex{},
+		lifecycleLock:    &sync.Mutex{},
+		Status:           status,
+		ConnHealthStatus: ConnHealthStatus_Good,
+		WshEnabled:       &atomic.Bool{},
+		Opts:             &remote.SSHOpts{SSHHost: "testhost-" + port, SSHUser: "testuser", SSHPort: port},
+	}
+	globalLock.Lock()
+	clientControllerMap[*conn.Opts] = conn
+	globalLock.Unlock()
+	return conn
+}
+
+// TestCanReconnectWithoutPrompt_FlagNone verifies that a conn whose last
+// successful handshake used no prompt (authPromptNone) can auto-reconnect
+// without re-checking ssh config.
+func TestCanReconnectWithoutPrompt_FlagNone(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2301", Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptNone)
+	// No cached password, no publickey in ssh config — flag alone should suffice
+	hasPublicKeyAuthForTest = func(string) bool { return false }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
+	if !conn.canReconnectWithoutPromptLocked() {
+		t.Fatal("expected canReconnectWithoutPromptLocked=true for authPromptNone")
+	}
+	if !CanReconnectWithoutPrompt(conn.GetName()) {
+		t.Fatal("expected CanReconnectWithoutPrompt=true for authPromptNone")
+	}
+}
+
+// TestCanReconnectWithoutPrompt_FlagUsed verifies that a conn whose last
+// handshake required a prompt (authPromptUsed) cannot auto-reconnect
+// (unless a password is cached).
+func TestCanReconnectWithoutPrompt_FlagUsed(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2302", Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptUsed)
+	hasPublicKeyAuthForTest = func(string) bool { return true }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
+	if conn.canReconnectWithoutPromptLocked() {
+		t.Fatal("expected canReconnectWithoutPromptLocked=false for authPromptUsed without cached password")
+	}
+	// Caching a password makes it replayable — should return true even with flag=used
+	conn.cachePassword("secret")
+	if !conn.canReconnectWithoutPromptLocked() {
+		t.Fatal("expected canReconnectWithoutPromptLocked=true for authPromptUsed with cached password")
+	}
+}
+
+// TestCanReconnectWithoutPrompt_AuthFailed verifies that an auth-failed conn
+// does not auto-reconnect (credential is wrong; retry won't help).
+func TestCanReconnectWithoutPrompt_AuthFailed(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2303", Status_Error)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptNone) // prior connect was fine
+	conn.WithLock(func() { conn.LastErrorCode = "auth-failed" })
+	hasPublicKeyAuthForTest = func(string) bool { return true }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
+	if conn.canReconnectWithoutPromptLocked() {
+		t.Fatal("expected canReconnectWithoutPromptLocked=false after auth-failed (even with flag=none and publickey)")
+	}
+}
+
+// TestCanReconnectWithoutPrompt_PubkeyFallback verifies that when the flag is
+// unknown (never connected), the ~/.ssh/config publickey fallback is used.
+func TestCanReconnectWithoutPrompt_PubkeyFallback(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2304", Status_Disconnected)
+	defer cleanupTestConn(conn)
+	// authPromptState is 0 (unknown/default) — never connected
+	hasPublicKeyAuthForTest = func(string) bool { return true }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
+	if !conn.canReconnectWithoutPromptLocked() {
+		t.Fatal("expected canReconnectWithoutPromptLocked=true via publickey fallback (flag unknown, publickey available)")
+	}
+}
+
+// TestCanReconnectWithoutPrompt_PubkeyFallbackNoKey verifies that when the
+// flag is unknown and no publickey is available, auto-reconnect is skipped.
+func TestCanReconnectWithoutPrompt_PubkeyFallbackNoKey(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2305", Status_Disconnected)
+	defer cleanupTestConn(conn)
+	// authPromptState is 0 (unknown/default)
+	// Isolate from parallel tests that set getConnectionConfigTestHook: return
+	// (nil, false) so connKeywordsAllowReconnect is not consulted.
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{}, false
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+	hasPublicKeyAuthForTest = func(string) bool { return false }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
+	if conn.canReconnectWithoutPromptLocked() {
+		t.Fatal("expected canReconnectWithoutPromptLocked=false when flag unknown and no publickey")
+	}
+}
+
+// TestNeedsInteractiveAuth_FlagNone verifies that NeedsInteractiveAuth (used by
+// startup reconnect to pick a timeout) returns false (no timeout needed) when
+// the flag says no prompt was needed.
+func TestNeedsInteractiveAuth_FlagNone(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConnWithPort(t, "2306", Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptNone)
+	defer conn.authPromptState.Store(authPromptUnknown)
+
+	if NeedsInteractiveAuth(conn.GetName()) {
+		t.Fatal("expected NeedsInteractiveAuth=false for authPromptNone (no timeout needed)")
+	}
+}
+
+// TestNeedsInteractiveAuth_FlagUsed verifies that NeedsInteractiveAuth returns
+// true (timeout needed for prompt) when the flag says a prompt was used.
+func TestNeedsInteractiveAuth_FlagUsed(t *testing.T) {
+	t.Parallel()
+	conn := makeTestConnWithPort(t, "2307", Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptUsed)
+	defer conn.authPromptState.Store(authPromptUnknown)
+
+	if !NeedsInteractiveAuth(conn.GetName()) {
+		t.Fatal("expected NeedsInteractiveAuth=true for authPromptUsed (timeout needed for prompt)")
+	}
+}
+
+// TestNeedsInteractiveAuth_UnknownConservative verifies that when the flag is
+// unknown (cold start), NeedsInteractiveAuth is conservative (returns true,
+// generous timeout) even if a publickey is available — because a configured
+// key may be passphrase-encrypted.
+func TestNeedsInteractiveAuth_UnknownConservative(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2308", Status_Disconnected)
+	defer cleanupTestConn(conn)
+	// authPromptState is 0 (unknown)
+	hasPublicKeyAuthForTest = func(string) bool { return true }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
+	if !NeedsInteractiveAuth(conn.GetName()) {
+		t.Fatal("expected NeedsInteractiveAuth=true when flag unknown (conservative, generous timeout)")
 	}
 }

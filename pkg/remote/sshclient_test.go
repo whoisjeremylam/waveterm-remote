@@ -42,14 +42,14 @@ func TestContextWithCachedPassword(t *testing.T) {
 	})
 }
 
-func TestPasswordUsedTracker(t *testing.T) {
+func TestAuthTracker(t *testing.T) {
 	t.Parallel()
 
 	t.Run("initial state", func(t *testing.T) {
 		t.Parallel()
-		tracker := &PasswordUsedTracker{}
-		if tracker.Used {
-			t.Error("expected Used to be false initially")
+		tracker := &AuthTracker{}
+		if tracker.PasswordUsed {
+			t.Error("expected PasswordUsed to be false initially")
 		}
 		if tracker.Password != "" {
 			t.Errorf("expected empty Password, got %q", tracker.Password)
@@ -58,15 +58,56 @@ func TestPasswordUsedTracker(t *testing.T) {
 
 	t.Run("tracks password usage", func(t *testing.T) {
 		t.Parallel()
-		tracker := &PasswordUsedTracker{}
+		tracker := &AuthTracker{}
 		tracker.Password = "mypass"
-		tracker.Used = true
+		tracker.PasswordUsed = true
 
-		if !tracker.Used {
-			t.Error("expected Used to be true")
+		if !tracker.PasswordUsed {
+			t.Error("expected PasswordUsed to be true")
 		}
 		if tracker.Password != "mypass" {
 			t.Errorf("expected 'mypass', got %q", tracker.Password)
+		}
+		// password from secret/store is replayable — not an interactive prompt
+		if tracker.InteractivePromptUsed() {
+			t.Error("expected InteractivePromptUsed to be false for replayed password")
+		}
+	})
+
+	t.Run("password from prompt is interactive", func(t *testing.T) {
+		t.Parallel()
+		tracker := &AuthTracker{}
+		tracker.Password = "mypass"
+		tracker.PasswordUsed = true
+		tracker.PasswordFromPrompt = true
+		if !tracker.InteractivePromptUsed() {
+			t.Error("expected InteractivePromptUsed to be true for user-typed password")
+		}
+	})
+
+	t.Run("passphrase prompt is interactive", func(t *testing.T) {
+		t.Parallel()
+		tracker := &AuthTracker{}
+		tracker.PassphrasePrompted = true
+		if !tracker.InteractivePromptUsed() {
+			t.Error("expected InteractivePromptUsed to be true for passphrase prompt")
+		}
+	})
+
+	t.Run("keyboard-interactive is interactive", func(t *testing.T) {
+		t.Parallel()
+		tracker := &AuthTracker{}
+		tracker.KbdInteractiveUsed = true
+		if !tracker.InteractivePromptUsed() {
+			t.Error("expected InteractivePromptUsed to be true for keyboard-interactive")
+		}
+	})
+
+	t.Run("nil tracker is safe", func(t *testing.T) {
+		t.Parallel()
+		var tracker *AuthTracker
+		if tracker.InteractivePromptUsed() {
+			t.Error("expected nil tracker to report no interactive prompt")
 		}
 	})
 }

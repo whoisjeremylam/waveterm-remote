@@ -17,6 +17,7 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/wps"
 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
 )
+
 func TestShouldAttemptAutoReconnect(t *testing.T) {
 	// Reset global state
 	lastAutoReconnectAttempt = ds.MakeSyncMap[int64]()
@@ -550,23 +551,29 @@ func TestIsNetworkUnreachable_NilError(t *testing.T) {
 	}
 }
 
-// TestNeedsInteractiveAuth_NoConfig verifies that a connection with no config
-// returns true (safe default: assume interactive auth may be needed).
-func TestNeedsInteractiveAuth_NoConfig(t *testing.T) {
+// TestNeedsInteractiveAuth_LocalConn verifies that a local connection never
+// needs interactive auth (CanReconnectWithoutPrompt returns true for local).
+func TestNeedsInteractiveAuth_LocalConn(t *testing.T) {
 	t.Parallel()
-	result := needsInteractiveAuth("user@nonexistent-host:22")
-	if !result {
-		t.Fatalf("expected true when connection config not found")
+	if needsInteractiveAuth("local") {
+		t.Fatalf("expected local connection to not need interactive auth")
+	}
+	if needsInteractiveAuth("local:abc123") {
+		t.Fatalf("expected local: connection to not need interactive auth")
 	}
 }
 
-// TestNeedsInteractiveAuth_Defaults verifies that with default SSH config
-// (password and kbd-interactive enabled, no stored secret), returns true.
-func TestNeedsInteractiveAuth_Defaults(t *testing.T) {
+// TestNeedsInteractiveAuth_Delegates verifies that needsInteractiveAuth is the
+// inverse of conncontroller.CanReconnectWithoutPrompt (the single source of
+// truth). The runtime flag and config-fallback logic is tested in the
+// conncontroller package.
+func TestNeedsInteractiveAuth_Delegates(t *testing.T) {
 	t.Parallel()
-	// Use the full config watcher which has defaults
-	result := needsInteractiveAuth("user@default-host:22")
-	if !result {
-		t.Fatalf("expected true with default auth settings")
+	for _, connName := range []string{"local", "local:abc123", "user@nonexistent-host:22"} {
+		expected := !conncontroller.CanReconnectWithoutPrompt(connName)
+		got := needsInteractiveAuth(connName)
+		if got != expected {
+			t.Fatalf("needsInteractiveAuth(%q) = %v, expected %v (inverse of CanReconnectWithoutPrompt)", connName, got, expected)
+		}
 	}
 }

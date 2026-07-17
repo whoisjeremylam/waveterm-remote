@@ -383,3 +383,24 @@ With 'x' now hiding (keep-alive) instead of deleting, reopening a widget restore
 - `handleDirectorySelect` in `sourcecontrol.tsx` now delegates to `model.changeDirectory(path)`.
 
 **Files changed:** `app/element/directorydropdown.tsx`, `app/element/directorydropdown.scss`, `app/view/preview/preview-model.tsx`, `app/view/sourcecontrol/sourcecontrol-model.ts`, `app/view/sourcecontrol/sourcecontrol.tsx`.
+
+## 2026-07-17: Runtime auth-prompt tracking for auto-reconnect eligibility (`CanReconnectWithoutPrompt`)
+
+**Decision:** Replaced the config-only `needsInteractiveAuth` / `canAutoReconnectLocked` / `NeedsInteractiveAuth` trio with a runtime `authPromptState` flag on `SSHConn`, backed by an `AuthTracker` that observes which auth methods fired during the SSH handshake. A `~/.ssh/config` publickey fallback (`HasPublicKeyAuth`) covers cold starts.
+
+**Root cause of the reconnect bug:** The three eligibility functions inspected only `connections.json` (which for key-based connections contains just `conn:wshenabled`), never checking `~/.ssh/config` (where `IdentityFile`, `PubkeyAuthentication`, etc. are merged at connect time in `ConnectToClient`). They defaulted to "password/kbd-interactive enabled" → returned `true` (interactive auth needed) → `HandleSystemResume` skipped fast-path reconnect and `onConnectionDown` skipped the scheduler. Key-based connections (like `jeremy@dev2.jlam.io`) could never auto-reconnect after sleep/wake.
+
+**Implementation:**
+
+- **`AuthTracker`** (replaces `PasswordUsedTracker`) in `sshclient.go`: tracks `PasswordFromPrompt` (user-typed password, not secret/cache), `PassphrasePrompted` (key passphrase), `KbdInteractiveUsed` (keyboard-interactive). `InteractivePromptUsed()` returns true if any fired. Replayable credentials (secret-store password, cached password, unencrypted key, agent key) do NOT set these — only live user prompts do.
+- **`SSHConn.authPromptState`** (`atomic.Int32`): set to `authPromptNone` (no prompt) or `authPromptUsed` (prompt needed) after a successful `ConnectToClient`. Cleared to `authPromptUnknown` on `auth-failed`. Checked by `canReconnectWithoutPromptLocked`.
+- **`CanReconnectWithoutPrompt(connName)`** (single source of truth): decision order — cached password → auth-failed (skip) → runtime flag (none/used) → config fallback. Used by `onConnectionDown`, `HandleSystemResume`, `DeriveConnStatus` (UI `CanAutoReconnect`), and `needsInteractiveAuth` (jobcontroller).
+- **`HasPublicKeyAuth(host)`** in `sshclient.go`: reads `~/.ssh/config` for PubkeyAuthentication enabled, publickey in PreferredAuthentications, and at least one IdentityFile that exists on disk. The existence check is critical — `ssh_config` returns default identity files even when none are configured.
+- **`NeedsInteractiveAuth`** (startup reconnect) is intentionally conservative: only trusts the runtime flag + cached password, NOT the publickey fallback, because a configured key may be passphrase-encrypted. Gives a no-deadline context for the startup connect.
+- **`sshConfigMu`** (`sync.Mutex`): serializes `findSshConfigKeywords` calls because the `ssh_config` library's `ReloadConfigs`/`doLoadConfigs` is not thread-safe. Fixes a latent race exposed by the fallback path calling it from `DeriveConnStatus` (hot path).
+
+**Why runtime flag over config inspection:** Config inspection can't distinguish passphrase-encrypted keys from unencrypted ones, revoked keys, or agent-only auth. The runtime flag observes what actually happened during the handshake. The config fallback only covers the never-connected case (cold start, post-auth-failed).
+
+**Why not just the flag:** The flag is in-memory on `SSHConn`, lost on app restart. Before the first successful connect (or after auth-failed clears it), the config fallback ensures key-based connections still get auto-reconnect.
+
+**Files changed:** `pkg/remote/sshclient.go` (AuthTracker, HasPublicKeyAuth, sshConfigMu), `pkg/remote/conncontroller/conncontroller.go` (authPromptState, CanReconnectWithoutPrompt, canReconnectFromKeywordsOrPubkey, connKeywordsAllowReconnect, hasPublicKeyAuthForConn, rewritten canAutoReconnectLocked/NeedsInteractiveAuth), `pkg/jobcontroller/jobcontroller.go` (needsInteractiveAuth delegates to CanReconnectWithoutPrompt), tests in `sshclient_test.go`/`conncontroller_test.go`/`jobcontroller_test.go`.

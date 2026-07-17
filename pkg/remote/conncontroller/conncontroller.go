@@ -65,6 +65,14 @@ const (
 	ConnHealthStatus_Stalled  = "stalled"
 )
 
+// authPromptState values for SSHConn.authPromptState. Records whether the last
+// successful SSH handshake required an interactive user prompt.
+const (
+	authPromptUnknown = 0 // never connected, or cleared after an auth failure
+	authPromptNone    = 1 // last successful connect used no interactive prompt (replayable)
+	authPromptUsed    = 2 // last successful connect used an interactive prompt (password/passphrase/kbd)
+)
+
 var globalLock = &sync.Mutex{}
 var clientControllerMap = make(map[remote.SSHOpts]*SSHConn)
 var activeConnCounter = &atomic.Int32{}
@@ -79,21 +87,21 @@ type SSHConn struct {
 	lock          *sync.Mutex // this lock protects the fields in the struct from concurrent access
 	lifecycleLock *sync.Mutex // this protects the lifecycle from concurrent calls
 
-	Status             string
-	ConnHealthStatus   string
-	WshEnabled         *atomic.Bool
-	Opts               *remote.SSHOpts
-	Client             *ssh.Client
-	DomainSockName     string // if "", then no domain socket
-	DomainSockListener net.Listener
-	ConnController     *ssh.Session
-	Error              string
-	WshError           string
-	NoWshReason        string
-	WshVersion         string
-	LastConnectTime    int64
-	ActiveConnNum      int
-	Monitor            *ConnMonitor // will not be nil
+	Status               string
+	ConnHealthStatus     string
+	WshEnabled           *atomic.Bool
+	Opts                 *remote.SSHOpts
+	Client               *ssh.Client
+	DomainSockName       string // if "", then no domain socket
+	DomainSockListener   net.Listener
+	ConnController       *ssh.Session
+	Error                string
+	WshError             string
+	NoWshReason          string
+	WshVersion           string
+	LastConnectTime      int64
+	ActiveConnNum        int
+	Monitor              *ConnMonitor // will not be nil
 	ReconnectAttempt     int
 	ReconnectNextAttempt int64
 	ReconnectError       string
@@ -101,11 +109,17 @@ type SSHConn struct {
 	LocalForwardListeners  []ForwardingRule
 	RemoteForwardListeners []ForwardingRule
 
-	PendingAuth      bool        // true while waiting for user auth input
+	PendingAuth      bool          // true while waiting for user auth input
 	pendingAuthDone  chan struct{} // closed when PendingAuth transitions to false
-	CachedPassword   *string     // cached password for reconnect (in-memory only)
-	LastConnectTryAt int64       // UnixMilli of last Connect() attempt (cooldown guard)
-	LastErrorCode    string      // error code from last failed Connect() (e.g., "auth-failed")
+	CachedPassword   *string       // cached password for reconnect (in-memory only)
+	LastConnectTryAt int64         // UnixMilli of last Connect() attempt (cooldown guard)
+	LastErrorCode    string        // error code from last failed Connect() (e.g., "auth-failed")
+
+	// authPromptState records whether the last successful SSH handshake required
+	// an interactive user prompt (password typed, key passphrase, or
+	// keyboard-interactive). Used by CanReconnectWithoutPrompt to decide whether
+	// auto-reconnect can run without user involvement. See authPrompt* constants.
+	authPromptState atomic.Int32
 }
 
 type ForwardingRule struct {
@@ -906,6 +920,11 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 		// Clear cached password on auth failure so user is re-prompted
 		if errorCode == "auth-failed" {
 			conn.clearCachedPassword()
+			// Reset the auth-prompt flag: the credential was rejected, so the prior
+			// "no prompt needed" assumption is invalid. CanReconnectWithoutPrompt
+			// falls back to the config-based check (or skips the scheduler) until a
+			// successful reconnect re-establishes the flag.
+			conn.authPromptState.Store(authPromptUnknown)
 			// Launch a background goroutine to re-prompt the user for a new password.
 			// This is independent of the current Connect() lifecycle — the password
 			// buffer model means the prompt stays visible until the user acts.
@@ -1068,26 +1087,110 @@ func (conn *SSHConn) requestPasswordRePrompt() {
 }
 
 // canAutoReconnectLocked returns true if the scheduler can auto-reconnect
-// without user input. Must be called with conn.lock held.
+// without user input. Must be called with conn.lock held. Delegates to the
+// single source of truth in canReconnectWithoutPromptLocked.
 func (conn *SSHConn) canAutoReconnectLocked() bool {
-	// If a password is cached, auto-reconnect is possible
+	return conn.canReconnectWithoutPromptLocked()
+}
+
+// canReconnectWithoutPromptLocked returns true if the connection can be
+// re-established without an interactive user prompt (password entry, key
+// passphrase, or keyboard-interactive challenge). Must be called with
+// conn.lock held. This is the single source of truth for auto-reconnect
+// eligibility used by the reconnect scheduler, system resume fast-path, and
+// the UI CanAutoReconnect flag.
+//
+// Decision order:
+//  1. Cached password (in-memory, from a prior successful prompt) — replayable.
+//  2. Last error was auth-failed — credential is wrong; retry won't help, so
+//     skip the scheduler and wait for the user to re-auth.
+//  3. Runtime auth-prompt flag (set after a successful handshake):
+//     - authPromptNone: no prompt was needed (unencrypted key, agent key, or
+//     replayable secret) — auto-reconnect is safe.
+//     - authPromptUsed: a prompt was needed and no password was cached (cached
+//     password is checked in step 1) — not replayable, skip auto-reconnect.
+//  4. Flag unknown (never connected, or cleared after auth failure): fall back
+//     to the config-based check in canReconnectFromConfig, which inspects
+//     ~/.ssh/config for a publickey (covers key-based connections that only set
+//     conn:wshenabled in connections.json).
+func (conn *SSHConn) canReconnectWithoutPromptLocked() bool {
+	// A cached password can be replayed without prompting.
 	if conn.CachedPassword != nil {
 		return true
 	}
-	// Check if the connection requires interactive auth
-	connConfig, ok := conn.getConnectionConfig()
-	if !ok {
-		return false // unknown connection, assume interactive auth needed
+	// If the last connect failed with auth-failed, the credential is wrong.
+	// Retry won't help — wait for the user to re-auth (requestPasswordRePrompt)
+	// or fix the key. This prevents a retry storm for revoked keys/credentials.
+	if conn.LastErrorCode == "auth-failed" {
+		return false
 	}
-	// If batch mode is on, interactive prompts are suppressed
+	switch conn.authPromptState.Load() {
+	case authPromptNone:
+		// Last successful connect used no prompt (replayable key/secret).
+		return true
+	case authPromptUsed:
+		// Last successful connect needed a prompt and no password was cached
+		// (cached password is checked above). Not replayable.
+		return false
+	default:
+		// Unknown (never connected, or cleared after auth failure): fall back to
+		// the config-based check, which inspects connections.json and ~/.ssh/config
+		// for a publickey. Uses conn.getConnectionConfig() so the connections.json
+		// settings (batch mode, password secret, preferred auth) are respected.
+		return conn.canReconnectFromKeywordsOrPubkey()
+	}
+}
+
+// canReconnectFromKeywordsOrPubkey is the config-based fallback for a conn that
+// exists in the controller map. It checks connections.json (via the conn's
+// getConnectionConfig, which respects the test hook) and ~/.ssh/config (via
+// HasPublicKeyAuth) to determine if a non-interactive auth method is available.
+// Must be called with conn.lock held.
+func (conn *SSHConn) canReconnectFromKeywordsOrPubkey() bool {
+	connConfig, ok := conn.getConnectionConfig()
+	if ok && connKeywordsAllowReconnect(&connConfig) {
+		return true
+	}
+	return hasPublicKeyAuthForConn(conn.GetName())
+}
+
+// CanReconnectWithoutPrompt returns true if a connection can be re-established
+// without an interactive user prompt. This is the single source of truth for
+// auto-reconnect eligibility used by the reconnect scheduler (onConnectionDown),
+// the system resume fast-path (HandleSystemResume), and the UI CanAutoReconnect
+// flag (via DeriveConnStatus -> canAutoReconnectLocked).
+func CanReconnectWithoutPrompt(connName string) bool {
+	if IsLocalConnName(connName) {
+		return true
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return canReconnectFromConfigByName(connName)
+	}
+	conn := MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.lock.Lock()
+		defer conn.lock.Unlock()
+		return conn.canReconnectWithoutPromptLocked()
+	}
+	return canReconnectFromConfigByName(connName)
+}
+
+// connKeywordsAllowReconnect checks connections.json settings (batch mode,
+// password secret, preferred auth, password/kbd disabled) for the config-based
+// fallback. Returns true if the connections.json settings indicate a non-
+// interactive auth method. Does NOT check ~/.ssh/config (use HasPublicKeyAuth
+// for that). A nil connConfig returns false.
+func connKeywordsAllowReconnect(connConfig *wconfig.ConnKeywords) bool {
+	if connConfig == nil {
+		return false
+	}
 	if utilfn.SafeDeref(connConfig.SshBatchMode) {
 		return true
 	}
-	// If a password is stored in the secret store, no user prompt is needed
 	if connConfig.SshPasswordSecretName != nil && *connConfig.SshPasswordSecretName != "" {
 		return true
 	}
-	// Check if either interactive method is in the preferred auth order
 	if connConfig.SshPreferredAuthentications != nil {
 		hasInteractive := false
 		for _, method := range connConfig.SshPreferredAuthentications {
@@ -1097,14 +1200,43 @@ func (conn *SSHConn) canAutoReconnectLocked() bool {
 			}
 		}
 		if !hasInteractive {
-			return true // only key-based auth configured
+			return true
 		}
 	}
-	// Check if password or keyboard-interactive auth is enabled (both default true).
-	// When nil (not explicitly set in config), treat as enabled per SSH defaults.
 	passwordAuth := connConfig.SshPasswordAuthentication == nil || utilfn.SafeDeref(connConfig.SshPasswordAuthentication)
 	kbdAuth := connConfig.SshKbdInteractiveAuthentication == nil || utilfn.SafeDeref(connConfig.SshKbdInteractiveAuthentication)
 	return !(passwordAuth || kbdAuth)
+}
+
+// hasPublicKeyAuthForTest, when non-nil, overrides the ~/.ssh/config publickey
+// check so tests are deterministic (independent of the host's ssh config).
+var hasPublicKeyAuthForTest func(connName string) bool
+
+// hasPublicKeyAuthForConn checks ~/.ssh/config for a publickey (IdentityFile
+// with PubkeyAuthentication enabled). It parses the connName to extract the
+// host and delegates to remote.HasPublicKeyAuth.
+func hasPublicKeyAuthForConn(connName string) bool {
+	if hasPublicKeyAuthForTest != nil {
+		return hasPublicKeyAuthForTest(connName)
+	}
+	opts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return false
+	}
+	return remote.HasPublicKeyAuth(opts.SSHHost)
+}
+
+// canReconnectFromConfigByName is the config-based fallback for a connection
+// that does NOT exist in the controller map (e.g., cold start). It reads
+// connections.json directly (not via the conn's getConnectionConfig, since
+// there is no conn) and checks ~/.ssh/config for a publickey.
+func canReconnectFromConfigByName(connName string) bool {
+	config := wconfig.GetWatcher().GetFullConfig()
+	connConfig, ok := config.Connections[connName]
+	if ok && connKeywordsAllowReconnect(&connConfig) {
+		return true
+	}
+	return hasPublicKeyAuthForConn(connName)
 }
 
 func (conn *SSHConn) WithLock(fn func()) {
@@ -1318,16 +1450,16 @@ const (
 type sshForwardDirection int
 
 const (
-	forwardLocal sshForwardDirection = iota // LocalForward
-	forwardRemote                           // RemoteForward
+	forwardLocal  sshForwardDirection = iota // LocalForward
+	forwardRemote                            // RemoteForward
 )
 
 // sshForwardParsed is the result of parsing a LocalForward/RemoteForward rule.
 type sshForwardParsed struct {
-	ListenType   sshForwardType
-	ListenAddr   string // "host:port" for tcp, path for unix
-	DialType     sshForwardType
-	DialAddr     string // "host:port" for tcp, path for unix, "" for socks
+	ListenType sshForwardType
+	ListenAddr string // "host:port" for tcp, path for unix
+	DialType   sshForwardType
+	DialAddr   string // "host:port" for tcp, path for unix, "" for socks
 }
 
 // parseForwardRule parses a LocalForward/RemoteForward ssh_config rule.
@@ -1573,23 +1705,35 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 		ctx = remote.ContextWithCachedPassword(ctx, cachedPw)
 	}
 	connectStart := time.Now()
-	client, _, sshKeywords, pwTracker, err := remote.ConnectToClient(ctx, conn.Opts, nil, 0, connFlags)
+	client, _, sshKeywords, authTracker, err := remote.ConnectToClient(ctx, conn.Opts, nil, 0, connFlags)
 	connectDuration := time.Since(connectStart)
 	if err != nil {
 		errorCode, _ := remote.ClassifyConnError(err)
 		conn.Infof(ctx, "ERROR ConnectToClient [%s]: %s (duration=%v)\n", errorCode, remote.SimpleMessageFromPossibleConnectionError(err), connectDuration)
 		// Cache password even on non-auth failure (timeout, network error)
 		// so retry works without re-prompting. Only skip on auth-failed (wrong password).
-		if errorCode != "auth-failed" && pwTracker != nil && pwTracker.Used && pwTracker.Password != "" {
-			conn.cachePassword(pwTracker.Password)
+		if errorCode != "auth-failed" && authTracker != nil && authTracker.PasswordUsed && authTracker.Password != "" {
+			conn.cachePassword(authTracker.Password)
 			conn.Infof(ctx, "cached password despite connection failure (will be reused on retry)\n")
 		}
 		return err
 	}
 	// Cache the password that was used during the handshake (if user entered one)
-	if pwTracker != nil && pwTracker.Used && pwTracker.Password != "" {
-		conn.cachePassword(pwTracker.Password)
+	if authTracker != nil && authTracker.PasswordUsed && authTracker.Password != "" {
+		conn.cachePassword(authTracker.Password)
 		conn.Infof(ctx, "cached password for future reconnection\n")
+	}
+	// Record whether the handshake required an interactive prompt. This drives
+	// CanReconnectWithoutPrompt: if no prompt was needed (unencrypted key, agent
+	// key, or replayable secret/cache), auto-reconnect can run unattended. If a
+	// prompt was used (password typed, key passphrase, keyboard-interactive),
+	// auto-reconnect is skipped unless the password was cached (replayable).
+	if authTracker.InteractivePromptUsed() {
+		conn.authPromptState.Store(authPromptUsed)
+		conn.Infof(ctx, "auth: interactive prompt was used during handshake\n")
+	} else {
+		conn.authPromptState.Store(authPromptNone)
+		conn.Infof(ctx, "auth: no interactive prompt needed (replayable credentials)\n")
 	}
 	conn.Infof(ctx, "ConnectToClient completed in %v\n", connectDuration)
 	conn.WithLock(func() {
@@ -1805,43 +1949,51 @@ func HasCachedPassword(connName string) bool {
 	return conn.getCachedPassword() != nil
 }
 
-// NeedsInteractiveAuth checks if a connection might require password or
-// keyboard-interactive authentication. Used by startup reconnect to decide
-// whether to use a timeout context (password prompts need no timeout).
+// NeedsInteractiveAuth checks if a connection might require an interactive
+// prompt (password, key passphrase, or keyboard-interactive) to connect. Used
+// by startup reconnect to decide whether to use a timeout context (interactive
+// prompts need no deadline so the user has time to respond).
+//
+// This is intentionally conservative: it only trusts the runtime auth-prompt
+// flag and cached password, NOT the ~/.ssh/config publickey fallback, because a
+// configured key may be passphrase-encrypted (which requires a prompt). When the
+// flag is unknown (cold start), it assumes a prompt might be needed so the user
+// has time to enter a passphrase. Use CanReconnectWithoutPrompt for the
+// scheduler/resume path, which uses the config fallback for key-based conns.
 func NeedsInteractiveAuth(connName string) bool {
+	return !sureNoPromptNeeded(connName)
+}
+
+// sureNoPromptNeeded returns true only when we are CERTAIN no interactive prompt
+// is needed: a cached password (replayable) or a prior successful connect that
+// used no prompt. When unknown, it returns false (conservative — assume a prompt
+// might be needed). This is used by NeedsInteractiveAuth for the startup timeout
+// decision, where a generous/no-deadline context is safe for unencrypted keys
+// (they connect in <1s) and necessary for passphrase-encrypted keys.
+func sureNoPromptNeeded(connName string) bool {
 	if IsLocalConnName(connName) {
-		return false
-	}
-	if HasCachedPassword(connName) {
-		return false
-	}
-	config := wconfig.GetWatcher().GetFullConfig()
-	connConfig, ok := config.Connections[connName]
-	if !ok {
 		return true
 	}
-	if utilfn.SafeDeref(connConfig.SshBatchMode) {
+	if HasCachedPassword(connName) {
+		return true
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
 		return false
 	}
-	if connConfig.SshPasswordSecretName != nil && *connConfig.SshPasswordSecretName != "" {
-		return false
-	}
-	if connConfig.SshPreferredAuthentications != nil {
-		hasInteractive := false
-		for _, method := range connConfig.SshPreferredAuthentications {
-			if method == "password" || method == "keyboard-interactive" {
-				hasInteractive = true
-				break
-			}
+	conn := MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.lock.Lock()
+		state := conn.authPromptState.Load()
+		conn.lock.Unlock()
+		if state == authPromptNone {
+			return true
 		}
-		if !hasInteractive {
+		if state == authPromptUsed {
 			return false
 		}
 	}
-	// When nil (not explicitly set), treat as enabled per SSH defaults.
-	passwordAuth := connConfig.SshPasswordAuthentication == nil || utilfn.SafeDeref(connConfig.SshPasswordAuthentication)
-	kbdAuth := connConfig.SshKbdInteractiveAuthentication == nil || utilfn.SafeDeref(connConfig.SshKbdInteractiveAuthentication)
-	return passwordAuth || kbdAuth
+	return false
 }
 
 func EnsureConnection(ctx context.Context, connName string) error {

@@ -1,7 +1,7 @@
 # SSH Reconnection Strategies — Design Reference
 
-> Last updated: 2026-06-27
-> Covers: auto-reconnect scheduler, password buffer, tab triggers, error classification
+> Last updated: 2026-07-17
+> Covers: auto-reconnect scheduler, password buffer, tab triggers, error classification, auth-prompt tracking
 
 ## Overview
 
@@ -9,8 +9,10 @@ Two classes of SSH connections dictate reconnection behavior:
 
 | Class | Examples | Auto-Scheduler? | Needs User Input? |
 |-------|----------|:---:|:---:|
-| **Autonomous** | Key-based auth, batch mode, password from secret store, cached password available | ✅ Rapid 5s/3s | Never |
-| **Interactive** | Password or keyboard-interactive auth, no cached password | ❌ No (or only for auth-failed edge case) | Yes — password prompt |
+| **Autonomous** | Key-based auth (unencrypted key or agent), batch mode, password from secret store, cached password available | ✅ Rapid 5s/3s | Never |
+| **Interactive** | Password typed by user, passphrase-encrypted key, keyboard-interactive (no cached password) | ❌ No (or only for auth-failed edge case) | Yes — password/passphrase prompt |
+
+Eligibility is determined by `CanReconnectWithoutPrompt` (see [Auto-Reconnect Eligibility](#auto-reconnect-eligibility-canreconnectwithoutprompt)), which uses a runtime `authPromptState` flag (set after each successful handshake) as the primary signal, with a `~/.ssh/config` publickey fallback for cold starts.
 
 ---
 
@@ -106,7 +108,7 @@ Aggressive: 3s interval, max 2 min (extendable)
 
 On laptop wake:
 1. `HandleSystemResume` iterates all connections
-2. Skips `needsInteractiveAuth()` connections
+2. Skips connections where `needsInteractiveAuth()` returns true (delegates to `CanReconnectWithoutPrompt`)
 3. For stalled connections: force-disconnects first
 4. Calls `AttemptReconnect(ctx, 5s)` immediately (bypasses scheduler tick)
 
@@ -220,33 +222,77 @@ If the connection context times out before the user finishes typing:
 
 ---
 
+## Auto-Reconnect Eligibility: `CanReconnectWithoutPrompt`
+
+All three auto-reconnect gates (`onConnectionDown` scheduler, `HandleSystemResume` fast-path, `DeriveConnStatus` UI `CanAutoReconnect` flag) delegate to a single function: `conncontroller.CanReconnectWithoutPrompt(connName)`. This replaced the previous `needsInteractiveAuth` / `canAutoReconnectLocked` / `NeedsInteractiveAuth` trio, which inspected only `connections.json` and missed key-based connections whose SSH config (`~/.ssh/config` IdentityFile) is merged at connect time.
+
+### Decision order (in `canReconnectWithoutPromptLocked`, called with `conn.lock` held)
+
+| # | Condition | Result | Why |
+|---|-----------|--------|-----|
+| 1 | Cached password (`conn.CachedPassword != nil`) | ✅ true | Replayable without prompting |
+| 2 | `conn.LastErrorCode == "auth-failed"` | ❌ false | Credential rejected; retry won't help. Wait for user re-auth (`requestPasswordRePrompt`) or key fix. Prevents retry storm. |
+| 3 | `conn.authPromptState == authPromptNone` | ✅ true | Last successful connect used no prompt (unencrypted key, agent key, replayable secret) |
+| 4 | `conn.authPromptState == authPromptUsed` | ❌ false | Last successful connect needed a prompt (password typed, key passphrase, keyboard-interactive) and no password was cached (step 1) |
+| 5 | `conn.authPromptState == authPromptUnknown` (never connected or cleared after auth-failed) | config fallback | `canReconnectFromKeywordsOrPubkey`: checks `connections.json` (batch mode, password secret, preferred auth, disabled password/kbd) then `~/.ssh/config` (`HasPublicKeyAuth`: IdentityFile exists + PubkeyAuthentication enabled) |
+
+`NeedsInteractiveAuth` (startup reconnect) is intentionally conservative — it only trusts the runtime flag and cached password, NOT the publickey fallback, because a configured key may be passphrase-encrypted (requiring a prompt). This gives the startup connect a generous no-deadline context.
+
+### `authPromptState` flag
+
+Stored on `SSHConn.authPromptState` (atomic.Int32). Set after a successful `ConnectToClient` in `connectInternal`, based on the `AuthTracker`:
+
+| Value | Constant | Set when |
+|------|----------|----------|
+| 0 | `authPromptUnknown` | Never connected, or cleared after `auth-failed` |
+| 1 | `authPromptNone` | Successful connect with `InteractivePromptUsed() == false` (no password typed, no passphrase, no kbd-interactive) |
+| 2 | `authPromptUsed` | Successful connect with `InteractivePromptUsed() == true` |
+
+Cleared to `authPromptUnknown` in `Connect` when `errorCode == "auth-failed"` (alongside `clearCachedPassword`).
+
+### `AuthTracker` (replaces `PasswordUsedTracker`)
+
+Set by the SSH auth callbacks during `ConnectToClient`:
+
+| Field | Set by | Replayable? |
+|------|-------|:---:|
+| `PasswordUsed` + `Password` | Password callback (secret store, cache, OR user-typed) | Depends (see below) |
+| `PasswordFromPrompt` | Password callback, user-typed path only | ❌ |
+| `PassphrasePrompted` | Publickey callback, passphrase prompt path | ❌ |
+| `KbdInteractiveUsed` | Keyboard-interactive callback | ❌ |
+
+`InteractivePromptUsed()` returns `PasswordFromPrompt || PassphrasePrompted || KbdInteractiveUsed`. Replayable credentials (secret-store password, cached password, unencrypted key, agent key) do NOT set any of these — only live user prompts do.
+
+### Config fallback: `HasPublicKeyAuth` (`~/.ssh/config`)
+
+When the runtime flag is unknown (cold start, post-auth-failed), `canReconnectFromKeywordsOrPubkey` falls back to inspecting `~/.ssh/config`:
+1. `connections.json` settings (via `conn.getConnectionConfig`): batch mode, password secret, preferred auth (publickey-only), disabled password/kbd-interactive
+2. `remote.HasPublicKeyAuth(host)`: PubkeyAuthentication enabled, `publickey` in PreferredAuthentications (if set), and at least one IdentityFile that exists on disk
+
+The IdentityFile existence check is critical — `ssh_config` returns default identity files (`~/.ssh/id_rsa`, `~/.ssh/id_ed25519`, etc.) even when none are configured, so a non-existent default must not count.
+
+### Why the runtime flag is the primary signal
+
+Config inspection guesses; runtime observation knows. The flag handles cases config can't:
+- Passphrase-encrypted keys (IdentityFile set but needs a passphrase → flag = `authPromptUsed`)
+- Revoked keys (key fails after first connect → auth-failed clears flag → stops retry storm)
+- Agent-only auth (no IdentityFile, agent has the key → flag = `authPromptNone` after first connect)
+- Password from secret store (no prompt → flag = `authPromptNone`)
+
+### `sshConfigMu` mutex
+
+`findSshConfigKeywords` reads `~/.ssh/config` via the `ssh_config` library, whose `ReloadConfigs`/`doLoadConfigs` is not thread-safe. `sshConfigMu` (sync.Mutex) serializes all calls to prevent races when multiple connections query the config concurrently (e.g., `HandleSystemResume` iterating connections, scheduler reconnects, `CanReconnectWithoutPrompt` in `DeriveConnStatus`).
+
 ## Decision Tree: Which Strategy?
 
 ```
 Connection goes down
         │
         ▼
-needsInteractiveAuth(connName)?
+CanReconnectWithoutPrompt(connName)?
         │
    ┌────┴────┐
-   │ YES     │  (password/kbd-interactive, no cache, no batch, no secret store)
-   │         ▼
-   │    Is Status == Error AND ErrorCode == "auth-failed"?
-   │         │
-   │    ┌────┴────┐
-   │    │ YES     │  (post-fix: no scheduler)
-   │    │         ▼
-   │    │    Password prompt stays visible (re-prompt goroutine)
-   │    │    User enters new password → cached → Connect() triggered
-   │    │
-   │    │ NO      │  (init, disconnected, or other error)
-   │    │         ▼
-   │    │    SKIP scheduler. Connection stays in current state.
-   │    │    User must manually click [Reconnect] or block remount triggers ConnEnsureCommand.
-   │    │    ▸ GAP: tab switch does NOT trigger reconnect (see Phase 8)
-   │    │
-   └────┴────┐
-   │ NO      │  (key-based, cache exists, batch mode, secret store)
+   │ YES     │  (key-based with authPromptNone, cached password, batch mode, secret store)
    │         ▼
    └──► START scheduler
         │
@@ -263,6 +309,25 @@ needsInteractiveAuth(connName)?
    ▼           ▼          ▼
 connected   max 5 min   no durable jobs
 (success)   → give up   → give up
+
+   │ NO      │  (password/kbd-interactive, no cache, flag=used, or auth-failed)
+   │         ▼
+   │    Is Status == Error AND ErrorCode == "auth-failed"?
+   │         │
+   │    ┌────┴────┐
+   │    │ YES     │  (credential rejected)
+   │    │         ▼
+   │    │    Password prompt stays visible (re-prompt goroutine)
+   │    │    User enters new password → cached → Connect() triggered
+   │    │    authPromptState cleared to authPromptUnknown
+   │    │
+   │    │ NO      │  (init, disconnected, or other error)
+   │    │         ▼
+   │    │    SKIP scheduler. Connection stays in current state.
+   │    │    User must manually click [Reconnect] or block remount triggers ConnEnsureCommand.
+   │    │    ▸ GAP: tab switch does NOT trigger reconnect (see Phase 8)
+   │    │
+   └────┴────┘
 ```
 
 ---
@@ -298,11 +363,11 @@ connected   max 5 min   no durable jobs
 | 12 | Scheduler ticker `scheduleConnectionReconnect` | `jobcontroller.go:776` | Conditional¹ | ✅ |
 | 14 | `ConnMonitor` stall → auto-disconnect → feeds #1 | `connmonitor.go:154,222` | Feeds #1 | ✅ |
 
-¹ Skipped if `needsInteractiveAuth()` && NOT auth-failed  
+¹ Skipped if `needsInteractiveAuth()` returns true (i.e. `CanReconnectWithoutPrompt` returns false). For auth-failed connections, `CanReconnectWithoutPrompt` returns false (credential rejected) — the scheduler skips and waits for `requestPasswordRePrompt`.  
 ² Checks `IsConnected()` first, cooldown-based  
-³ `needsInteractiveAuth()` → skip fast-path  
-⁴ Error state only reconnects if `conn.getCachedPassword() != nil`  
-⁵ Uses no-timeout context for interactive-auth connections
+³ `needsInteractiveAuth()` → skip fast-path (delegates to `CanReconnectWithoutPrompt`; key-based connections with `authPromptNone` pass, password-based with `authPromptUsed` or unknown skip)  
+⁴ Error state reconnects regardless of cached password (`EnsureConnection` always retries from `Status_Error`)  
+⁵ `NeedsInteractiveAuth` (startup) uses no-timeout context for connections that may need a prompt (conservative: only trusts runtime flag + cached password, not publickey fallback, because a configured key may be passphrase-encrypted)
 
 ### Manual Triggers
 
@@ -350,9 +415,9 @@ Phase 2 decoupled the password timeout from the connection context by using `con
 
 | File | Role |
 |------|------|
-| `pkg/jobcontroller/jobcontroller.go` | Scheduler, `onConnectionDown`, `needsInteractiveAuth`, system resume |
-| `pkg/remote/conncontroller/conncontroller.go` | `Connect()`, `EnsureConnection`, `AttemptReconnect`, password cache |
-| `pkg/remote/sshclient.go` | `ConnectToClient`, password callback, `ClassifyConnError` |
+| `pkg/jobcontroller/jobcontroller.go` | Scheduler, `onConnectionDown`, `needsInteractiveAuth` (delegates to `CanReconnectWithoutPrompt`), system resume |
+| `pkg/remote/conncontroller/conncontroller.go` | `Connect()`, `EnsureConnection`, `AttemptReconnect`, password cache, `CanReconnectWithoutPrompt`, `authPromptState`, `authPrompt*` constants |
+| `pkg/remote/sshclient.go` | `ConnectToClient`, `AuthTracker` (password/passphrase/kbd-interactive prompt tracking), `HasPublicKeyAuth` (~/.ssh/config fallback), `ClassifyConnError` |
 | `pkg/userinput/userinput.go` | `GetUserInput`, window scope resolution |
 | `pkg/service/userinputservice/userinputservice.go` | `SendUserInputResponse` handler |
 | `pkg/wps/wps.go` | Event broker, buffering, scoping |
