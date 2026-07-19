@@ -511,3 +511,73 @@ grep "aborting retry.*conn down" <log>             # new: conn-down aborts
 grep "error reconnecting" <log>                    # should be followed by a retry, not terminal
 ```
 Regression signal: `finished reconnecting jobs: 0/N` with no subsequent retry, followed by `SendInput` failing with `job is not connected`.
+
+---
+
+## Phase 2F: Startup-Failed Connection Retry (2026-07-18)
+
+### The gap
+
+`StartupReconnectDurableShells` (`blockcontroller.go:190`) is the only reconnect path that runs at app start. For each durable shell's connection, it calls `EnsureConnection` **once** with a 10s ctx (non-interactive) or no-deadline ctx (interactive). On failure, the startup goroutine logs and returns — there is no retry.
+
+The ongoing reconnect scheduler (`scheduleConnectionReconnect`, 5s interval, 5min cap) is the natural retry mechanism, but it only starts via `onConnectionDown`, which fires on a **Connected→Disconnected transition**. A connection that was never `Connected` (startup failed before the handshake completed) never produces that transition:
+
+| Event | `cs.actual` before | `connStatus.Connected` | Transition? | `onConnectionDown` fires? |
+|---|---|---|---|---|
+| Connecting (first event) | `false` (initial) | `false` | No | No |
+| Error (after startup fail) | `false` | `false` | No | No |
+
+`handleConnChangeEvent` (`jobcontroller.go:488`) only increments `actualGen` when `cs.actual != connStatus.Connected`. A conn that starts at `actual: false` and stays `false` (Connecting→Error) never signals `reconcileConn`, so `onConnectionDown` never fires, and `scheduleConnectionReconnect` never starts. The conn sits in `Status_Error` indefinitely — no `ConnMonitor` (only created on successful connect), no periodic retry, no wake-event retry (`HandleSystemResume` is wake-event only). Recovery requires an app restart (which re-runs the one-shot startup) or a manual reconnect.
+
+This is symmetric to Phase 2E: Phase 2E was "conn up but jobs didn't reconnect"; Phase 2F is "conn never came up at startup."
+
+### The fix
+
+When `EnsureConnection` fails at startup for a **non-interactive-auth** connection, explicitly start `scheduleConnectionReconnect` via a new exported entry point `StartConnectionReconnectScheduler`. This reuses the existing scheduler (5s interval, 5min cap, aggressive mode on network errors) — no new retry loop.
+
+**Why non-interactive-auth only:** Interactive-auth connections have a persistent password-prompt buffer (`requestPasswordRePrompt`) that handles retries independently. Starting the scheduler for them would race with the re-prompt goroutine and retry with no cached password. This matches `onConnectionDown`'s existing `needsInteractiveAuth` guard.
+
+**Why reuse the existing scheduler:** The dedup map (`connectionReconnectSchedulers`) ensures only one scheduler per connection. If the conn comes up during the 5min window, the scheduler stops (`IsConnected` check at loop top). If all durable blocks are closed while the conn is down, the scheduler stops (`hasRunningDurableJobsForConn` check). If a real disconnect happens later, `onConnectionDown` sees the existing scheduler and skips — no double-spawn.
+
+### Changes
+
+**1. Extract `startReconnectScheduler` shared helper** (`jobcontroller.go`)
+
+`onConnectionDown` currently contains the guard + dedup + spawn logic. Extract it into a shared `startReconnectScheduler(connName string)` that both `onConnectionDown` and `StartConnectionReconnectScheduler` call. `onConnectionDown` keeps its "connection became disconnected" log, then delegates. The shared helper:
+- Skips local connections (`IsLocalConnName`)
+- Skips if `needsInteractiveAuth(connName)` (interactive-auth guard)
+- Deduplicates via `connectionReconnectSchedulers`
+- Spawns `scheduleConnectionReconnect` goroutine with `panichandler`
+
+**2. Export `StartConnectionReconnectScheduler`** (`jobcontroller.go`)
+
+New exported function: logs `"starting reconnect scheduler after startup failure"`, then calls `startReconnectScheduler`. Called by `blockcontroller.StartupReconnectDurableShells` on `EnsureConnection` failure.
+
+**3. Call it from `StartupReconnectDurableShells`** (`blockcontroller.go:190`)
+
+After `EnsureConnection` fails, call `jobcontroller.StartConnectionReconnectScheduler(connName)`. The guard (local skip, interactive-auth skip) is inside `startReconnectScheduler` — the call site does not duplicate it. The function returns immediately (spawns a goroutine), so the startup goroutine is not blocked.
+
+**4. Test hooks** (`jobcontroller.go`, exported for cross-package test access)
+
+- **`NeedsInteractiveAuthTestHook func(connName string) bool`** — `needsInteractiveAuth` checks it before delegating to `conncontroller.CanReconnectWithoutPrompt`. Lets tests force the guard open/closed without depending on `conncontroller` internals (`authPromptState`, `hasPublicKeyAuthForTest`).
+- **`StartupReconnectSchedulerTestHook func(connName string)`** — when set, `StartConnectionReconnectScheduler` calls the hook instead of `startReconnectScheduler`. Used by `blockcontroller` wiring tests to verify the call site without running the real scheduler goroutine.
+- **`ConnectionReconnectSchedulerExists(connName string) bool`** — exported accessor for `connectionReconnectSchedulers.GetEx`. Used by `blockcontroller` tests to observe scheduler state cross-package (the map itself is unexported).
+- **`GetAllBlocksForReconnectTestHook func() []ReconnectDurableBlock`** (`blockcontroller.go`) — overrides the wstore block lookup in `StartupReconnectDurableShells`. Returns pre-filtered durable blocks directly, avoiding wstore/`IsBlockTermDurable`. The `ReconnectDurableBlock` struct (BlockId, ConnName, JobId) is exported for the hook's return type.
+
+### What this does NOT change
+
+- `EnsureConnection`'s 10s ctx (non-interactive) / no-deadline ctx (interactive) — unchanged. The 10s bounds the SSH handshake for the startup attempt; the scheduler's 5s `connectTimeout` (in `scheduleConnectionReconnect`) bounds subsequent attempts.
+- `onConnectionDown` behavior — refactored to delegate to `startReconnectScheduler`, but the guard/dedup/spawn logic is identical. `TestOnConnectionDownDeduplication` still passes.
+- The scheduler's 5s `connectTimeout` vs startup's 10s — the scheduler uses a shorter timeout per attempt than startup. This is the existing behavior for all reconnects (post-disconnect); changing it is out of scope.
+- Interactive-auth startup failures — no scheduler started. `requestPasswordRePrompt` handles re-prompts independently (persistent buffer model).
+
+### Detection (how to verify)
+
+After an app start where a key-based durable conn fails to connect (e.g., network down at startup, remote unreachable):
+```
+grep "starting reconnect scheduler after startup failure" <log>   # new: scheduler started
+grep "reconnect scheduler started" <log>                           # existing: scheduleConnectionReconnect began
+grep "scheduler attempt" <log>                                     # existing: 5s retry attempts
+grep "connection is back up, stopping reconnect scheduler" <log>  # existing: scheduler stopped on success
+```
+Regression signal: `failed to establish connection` at startup with no subsequent `reconnect scheduler started` line, and the conn sits in `Status_Error` until manual reconnect or app restart.

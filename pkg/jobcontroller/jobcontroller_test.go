@@ -832,3 +832,117 @@ func TestOnConnectionUpRetrySkipsDoneJobs(t *testing.T) {
 		t.Fatalf("expected 1 call (initial pass only, retry skipped Done job), got %d", count)
 	}
 }
+
+// TestStartConnectionReconnectScheduler_SkipsInteractiveAuth verifies that
+// the startup reconnect scheduler is NOT started for connections requiring
+// interactive auth (the guard inside startReconnectScheduler skips them).
+func TestStartConnectionReconnectScheduler_SkipsInteractiveAuth(t *testing.T) {
+	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
+	NeedsInteractiveAuthTestHook = func(string) bool { return true }
+	defer func() { NeedsInteractiveAuthTestHook = nil }()
+
+	StartConnectionReconnectScheduler("conn:startup-auth")
+
+	if _, exists := connectionReconnectSchedulers.GetEx("conn:startup-auth"); exists {
+		t.Fatalf("expected no scheduler entry when interactive auth is required")
+	}
+}
+
+// TestStartConnectionReconnectScheduler_SkipsLocalConn verifies that local
+// connections are skipped (they don't need SSH reconnect).
+func TestStartConnectionReconnectScheduler_SkipsLocalConn(t *testing.T) {
+	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
+	NeedsInteractiveAuthTestHook = func(string) bool { return false }
+	defer func() { NeedsInteractiveAuthTestHook = nil }()
+
+	StartConnectionReconnectScheduler("local")
+
+	if _, exists := connectionReconnectSchedulers.GetEx("local"); exists {
+		t.Fatalf("expected no scheduler entry for local connection")
+	}
+}
+
+// TestStartConnectionReconnectScheduler_StartsAndStopsScheduler verifies the
+// scheduler goroutine actually runs and cleans up. hasRunningDurableJobsTestHook
+// returns false so the scheduler stops immediately at the "no running durable
+// jobs" check.
+func TestStartConnectionReconnectScheduler_StartsAndStopsScheduler(t *testing.T) {
+	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
+	NeedsInteractiveAuthTestHook = func(string) bool { return false }
+	hasRunningDurableJobsTestHook = func(context.Context, string) bool { return false }
+	defer func() {
+		NeedsInteractiveAuthTestHook = nil
+		hasRunningDurableJobsTestHook = nil
+	}()
+
+	StartConnectionReconnectScheduler("conn:startup-ok")
+
+	// Scheduler entry should be set immediately (goroutine spawned).
+	if _, exists := connectionReconnectSchedulers.GetEx("conn:startup-ok"); !exists {
+		t.Fatalf("expected scheduler entry to be set after StartConnectionReconnectScheduler")
+	}
+
+	// Wait for the scheduler goroutine to complete (hasRunningDurableJobsTestHook
+	// returns false → scheduler stops → deletes the entry). Poll for up to 2s.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, exists := connectionReconnectSchedulers.GetEx("conn:startup-ok"); !exists {
+			return // goroutine completed and cleaned up
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("scheduler entry still set after 2s — goroutine did not clean up")
+}
+
+// TestStartConnectionReconnectScheduler_DedupSharedWithOnConnectionDown verifies
+// the dedup map is shared — calling onConnectionDown then
+// StartConnectionReconnectScheduler for the same conn does NOT spawn a second
+// scheduler.
+func TestStartConnectionReconnectScheduler_DedupSharedWithOnConnectionDown(t *testing.T) {
+	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
+	NeedsInteractiveAuthTestHook = func(string) bool { return false }
+
+	// Block the scheduler goroutine at hasRunningDurableJobsForConn so the map
+	// entry stays alive while we verify dedup.
+	gate := make(chan struct{})
+	hasRunningDurableJobsTestHook = func(ctx context.Context, connName string) bool {
+		<-gate // block until released
+		return false
+	}
+	defer func() {
+		NeedsInteractiveAuthTestHook = nil
+		hasRunningDurableJobsTestHook = nil
+	}()
+
+	connName := "conn:dedup-startup"
+
+	// Start scheduler via onConnectionDown — spawns goroutine that blocks on gate.
+	onConnectionDown(connName)
+
+	// Verify entry is set.
+	if _, exists := connectionReconnectSchedulers.GetEx(connName); !exists {
+		t.Fatalf("expected scheduler entry after onConnectionDown")
+	}
+
+	// Call StartConnectionReconnectScheduler — should NOT spawn a second scheduler
+	// (dedup via connectionReconnectSchedulers).
+	StartConnectionReconnectScheduler(connName)
+
+	// Still exactly one entry (dedup worked — second call returned without spawning).
+	if _, exists := connectionReconnectSchedulers.GetEx(connName); !exists {
+		t.Fatalf("scheduler entry disappeared — dedup may have double-deleted")
+	}
+
+	// Release the gate so the scheduler goroutine can complete and clean up.
+	close(gate)
+
+	// Wait for the scheduler goroutine to finish.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, exists := connectionReconnectSchedulers.GetEx(connName); !exists {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("scheduler entry still set after 2s — goroutine did not clean up")
+}

@@ -131,6 +131,18 @@ var (
 	reconcileOnDownTestHook       func(connName string)
 	hasRunningDurableJobsTestHook func(ctx context.Context, connName string) bool
 
+	// NeedsInteractiveAuthTestHook overrides the needsInteractiveAuth check
+	// inside startReconnectScheduler. Set from tests to control whether the
+	// scheduler is started. Nil by default (production uses CanReconnectWithoutPrompt).
+	NeedsInteractiveAuthTestHook func(connName string) bool
+
+	// StartupReconnectSchedulerTestHook, when set, is called by
+	// StartConnectionReconnectScheduler instead of starting the real scheduler.
+	// Lets tests verify the wiring (that blockcontroller calls this function)
+	// without needing to observe the scheduler goroutine state.
+	// Nil by default (production starts the real scheduler).
+	StartupReconnectSchedulerTestHook func(connName string)
+
 	// test hooks for unit testing onConnectionUp / ReconnectJobsForConn behavior
 	reconnectJobTestHook      func(ctx context.Context, jobId string) error
 	getAllJobsForConnTestHook func(connName string) ([]*waveobj.Job, error)
@@ -763,12 +775,23 @@ func HandleSystemResume(ctx context.Context) {
 // signal and falls back to a ~/.ssh/config publickey check when the flag is
 // unknown (cold start or after an auth failure).
 func needsInteractiveAuth(connName string) bool {
+	if NeedsInteractiveAuthTestHook != nil {
+		return NeedsInteractiveAuthTestHook(connName)
+	}
 	return !conncontroller.CanReconnectWithoutPrompt(connName)
 }
 
 func onConnectionDown(connName string) {
 	log.Printf("[conn:%s] connection became disconnected", connName)
+	startReconnectScheduler(connName)
+}
 
+// startReconnectScheduler starts the reconnect scheduler for a connection,
+// deduplicated via connectionReconnectSchedulers. Shared by onConnectionDown
+// (disconnect trigger) and StartConnectionReconnectScheduler (startup trigger).
+// Skips local connections and connections requiring interactive auth (the
+// latter have requestPasswordRePrompt for retries; the scheduler would race it).
+func startReconnectScheduler(connName string) {
 	// Skip local connections — they don't need SSH reconnect
 	if conncontroller.IsLocalConnName(connName) {
 		return
@@ -796,6 +819,35 @@ func onConnectionDown(connName string) {
 		defer connectionReconnectSchedulers.Delete(connName)
 		scheduleConnectionReconnect(connName)
 	}()
+}
+
+// StartConnectionReconnectScheduler starts the reconnect scheduler for a
+// connection that failed to connect at startup. Unlike onConnectionDown, this
+// does not require a Connected→Disconnected transition (which never happens for
+// a conn that was never Connected — the connchange event has Connected:false,
+// matching the initial state, so handleConnChangeEvent does not increment
+// actualGen and onConnectionDown never fires).
+//
+// Used by StartupReconnectDurableShells when EnsureConnection fails for a
+// non-interactive-auth connection. Reuses the same scheduler as onConnectionDown
+// (5s interval, 5min cap, aggressive mode on network errors) — the dedup map
+// ensures only one scheduler runs per connection.
+func StartConnectionReconnectScheduler(connName string) {
+	log.Printf("[conn:%s] starting reconnect scheduler after startup failure", connName)
+	if StartupReconnectSchedulerTestHook != nil {
+		StartupReconnectSchedulerTestHook(connName)
+		return
+	}
+	startReconnectScheduler(connName)
+}
+
+// ConnectionReconnectSchedulerExists returns true if a reconnect scheduler is
+// currently running for connName. Exported for cross-package test observation
+// (e.g., blockcontroller tests verifying the scheduler did not start for
+// interactive-auth connections).
+func ConnectionReconnectSchedulerExists(connName string) bool {
+	_, exists := connectionReconnectSchedulers.GetEx(connName)
+	return exists
 }
 
 // isNetworkUnreachableError returns true when an error indicates the local

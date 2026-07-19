@@ -4,6 +4,7 @@
 package blockcontroller
 
 import (
+	"context"
 	"errors"
 	"io"
 	"sync"
@@ -11,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wavetermdev/waveterm/pkg/jobcontroller"
+	"github.com/wavetermdev/waveterm/pkg/remote"
+	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
 	"github.com/wavetermdev/waveterm/pkg/shellexec"
 	"github.com/wavetermdev/waveterm/pkg/utilds"
-
 )
 
 // mockConnInterface implements shellexec.ConnInterface for testing.
@@ -759,3 +762,148 @@ func (m *mockClosedConnInterface) StdinPipe() (io.WriteCloser, error) { return n
 func (m *mockClosedConnInterface) StdoutPipe() (io.ReadCloser, error) { return nil, errors.New("session closed") }
 func (m *mockClosedConnInterface) StderrPipe() (io.ReadCloser, error) { return nil, errors.New("session closed") }
 func (m *mockClosedConnInterface) SetSize(w int, h int) error { return errors.New("session closed") }
+
+// TestStartupReconnectDurableShellsStartsSchedulerOnFailure verifies the
+// Phase 2F wiring: when StartupReconnectDurableShells calls EnsureConnection
+// and it fails, StartConnectionReconnectScheduler is called to start the
+// reconnect scheduler. Without this call, a key-based conn that fails at
+// startup sits in Status_Error forever (no onConnectionDown transition).
+//
+// This test uses StartupReconnectSchedulerTestHook to intercept the call,
+// verifying that blockcontroller.StartupReconnectDurableShells calls
+// jobcontroller.StartConnectionReconnectScheduler with the correct connName.
+func TestStartupReconnectDurableShellsStartsSchedulerOnFailure(t *testing.T) {
+	// Use a mutex to protect the captured value and hook function from races
+	// between the test goroutine and the StartupReconnect goroutine.
+	var mu sync.Mutex
+	var calledWith string
+	var schedulerFn func(string)
+	schedulerFn = func(connName string) {
+		mu.Lock()
+		calledWith = connName
+		mu.Unlock()
+	}
+	jobcontroller.StartupReconnectSchedulerTestHook = func(connName string) {
+		mu.Lock()
+		fn := schedulerFn
+		mu.Unlock()
+		if fn != nil {
+			fn(connName)
+		}
+	}
+	defer func() {
+		mu.Lock()
+		schedulerFn = nil
+		mu.Unlock()
+		jobcontroller.StartupReconnectSchedulerTestHook = nil
+	}()
+
+	// Set up a real SSHConn in the controller map so EnsureConnection finds it.
+	// Use a unique test host to avoid colliding with other tests.
+	// The conn remains in the controller map (unique key, no interference).
+	testOpts := &remote.SSHOpts{SSHHost: "startup-scheduler-test-host", SSHUser: "testuser", SSHPort: "2222"}
+	conn := conncontroller.GetConn(testOpts)
+	conn.Status = conncontroller.Status_Init
+	conn.ConnHealthStatus = conncontroller.ConnHealthStatus_Good
+	conn.WshEnabled.Store(true)
+
+	// Override the block-reading hook to return our synthetic durable block.
+	GetAllBlocksForReconnectTestHook = func() []ReconnectDurableBlock {
+		return []ReconnectDurableBlock{
+			{BlockId: "block-1", ConnName: conn.GetName(), JobId: "job-1"},
+		}
+	}
+	defer func() { GetAllBlocksForReconnectTestHook = nil }()
+
+	// Run StartupReconnectDurableShells in a goroutine so we can poll for the
+	// hook call without blocking on waitForConn (15s timeout).
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		StartupReconnectDurableShells(context.Background())
+	}()
+
+	// EnsureConnection fails fast on non-routable host (no connectInternalTestHook),
+	// then StartConnectionReconnectScheduler is called → our hook fires.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		cw := calledWith
+		mu.Unlock()
+		if cw == conn.GetName() {
+			return // success — the hook was called with the right conn name
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	got := calledWith
+	mu.Unlock()
+	t.Fatalf("expected StartConnectionReconnectScheduler to be called after EnsureConnection failure at startup (got %q, want %q)", got, conn.GetName())
+
+	// Note: StartupReconnectDurableShells goroutine continues in background
+	// (waitForConn 15s timeout). Test assertions are already done.
+	_ = done
+}
+
+// TestStartupReconnectDurableShellsSkipsSchedulerForInteractiveAuth verifies
+// that when needsInteractiveAuth returns true, the scheduler is NOT started
+// even after EnsureConnection fails at startup. This catches regressions where
+// the interactive-auth guard inside startReconnectScheduler is removed.
+func TestStartupReconnectDurableShellsSkipsSchedulerForInteractiveAuth(t *testing.T) {
+
+	// Use a mutex to protect the hook from races between the test goroutine
+	// and the StartupReconnectDurableShells goroutine.
+	var authMu sync.Mutex
+	var needsAuthFn func(string) bool
+	needsAuthFn = func(string) bool { return true }
+	jobcontroller.NeedsInteractiveAuthTestHook = func(connName string) bool {
+		authMu.Lock()
+		fn := needsAuthFn
+		authMu.Unlock()
+		if fn != nil {
+			return fn(connName)
+		}
+		return false // fallback when cleared
+	}
+	defer func() {
+		authMu.Lock()
+		needsAuthFn = nil
+		authMu.Unlock()
+		jobcontroller.NeedsInteractiveAuthTestHook = nil
+	}()
+
+	// Set up a real SSHConn (unique host to avoid collisions).
+	testOpts := &remote.SSHOpts{SSHHost: "startup-auth-skip-test-host", SSHUser: "testuser", SSHPort: "2222"}
+	conn := conncontroller.GetConn(testOpts)
+	conn.Status = conncontroller.Status_Init
+	conn.ConnHealthStatus = conncontroller.ConnHealthStatus_Good
+	conn.WshEnabled.Store(true)
+
+	// Override the block-reading hook.
+	GetAllBlocksForReconnectTestHook = func() []ReconnectDurableBlock {
+		return []ReconnectDurableBlock{
+			{BlockId: "block-1", ConnName: conn.GetName(), JobId: "job-1"},
+		}
+	}
+	defer func() { GetAllBlocksForReconnectTestHook = nil }()
+
+	// Run StartupReconnectDurableShells in a goroutine.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		StartupReconnectDurableShells(context.Background())
+	}()
+
+	// Poll for 2s — the scheduler entry should NEVER appear because
+	// needsInteractiveAuth returns true (via test hook) → startReconnectScheduler skips.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if jobcontroller.ConnectionReconnectSchedulerExists(conn.GetName()) {
+			t.Fatalf("expected NO scheduler entry when interactive auth is required")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Note: StartupReconnectDurableShells goroutine continues in background.
+	_ = done
+}

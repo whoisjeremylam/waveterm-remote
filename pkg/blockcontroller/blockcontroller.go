@@ -51,6 +51,19 @@ const (
 const DefaultTimeout = 2 * time.Second
 const DefaultGracefulKillWait = 400 * time.Millisecond
 
+// ReconnectDurableBlock is the (BlockId, ConnName, JobId) tuple for a durable
+// shell block that StartupReconnectDurableShells attempts to reconnect at app start.
+type ReconnectDurableBlock struct {
+	BlockId  string
+	ConnName string
+	JobId    string
+}
+
+// GetAllBlocksForReconnectTestHook, when set, overrides the wstore block lookup
+// in StartupReconnectDurableShells. Returns pre-filtered durable blocks directly,
+// avoiding the wstore/IsBlockTermDurable path. Nil by default (production uses wstore).
+var GetAllBlocksForReconnectTestHook func() []ReconnectDurableBlock
+
 type BlockInputUnion struct {
 	InputData []byte            `json:"inputdata,omitempty"`
 	SigName   string            `json:"signame,omitempty"`
@@ -144,31 +157,30 @@ func InitBlockController() {
 // tabs are established before the user switches to them.
 func StartupReconnectDurableShells(ctx context.Context) {
 	log.Printf("[startup] scanning blocks for durable shell reconnection")
-	allBlocks, err := wstore.DBGetAllObjsByType[*waveobj.Block](ctx, waveobj.OType_Block)
-	if err != nil {
-		log.Printf("[startup] error getting blocks: %v", err)
-		return
-	}
 
-	type durableBlock struct {
-		BlockId  string
-		ConnName string
-		JobId    string
-	}
-	var durableBlocks []durableBlock
-	for _, block := range allBlocks {
-		if !jobcontroller.IsBlockTermDurable(block) {
-			continue
+	var durableBlocks []ReconnectDurableBlock
+	if GetAllBlocksForReconnectTestHook != nil {
+		durableBlocks = GetAllBlocksForReconnectTestHook()
+	} else {
+		allBlocks, err := wstore.DBGetAllObjsByType[*waveobj.Block](ctx, waveobj.OType_Block)
+		if err != nil {
+			log.Printf("[startup] error getting blocks: %v", err)
+			return
 		}
-		connName := block.Meta.GetString(waveobj.MetaKey_Connection, "")
-		if conncontroller.IsLocalConnName(connName) {
-			continue
+		for _, block := range allBlocks {
+			if !jobcontroller.IsBlockTermDurable(block) {
+				continue
+			}
+			connName := block.Meta.GetString(waveobj.MetaKey_Connection, "")
+			if conncontroller.IsLocalConnName(connName) {
+				continue
+			}
+			durableBlocks = append(durableBlocks, ReconnectDurableBlock{
+				BlockId:  block.OID,
+				ConnName: connName,
+				JobId:    block.JobId,
+			})
 		}
-		durableBlocks = append(durableBlocks, durableBlock{
-			BlockId:  block.OID,
-			ConnName: connName,
-			JobId:    block.JobId,
-		})
 	}
 
 	if len(durableBlocks) == 0 {
@@ -203,6 +215,12 @@ func StartupReconnectDurableShells(ctx context.Context) {
 			err := conncontroller.EnsureConnection(connCtx, connName)
 			if err != nil {
 				log.Printf("[startup] failed to establish connection %q: %v", connName, err)
+				// Start the reconnect scheduler — onConnectionDown won't fire because the
+				// conn was never Connected (no down-transition). Without this, a key-based
+				// conn that fails at startup sits in Status_Error forever. The scheduler
+				// is skipped for interactive-auth conns (needsInteractiveAuth guard inside
+				// startReconnectScheduler) and for local conns.
+				jobcontroller.StartConnectionReconnectScheduler(connName)
 				return
 			}
 			log.Printf("[startup] connection %q established", connName)

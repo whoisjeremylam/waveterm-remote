@@ -421,3 +421,13 @@ With 'x' now hiding (keep-alive) instead of deleting, reopening a widget restore
 **Files changed:** `pkg/jobcontroller/jobcontroller.go` (`onConnectionUp`, `ReconnectJobsForConn`).
 
 **Detection:** grep `finished reconnecting jobs: 0/N` with no retry = regression. `SendInput` failing with `job is not connected` after a sleep/wake = the bug.
+
+## 2026-07-18: Startup-failed connection retry (Phase 2F)
+
+**Decision:** `StartupReconnectDurableShells` was one-shot — `EnsureConnection` failure at app start left the conn in `Status_Error` forever. The ongoing reconnect scheduler (`scheduleConnectionReconnect`) only starts via `onConnectionDown`, which requires a Connected→Disconnected transition; a conn that was never Connected never produces that transition (`handleConnChangeEvent` doesn't increment `actualGen` when `Connected` stays `false`), so the scheduler never starts.
+
+**Fix (spec: `.pi/specs/reconnection.md` § Phase 2F):** Exported `StartConnectionReconnectScheduler(connName)` in `jobcontroller` — starts `scheduleConnectionReconnect` (5s interval, 5min cap, aggressive mode) for a startup-failed conn. Called from `blockcontroller.StartupReconnectDurableShells` on `EnsureConnection` failure. Non-interactive-auth only (interactive-auth conns have `requestPasswordRePrompt` for retries; the scheduler would race it). Reuses the existing scheduler via shared `startReconnectScheduler` helper (extracted from `onConnectionDown`); dedup via `connectionReconnectSchedulers` ensures no double-spawn if a real disconnect happens later.
+
+**Files changed:** `pkg/jobcontroller/jobcontroller.go` (`startReconnectScheduler`, `StartConnectionReconnectScheduler`, `needsInteractiveAuthTestHook`), `pkg/blockcontroller/blockcontroller.go` (`StartupReconnectDurableShells` calls `StartConnectionReconnectScheduler` on failure), `pkg/jobcontroller/jobcontroller_test.go` (4 tests).
+
+**Detection:** `starting reconnect scheduler after startup failure` in log after `failed to establish connection` at app start.
