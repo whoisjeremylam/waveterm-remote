@@ -428,3 +428,86 @@ Phase 2 decoupled the password timeout from the connection context by using `con
 | `frontend/app/tab/tabuserinputpromptoverlay.tsx` | Tab-level password prompt overlay (phase 1) |
 | `frontend/app/workspace/workspace.tsx` | Overlay rendering at workspace level (phase 1 fix) |
 | `frontend/app/modals/userinputprompt.tsx` | Password prompt component |
+
+---
+
+## Phase 2E: Job Reconnect Convergence & Bounded Retry (2026-07-18)
+
+### Convergence invariant (new)
+
+**After a connection reaches `Connected`, every job on that connection must reach a terminal state — `Connected` (route up + active stream) or `Done` (`JobManagerGone`) — never silently stuck `Disconnected`.**
+
+Prior to this phase, `onConnectionUp` could finish with `successCount < len(jobsToReconnect)` and leave the remaining jobs `Disconnected` with no retry. The conn-level status (`connchange`) reported `Connected` (green icon), but `jobConnStates[jobId]` stayed `Disconnected`, so `CheckJobConnected` rejected `SendInput` with `"job is not connected (status: disconnected)"`. The only recovery path was an external trigger (tab switch → `ConnEnsureCommand`, or a subsequent `onConnectionUp`).
+
+### Incident that motivated this
+
+Sleep/wake on a cellular + WireGuard link. `onConnectionUp("jeremy@dev2.jlam.io")` reconnected after a 21.9s scheduler wait. The conn had 3 durable jobs. With a **single shared 5s context** for the whole function:
+
+- Job 1 (`d0d4d086`): `RemoteReconnectToJobManagerCommand` RPC hit its own `rpcOpts.Timeout=5000` at 07:28:43.303 — remote wsh was still tearing down a stale job-manager socket and responded at 07:28:48.577 (10.3s).
+- Jobs 2/3 (`896db6a5`, `f669b04a`): never sent an RPC — `DBMustGet` at the top of `doReconnectJob` hit `context deadline exceeded` because the shared 5s ctx was already expired by the time the loop reached them.
+- Result: `finished reconnecting jobs: 0/3 successful`. Conn stayed `Connected` (green), 2 jobs stuck `Disconnected` until a manual tab switch at 07:30:44 recovered one of them (f669b04a, via `ConnEnsureCommand`). d0d4d086/896db6a5 remained dead.
+
+Root cause was **not** remote latency alone — it was local-side contention: one slow job's 5s RPC consumed the shared 5s ctx, starving jobs 2/3 before they could start. The remote wsh responds in <1s once settled (f669b04a's solo tab-switch reconnect took 0.7s end-to-end).
+
+### The two independent timeouts in `doReconnectJob`
+
+`doReconnectJob` (`jobcontroller.go:1408`) has two deadlines that must not be confused:
+
+1. **`rpcOpts.Timeout = 5000`** on the `RemoteReconnectToJobManagerCommand` RPC (`jobcontroller.go:1465`). This is the per-call SSH round-trip deadline. It is **not** derived from the caller's `ctx`. It governs how long we wait for the remote wsh to respond.
+2. **The caller's `ctx`** (passed to `doReconnectJob`), which feeds `DBMustGet`, `DBUpdateFn`, `sendBlockJobStatusEventByJob`, and `WaitForRegister` (capped at 2s via `context.WithTimeout`).
+
+Keeping `rpcOpts.Timeout=5000` preserves snappiness in the common case (remote responds in <1s). Raising it would make every reconnect potentially block 5→15s. The fix is **not** to raise the RPC timeout — it's to stop sharing one ctx across all jobs and to retry the failures.
+
+### Changes
+
+**1. Per-job context in `onConnectionUp` and `ReconnectJobsForConn`** (`jobcontroller.go:543`, `:1514`)
+
+Replace the single shared `context.WithTimeout(background, 5s)` for the whole job loop with:
+- A short ctx (5s) for the `DBGetAllObjsByType` job lookup only.
+- A **fresh `context.WithTimeout(background, 10s)` per `ReconnectJob` call**. 10s gives `RPC(5s) + WaitForRegister(2s) + slack`; common case is still <1s because the ctx is a safety bound, not the RPC timeout.
+
+This eliminates starvation: a slow job 1 no longer dooms jobs 2…N. Both `onConnectionUp` (trigger #3) and `ReconnectJobsForConn` (trigger #15) have the identical shared-ctx pattern and must be fixed together.
+
+**2. Bounded retry of failed jobs in `onConnectionUp`** (`jobcontroller.go:543`)
+
+After the initial loop, if `successCount < len(jobsToReconnect)`, retry the failed jobs with **3 attempts at 3s/6s/12s backoff**. Per attempt:
+- Re-check `conncontroller.IsConnected(connName)`; abort the retry if the conn is down (avoids firing RPC into a dead conn during a flap).
+- Skip jobs whose `JobManagerStatus == Done` (set by `JobManagerGone` in `doReconnectJob` — terminal, not retryable).
+- Stream-health-aware skip: if `CheckJobConnected` succeeds and `jobStreamHealth.active == true`, the job is converged — skip. This avoids masking the Layer 3 "Connected-but-no-stream" bug (see decisions.md 2026-07-12).
+- Use `ReconnectJob` (singleflight-deduped via `reconnectConnGroup`) so concurrent triggers collapse.
+
+The retry recovers the train/WireGuard case: attempt 1 fails at 5s (remote still settling), attempt 2 at +3s hits a settled remote and succeeds in <1s — matching f669b04a's solo tab-switch timing. Aborts on conn-down between attempts (the 07:28:13→16→38 flap would not waste attempts).
+
+**3. Document the convergence invariant** (this section). The spec previously documented triggers but not the post-condition. The retry loop in (2) is the enforcement mechanism; the invariant makes the expected behavior testable and prevents regressions.
+
+**4. `rpcOpts.Timeout` stays 5000** (no change). Raising it would trade snappiness for a rare slow-remote case that the retry already handles.
+
+### Constants
+
+| Constant | Value | Where | Purpose |
+|---|---|---|---|
+| Per-job reconnect ctx | 10s | `onConnectionUp`, `ReconnectJobsForConn` | Bounds `DBMustGet` + `WaitForRegister` per job; RPC has its own 5s timeout |
+| Job-lookup ctx | 5s | `onConnectionUp`, `ReconnectJobsForConn` | Bounds `DBGetAllObjsByType` only |
+| `rpcOpts.Timeout` (unchanged) | 5s | `doReconnectJob:1465` | Per-call SSH round-trip deadline |
+| Retry attempts | 3 | `onConnectionUp` | Bounded retry of failed jobs |
+| Retry backoff | 3s, 6s, 12s | `onConnectionUp` | Sleep before each retry attempt |
+
+### What this does NOT change
+
+- `rpcOpts.Timeout` (snappiness preserved for the common case)
+- `attemptAutoReconnect` (RouteDown handler, 30s cooldown) — independent path
+- `scheduleConnectionReconnect` (5s scheduler) — independent path
+- `HandleSystemResume` fast-path — calls `AttemptReconnect`, not `onConnectionUp`
+- The Layer 3 "Connected-but-no-stream" fix (decisions.md 2026-07-12) — separate, though the retry's stream-health-aware skip avoids masking it
+
+### Detection (how to verify)
+
+After a sleep/wake with a slow link, grep the backend log:
+```
+grep "finished reconnecting jobs" <log>            # should be N/N, not 0/N
+
+grep "retry.*reconnect" <log>                       # new: retry attempts logged
+grep "aborting retry.*conn down" <log>             # new: conn-down aborts
+grep "error reconnecting" <log>                    # should be followed by a retry, not terminal
+```
+Regression signal: `finished reconnecting jobs: 0/N` with no subsequent retry, followed by `SendInput` failing with `job is not connected`.

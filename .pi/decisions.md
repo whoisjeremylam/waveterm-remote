@@ -404,3 +404,20 @@ With 'x' now hiding (keep-alive) instead of deleting, reopening a widget restore
 **Why not just the flag:** The flag is in-memory on `SSHConn`, lost on app restart. Before the first successful connect (or after auth-failed clears it), the config fallback ensures key-based connections still get auto-reconnect.
 
 **Files changed:** `pkg/remote/sshclient.go` (AuthTracker, HasPublicKeyAuth, sshConfigMu), `pkg/remote/conncontroller/conncontroller.go` (authPromptState, CanReconnectWithoutPrompt, canReconnectFromKeywordsOrPubkey, connKeywordsAllowReconnect, hasPublicKeyAuthForConn, rewritten canAutoReconnectLocked/NeedsInteractiveAuth), `pkg/jobcontroller/jobcontroller.go` (needsInteractiveAuth delegates to CanReconnectWithoutPrompt), tests in `sshclient_test.go`/`conncontroller_test.go`/`jobcontroller_test.go`.
+
+## 2026-07-18: Job reconnect convergence & bounded retry (Phase 2E)
+
+**Decision:** `onConnectionUp` and `ReconnectJobsForConn` shared a single 5s `context.WithTimeout` across all jobs on a connection. On a slow link (cellular + WireGuard, 21.9s scheduler wait), one job's 5s `RemoteReconnectToJobManagerCommand` RPC consumed the shared ctx, starving jobs 2/3 (`DBMustGet` hit `context deadline exceeded` before they could send their RPC). The conn stayed `Connected` (green icon) while jobs stayed `Disconnected` — `SendInput` rejected with `job is not connected`. Recovery required a manual tab switch.
+
+**Root cause:** local-side contention, not remote latency. The remote wsh responds in <1s once settled (solo tab-switch reconnect confirmed 0.7s); 3 jobs hitting a fresh channel simultaneously contended on teardown.
+
+**Fix (spec: `.pi/specs/reconnection.md` § Phase 2E):**
+
+1. **Per-job ctx** — `onConnectionUp`/`ReconnectJobsForConn` use a 5s ctx for `DBGetAllObjsByType` only; each `ReconnectJob` call gets a fresh `context.WithTimeout(background, 10s)`. Eliminates starvation.
+2. **Bounded retry** — if `successCount < len(jobsToReconnect)`, retry failed jobs 3× at 3s/6s/12s backoff. Per attempt: re-check `IsConnected` (abort on conn-down), skip `JobManagerStatus == Done`, stream-health-aware skip. Recovers the train case in ~8s on attempt 2.
+3. **Convergence invariant** (new, documented in spec): after a conn reaches `Connected`, every job reaches `Connected` or `Done` — never silently stuck `Disconnected`.
+4. **`rpcOpts.Timeout` stays 5000** — raising it would trade snappiness for a rare slow case the retry already handles.
+
+**Files changed:** `pkg/jobcontroller/jobcontroller.go` (`onConnectionUp`, `ReconnectJobsForConn`).
+
+**Detection:** grep `finished reconnecting jobs: 0/N` with no retry = regression. `SendInput` failing with `job is not connected` after a sleep/wake = the bug.

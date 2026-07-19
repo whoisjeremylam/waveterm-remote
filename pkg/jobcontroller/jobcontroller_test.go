@@ -14,6 +14,7 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/remote"
 	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
 	"github.com/wavetermdev/waveterm/pkg/util/ds"
+	"github.com/wavetermdev/waveterm/pkg/waveobj"
 	"github.com/wavetermdev/waveterm/pkg/wps"
 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
 )
@@ -575,5 +576,259 @@ func TestNeedsInteractiveAuth_Delegates(t *testing.T) {
 		if got != expected {
 			t.Fatalf("needsInteractiveAuth(%q) = %v, expected %v (inverse of CanReconnectWithoutPrompt)", connName, got, expected)
 		}
+	}
+}
+
+// TestOnConnectionUpPerJobCtxNoStarvation verifies each job gets a fresh 10s ctx
+// (not shared), so a slow job 1 doesn't starve jobs 2/3.
+func TestOnConnectionUpPerJobCtxNoStarvation(t *testing.T) {
+
+	// Reset hooks
+	origReconnect := reconnectJobTestHook
+	origAllJobs := getAllJobsForConnTestHook
+	reconnectJobTestHook = nil
+	getAllJobsForConnTestHook = nil
+	defer func() {
+		reconnectJobTestHook = origReconnect
+		getAllJobsForConnTestHook = origAllJobs
+	}()
+
+	connName := "conn:starvation"
+	jobs := []*waveobj.Job{
+		{OID: "job-1", Connection: connName, JobManagerStatus: JobManagerStatus_Running},
+		{OID: "job-2", Connection: connName, JobManagerStatus: JobManagerStatus_Running},
+		{OID: "job-3", Connection: connName, JobManagerStatus: JobManagerStatus_Running},
+	}
+
+	getAllJobsForConnTestHook = func(connName string) ([]*waveobj.Job, error) {
+		return jobs, nil
+	}
+
+	// Capture deadlines and job order.
+	var mu sync.Mutex
+	type deadlineInfo struct {
+		jobId    string
+		deadline time.Time
+	}
+	var captured []deadlineInfo
+
+	reconnectJobTestHook = func(ctx context.Context, jobId string) error {
+		deadline, _ := ctx.Deadline()
+		mu.Lock()
+		captured = append(captured, deadlineInfo{jobId, deadline})
+		mu.Unlock()
+
+		// Job 1 simulates a slow RPC (200ms, well within 10s ctx).
+		if jobId == "job-1" {
+			time.Sleep(200 * time.Millisecond)
+		}
+		return nil
+	}
+
+	onConnectionUp(connName)
+
+	// Assert all 3 jobs were attempted.
+	if len(captured) != 3 {
+		t.Fatalf("expected 3 jobs attempted, got %d", len(captured))
+	}
+
+	// Assert each job's ctx had a deadline > 9s in the future.
+	for i, info := range captured {
+		if info.deadline.IsZero() {
+			t.Fatalf("job %d (%s): ctx has no deadline (zero value)", i, info.jobId)
+		}
+		until := time.Until(info.deadline)
+		if until <= 9*time.Second {
+			t.Fatalf("job %d (%s): deadline only %v away, expected > 9s (shared/expired ctx)", i, info.jobId, until)
+		}
+	}
+}
+
+// TestOnConnectionUpRetryRecoversFailedJobs verifies the retry loop recovers
+// a job that fails on the first pass.
+func TestOnConnectionUpRetryRecoversFailedJobs(t *testing.T) {
+
+	// Reset hooks
+	origReconnect := reconnectJobTestHook
+	origAllJobs := getAllJobsForConnTestHook
+	origGetJob := getJobTestHook
+	origIsConnected := isConnectedTestHook
+	origBackoffs := retryBackoffs
+	reconnectJobTestHook = nil
+	getAllJobsForConnTestHook = nil
+	getJobTestHook = nil
+	isConnectedTestHook = nil
+	retryBackoffs = nil
+	defer func() {
+		reconnectJobTestHook = origReconnect
+		getAllJobsForConnTestHook = origAllJobs
+		getJobTestHook = origGetJob
+		isConnectedTestHook = origIsConnected
+		retryBackoffs = origBackoffs
+	}()
+
+	// Short backoffs for testing.
+	retryBackoffs = []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond}
+
+	connName := "conn:retry"
+	jobs := []*waveobj.Job{
+		{OID: "job-1", Connection: connName, JobManagerStatus: JobManagerStatus_Running},
+		{OID: "job-2", Connection: connName, JobManagerStatus: JobManagerStatus_Running},
+	}
+
+	getAllJobsForConnTestHook = func(connName string) ([]*waveobj.Job, error) {
+		return jobs, nil
+	}
+
+	isConnectedTestHook = func(connName string) (bool, error) {
+		return true, nil
+	}
+
+	// Track call counts per jobId.
+	var mu sync.Mutex
+	callCounts := make(map[string]int)
+
+	reconnectJobTestHook = func(ctx context.Context, jobId string) error {
+		mu.Lock()
+		callCounts[jobId]++
+		count := callCounts[jobId]
+		mu.Unlock()
+
+		// job-1 fails on first call, succeeds on second.
+		if jobId == "job-1" && count == 1 {
+			return fmt.Errorf("rpc timeout")
+		}
+		return nil
+	}
+
+	// getJobTestHook returns Running so the retry doesn't skip as Done.
+	getJobTestHook = func(jobId string) (*waveobj.Job, error) {
+		return &waveobj.Job{OID: jobId, JobManagerStatus: JobManagerStatus_Running}, nil
+	}
+
+	onConnectionUp(connName)
+
+	mu.Lock()
+	count1 := callCounts["job-1"]
+	count2 := callCounts["job-2"]
+	mu.Unlock()
+
+	if count1 != 2 {
+		t.Fatalf("job-1: expected 2 calls (1 initial + 1 retry), got %d", count1)
+	}
+	if count2 != 1 {
+		t.Fatalf("job-2: expected 1 call (initial only), got %d", count2)
+	}
+}
+
+// TestOnConnectionUpRetryAbortsOnConnDown verifies the retry loop aborts
+// when the connection goes down between attempts.
+func TestOnConnectionUpRetryAbortsOnConnDown(t *testing.T) {
+
+	// Reset hooks
+	origReconnect := reconnectJobTestHook
+	origAllJobs := getAllJobsForConnTestHook
+	origIsConnected := isConnectedTestHook
+	origBackoffs := retryBackoffs
+	reconnectJobTestHook = nil
+	getAllJobsForConnTestHook = nil
+	isConnectedTestHook = nil
+	retryBackoffs = nil
+	defer func() {
+		reconnectJobTestHook = origReconnect
+		getAllJobsForConnTestHook = origAllJobs
+		isConnectedTestHook = origIsConnected
+		retryBackoffs = origBackoffs
+	}()
+
+	// Short backoff for testing.
+	retryBackoffs = []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond}
+
+	connName := "conn:abort"
+	jobs := []*waveobj.Job{
+		{OID: "job-1", Connection: connName, JobManagerStatus: JobManagerStatus_Running},
+	}
+
+	getAllJobsForConnTestHook = func(connName string) ([]*waveobj.Job, error) {
+		return jobs, nil
+	}
+
+	// IsConnected returns false on first retry check → abort.
+	isConnectedTestHook = func(connName string) (bool, error) {
+		return false, nil
+	}
+
+	// Track call count.
+	var callCount int32
+
+	reconnectJobTestHook = func(ctx context.Context, jobId string) error {
+		atomic.AddInt32(&callCount, 1)
+		return fmt.Errorf("always fails")
+	}
+
+	onConnectionUp(connName)
+
+	count := atomic.LoadInt32(&callCount)
+	if count != 1 {
+		t.Fatalf("expected 1 call (initial pass only, retry aborted), got %d", count)
+	}
+}
+
+// TestOnConnectionUpRetrySkipsDoneJobs verifies Done jobs are skipped in retry.
+func TestOnConnectionUpRetrySkipsDoneJobs(t *testing.T) {
+
+	// Reset hooks
+	origReconnect := reconnectJobTestHook
+	origAllJobs := getAllJobsForConnTestHook
+	origGetJob := getJobTestHook
+	origIsConnected := isConnectedTestHook
+	origBackoffs := retryBackoffs
+	reconnectJobTestHook = nil
+	getAllJobsForConnTestHook = nil
+	getJobTestHook = nil
+	isConnectedTestHook = nil
+	retryBackoffs = nil
+	defer func() {
+		reconnectJobTestHook = origReconnect
+		getAllJobsForConnTestHook = origAllJobs
+		getJobTestHook = origGetJob
+		isConnectedTestHook = origIsConnected
+		retryBackoffs = origBackoffs
+	}()
+
+	// Short backoff for testing.
+	retryBackoffs = []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond}
+
+	connName := "conn:skipdone"
+	jobs := []*waveobj.Job{
+		{OID: "job-1", Connection: connName, JobManagerStatus: JobManagerStatus_Running},
+	}
+
+	getAllJobsForConnTestHook = func(connName string) ([]*waveobj.Job, error) {
+		return jobs, nil
+	}
+
+	isConnectedTestHook = func(connName string) (bool, error) {
+		return true, nil
+	}
+
+	// Track call count.
+	var callCount int32
+
+	reconnectJobTestHook = func(ctx context.Context, jobId string) error {
+		atomic.AddInt32(&callCount, 1)
+		return fmt.Errorf("always fails")
+	}
+
+	// getJobTestHook returns Done so the retry skips it.
+	getJobTestHook = func(jobId string) (*waveobj.Job, error) {
+		return &waveobj.Job{OID: jobId, JobManagerStatus: JobManagerStatus_Done}, nil
+	}
+
+	onConnectionUp(connName)
+
+	count := atomic.LoadInt32(&callCount)
+	if count != 1 {
+		t.Fatalf("expected 1 call (initial pass only, retry skipped Done job), got %d", count)
 	}
 }

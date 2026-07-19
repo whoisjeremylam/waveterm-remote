@@ -131,6 +131,15 @@ var (
 	reconcileOnDownTestHook       func(connName string)
 	hasRunningDurableJobsTestHook func(ctx context.Context, connName string) bool
 
+	// test hooks for unit testing onConnectionUp / ReconnectJobsForConn behavior
+	reconnectJobTestHook      func(ctx context.Context, jobId string) error
+	getAllJobsForConnTestHook func(connName string) ([]*waveobj.Job, error)
+	getJobTestHook            func(jobId string) (*waveobj.Job, error)
+
+	// retryBackoffs is the per-attempt sleep before retrying failed job reconnects.
+	// Package var so tests can override with short durations.
+	retryBackoffs = []time.Duration{3 * time.Second, 6 * time.Second, 12 * time.Second}
+
 	// active connection-reconnect schedulers (deduplication for onConnectionDown)
 	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
 )
@@ -542,35 +551,149 @@ func handleBlockCloseEvent(event *wps.WaveEvent) {
 
 func onConnectionUp(connName string) {
 	log.Printf("[conn:%s] connection became connected, reconnecting jobs", connName)
-	ctx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelFn()
 
-	allJobs, err := wstore.DBGetAllObjsByType[*waveobj.Job](ctx, waveobj.OType_Job)
+	// Short ctx for DB lookup only — do NOT share across job reconnects.
+	lookupCtx, lookupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer lookupCancel()
+
+	var allJobs []*waveobj.Job
+	var err error
+	if getAllJobsForConnTestHook != nil {
+		allJobs, err = getAllJobsForConnTestHook(connName)
+	} else {
+		allJobs, err = wstore.DBGetAllObjsByType[*waveobj.Job](lookupCtx, waveobj.OType_Job)
+	}
 	if err != nil {
 		log.Printf("[conn:%s] failed to get jobs for reconnection: %v", connName, err)
 		return
 	}
 
 	var jobsToReconnect []*waveobj.Job
-	for _, job := range allJobs {
-		if job.Connection == connName && isJobManagerRunning(job) {
-			jobsToReconnect = append(jobsToReconnect, job)
+	if getAllJobsForConnTestHook != nil {
+		// Hook returns pre-filtered jobs.
+		jobsToReconnect = allJobs
+	} else {
+		for _, job := range allJobs {
+			if job.Connection == connName && isJobManagerRunning(job) {
+				jobsToReconnect = append(jobsToReconnect, job)
+			}
 		}
 	}
 
 	log.Printf("[conn:%s] found %d jobs to reconnect", connName, len(jobsToReconnect))
 
+	// Per-job reconnect: each gets a fresh 10s ctx to avoid starvation.
 	successCount := 0
+	failedJobIds := make([]string, 0)
 	for _, job := range jobsToReconnect {
-		err = ReconnectJob(ctx, job.OID, nil)
-		if err != nil {
-			log.Printf("[job:%s] error reconnecting: %v", job.OID, err)
+		jobCtx, jobCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		var reconnectErr error
+		if reconnectJobTestHook != nil {
+			reconnectErr = reconnectJobTestHook(jobCtx, job.OID)
+		} else {
+			reconnectErr = ReconnectJob(jobCtx, job.OID, nil)
+		}
+		jobCancel()
+		if reconnectErr != nil {
+			log.Printf("[job:%s] error reconnecting: %v", job.OID, reconnectErr)
+			failedJobIds = append(failedJobIds, job.OID)
 		} else {
 			successCount++
 		}
 	}
 
 	log.Printf("[conn:%s] finished reconnecting jobs: %d/%d successful", connName, successCount, len(jobsToReconnect))
+
+	// Bounded retry of failed jobs (3 attempts, 3s/6s/12s backoff).
+	if len(failedJobIds) == 0 {
+		return
+	}
+
+	recovered := make(map[string]bool)
+	totalRetries := 0
+
+	for attempt, backoff := range retryBackoffs {
+		time.Sleep(backoff)
+
+		// Re-check connection is still up.
+		var isConnected bool
+		var checkErr error
+		if isConnectedTestHook != nil {
+			isConnected, checkErr = isConnectedTestHook(connName)
+		} else {
+			isConnected, checkErr = conncontroller.IsConnected(connName)
+		}
+		if checkErr != nil || !isConnected {
+			log.Printf("[conn:%s] aborting job reconnect retry: connection down", connName)
+			break
+		}
+
+		remaining := len(failedJobIds) - len(recovered)
+		if remaining == 0 {
+			break
+		}
+
+		totalRetries++
+		log.Printf("[conn:%s] retry attempt %d/3 for %d remaining jobs", connName, attempt+1, remaining)
+
+		for _, jobId := range failedJobIds {
+			if recovered[jobId] {
+				continue
+			}
+
+			// Re-fetch job to check terminal status.
+			var job *waveobj.Job
+			var dbErr error
+			if getJobTestHook != nil {
+				job, dbErr = getJobTestHook(jobId)
+			} else {
+				retryCtx, retryCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				job, dbErr = wstore.DBGet[*waveobj.Job](retryCtx, jobId)
+				retryCancel()
+			}
+			if dbErr != nil || job == nil {
+				log.Printf("[job:%s] skipping retry: job not found", jobId)
+				recovered[jobId] = true
+				continue
+			}
+			if job.JobManagerStatus == JobManagerStatus_Done {
+				log.Printf("[job:%s] skipping retry: job is done", jobId)
+				recovered[jobId] = true
+				continue
+			}
+
+			// Stream-health-aware skip: if already connected with active stream, converged.
+			checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, checkErr2 := CheckJobConnected(checkCtx, jobId)
+			checkCancel()
+			if checkErr2 == nil {
+				if health, ok := jobStreamHealth.GetEx(jobId); ok && health.active {
+					log.Printf("[job:%s] skipping retry: already connected with active stream", jobId)
+					recovered[jobId] = true
+					continue
+				}
+			}
+
+			// Attempt reconnect.
+			jobCtx, jobCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			var reconnectErr error
+			if reconnectJobTestHook != nil {
+				reconnectErr = reconnectJobTestHook(jobCtx, jobId)
+			} else {
+				reconnectErr = ReconnectJob(jobCtx, jobId, nil)
+			}
+			jobCancel()
+			if reconnectErr != nil {
+				log.Printf("[job:%s] retry attempt %d: %v", jobId, attempt+1, reconnectErr)
+			} else {
+				log.Printf("[job:%s] retry attempt %d: succeeded", jobId, attempt+1)
+				recovered[jobId] = true
+				successCount++
+			}
+		}
+	}
+
+	log.Printf("[conn:%s] finished reconnecting jobs: %d/%d successful (after %d retries)", connName, successCount, len(jobsToReconnect), totalRetries)
 }
 
 // HandleSystemResume is called on macOS system wake (via NotifySystemResumeCommand).
@@ -1520,24 +1643,43 @@ func ReconnectJobsForConn(ctx context.Context, connName string) error {
 		return fmt.Errorf("connection %q is not connected", connName)
 	}
 
-	allJobs, err := wstore.DBGetAllObjsByType[*waveobj.Job](ctx, waveobj.OType_Job)
+	// Use passed ctx for DB lookup only — each job gets its own reconnect ctx.
+	var allJobs []*waveobj.Job
+	if getAllJobsForConnTestHook != nil {
+		allJobs, err = getAllJobsForConnTestHook(connName)
+	} else {
+		allJobs, err = wstore.DBGetAllObjsByType[*waveobj.Job](ctx, waveobj.OType_Job)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to get jobs: %w", err)
 	}
 
 	var jobsToReconnect []*waveobj.Job
-	for _, job := range allJobs {
-		if job.Connection == connName && isJobManagerRunning(job) {
-			jobsToReconnect = append(jobsToReconnect, job)
+	if getAllJobsForConnTestHook != nil {
+		// Hook returns pre-filtered jobs.
+		jobsToReconnect = allJobs
+	} else {
+		for _, job := range allJobs {
+			if job.Connection == connName && isJobManagerRunning(job) {
+				jobsToReconnect = append(jobsToReconnect, job)
+			}
 		}
 	}
 
 	log.Printf("[conn:%s] found %d jobs to reconnect", connName, len(jobsToReconnect))
 
+	// Per-job reconnect: each gets a fresh 10s ctx to avoid starvation.
 	for _, job := range jobsToReconnect {
-		err = ReconnectJob(ctx, job.OID, nil)
-		if err != nil {
-			log.Printf("[job:%s] error reconnecting: %v", job.OID, err)
+		jobCtx, jobCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		var reconnectErr error
+		if reconnectJobTestHook != nil {
+			reconnectErr = reconnectJobTestHook(jobCtx, job.OID)
+		} else {
+			reconnectErr = ReconnectJob(jobCtx, job.OID, nil)
+		}
+		jobCancel()
+		if reconnectErr != nil {
+			log.Printf("[job:%s] error reconnecting: %v", job.OID, reconnectErr)
 		}
 	}
 
