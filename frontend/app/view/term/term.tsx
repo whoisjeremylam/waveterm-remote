@@ -292,7 +292,7 @@ const TerminalView = ({ blockId, model }: ViewComponentProps<TermViewModel>) => 
         const termMacOptionIsMeta = globalStore.get(termMacOptionIsMetaAtom) ?? false;
         const termCursorStyle = normalizeCursorStyle(globalStore.get(getOverrideConfigAtom(blockId, "term:cursor")));
         const termCursorBlink = globalStore.get(getOverrideConfigAtom(blockId, "term:cursorblink")) ?? false;
-        const wasFocused = model.termRef.current != null && globalStore.get(model.nodeModel.isFocused);
+        const wasFocused = globalStore.get(model.nodeModel.isFocused);
         const termWrap = new TermWrap(
             tabModel.tabId,
             blockId,
