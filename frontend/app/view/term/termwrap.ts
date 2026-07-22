@@ -785,12 +785,28 @@ export class TermWrap {
     }
 
     refreshAfterVisibilityChange() {
-        // After sleep/resume, the IntersectionObserver may not fire to unpause rendering.
-        // Bypass the paused check by directly calling the renderer's renderRows().
+        // After sleep/resume, Chromium's IntersectionObserver often does not re-fire
+        // (the terminal element was visible before suspend and visible after, so the
+        // intersection state did not change). This leaves xterm.js RenderService
+        // _isPaused stuck at its pre-sleep value. When paused, RenderService.refreshRows
+        // early-returns (sets _needsFullRefresh, returns) so every terminal.write() that
+        // happens after resume renders nothing — typing is invisible even though the
+        // underlying xterm.js buffer receives the data (visible after an app restart that
+        // rebuilds the terminal from WaveFS).
+        //
+        // Fix: explicitly reset _isPaused and refresh via the normal RenderService path so
+        // that subsequent writes render normally. Fallback to a direct renderer.renderRows
+        // (the original approach) if the RenderService private API is unavailable.
         const core = (this.terminal as any)._core;
-        const renderer = core?._renderService?._renderer?.value;
-        if (renderer && typeof renderer.renderRows === "function") {
-            renderer.renderRows(0, this.terminal.rows - 1);
+        const renderService = core?._renderService;
+        if (renderService) {
+            renderService._isPaused = false;
+            renderService.refreshRows(0, this.terminal.rows - 1);
+        } else {
+            const renderer = core?._renderService?._renderer?.value;
+            if (renderer && typeof renderer.renderRows === "function") {
+                renderer.renderRows(0, this.terminal.rows - 1);
+            }
         }
         // Also trigger a fit in case dimensions changed while hidden
         this.fitAddon.fit();
