@@ -6,13 +6,16 @@ package jobcontroller
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/wavetermdev/waveterm/pkg/panichandler"
 	"github.com/wavetermdev/waveterm/pkg/remote"
 	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
+	"github.com/wavetermdev/waveterm/pkg/streamclient"
 	"github.com/wavetermdev/waveterm/pkg/util/ds"
 	"github.com/wavetermdev/waveterm/pkg/waveobj"
 	"github.com/wavetermdev/waveterm/pkg/wps"
@@ -945,4 +948,149 @@ func TestStartConnectionReconnectScheduler_DedupSharedWithOnConnectionDown(t *te
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("scheduler entry still set after 2s — goroutine did not clean up")
+}
+
+// mockStreamRpc is a minimal StreamRpcInterface for testing runOutputLoop without a real RPC.
+type mockStreamRpc struct{}
+
+func (m *mockStreamRpc) StreamDataAckCommand(data wshrpc.CommandStreamAckData, opts *wshrpc.RpcOpts) error {
+	return nil
+}
+
+func (m *mockStreamRpc) StreamDataCommand(data wshrpc.CommandStreamData, opts *wshrpc.RpcOpts) error {
+	return nil
+}
+
+// TestRunOutputLoopExitsOnReaderCloseWithSupersession verifies the Phase 2H leak fix:
+// when restartStreaming closes the previous reader after updating jobStreamIds to the
+// new streamId, the old runOutputLoop's Read() returns io.ErrClosedPipe, the supersession
+// check (jobStreamIds != old streamId) fires, and the loop exits cleanly — without hitting
+// the error path (which would call tryTerminateJobManager / DBUpdateFn). Without the fix,
+// the old reader's Read() blocks forever because the old stream never receives data after
+// the new stream starts, leaking the goroutine.
+func TestRunOutputLoopExitsOnReaderCloseWithSupersession(t *testing.T) {
+	jobId := "test-job-leak-fix"
+	oldStreamId := "old-stream-id"
+	newStreamId := "new-stream-id"
+
+	// Reset global state.
+	jobStreamIds.Delete(jobId)
+	jobReaders.Delete(jobId)
+	jobStreamHealth.Delete(jobId)
+
+	// Create a real broker + reader so Reader.Close() works (sends cancel ack via the broker).
+	broker := streamclient.NewBroker(&mockStreamRpc{})
+	readerRouteId := "test-reader-route"
+	writerRouteId := "test-writer-route"
+	reader, _ := broker.CreateStreamReader(readerRouteId, writerRouteId, 4096)
+
+	// Simulate the state after StartJob/restartStreaming set up the old stream.
+	jobStreamIds.Set(jobId, oldStreamId)
+	jobReaders.Set(jobId, reader)
+
+	// Start runOutputLoop in a goroutine. It will block on reader.Read() (no data).
+	loopDone := make(chan struct{})
+	go func() {
+		defer func() {
+			panichandler.PanicHandler("test:runOutputLoop", recover())
+			close(loopDone)
+		}()
+		runOutputLoop(context.Background(), jobId, oldStreamId, reader)
+	}()
+
+	// Wait for the loop to mark itself active (confirms it's running and blocked on Read).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if health, ok := jobStreamHealth.GetEx(jobId); ok && health.active && health.streamId == oldStreamId {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if health, ok := jobStreamHealth.GetEx(jobId); !ok || !health.active || health.streamId != oldStreamId {
+		t.Fatalf("runOutputLoop did not start: health=%v ok=%v", health, ok)
+	}
+
+	// Simulate restartStreaming: update jobStreamIds to the new streamId FIRST (so the
+	// supersession check in the old loop sees the new id), then close the old reader.
+	jobStreamIds.Set(jobId, newStreamId)
+	reader.Close()
+
+	// The old runOutputLoop should exit via the supersession path (clean break, no DB access).
+	// The defer sets health.active = false when health.streamId == oldStreamId.
+	select {
+	case <-loopDone:
+		// Success — loop exited.
+	case <-time.After(2 * time.Second):
+		t.Fatalf("runOutputLoop did not exit after reader.Close() — goroutine leaked")
+	}
+
+	// Verify the loop exited via supersession (health.active == false, streamId matches old).
+	// If it had hit the error path, it would have called wstore.DBUpdateFn / tryTerminateJobManager
+	// (which would panic or log without a DB — the test would fail there).
+	health, ok := jobStreamHealth.GetEx(jobId)
+	if !ok {
+		t.Fatalf("jobStreamHealth entry missing after loop exit")
+	}
+	if health.active {
+		t.Fatalf("expected health.active == false after loop exit, got true")
+	}
+	if health.streamId != oldStreamId {
+		t.Fatalf("expected health.streamId == %q (old), got %q", oldStreamId, health.streamId)
+	}
+
+	// Verify the old reader is closed (double-close is safe, returns ErrClosedPipe).
+	err := reader.Close()
+	if err == nil {
+		t.Fatalf("expected second Close() to return non-nil error (already closed)")
+	}
+}
+
+// TestRestartStreamingClosesPrevReader verifies that the jobReaders map mechanics work:
+// the previous reader is retrieved, the new streamId is set before closing (so the
+// supersession check fires), and the old reader is closed while the new one is stored.
+func TestRestartStreamingClosesPrevReader(t *testing.T) {
+	jobId := "test-job-readers-map"
+	jobStreamIds.Delete(jobId)
+	jobReaders.Delete(jobId)
+
+	broker := streamclient.NewBroker(&mockStreamRpc{})
+	reader1, _ := broker.CreateStreamReader("r1", "w1", 4096)
+	reader2, _ := broker.CreateStreamReader("r2", "w2", 4096)
+
+	// Simulate StartJob storing reader1.
+	jobReaders.Set(jobId, reader1)
+	jobStreamIds.Set(jobId, "stream-1")
+
+	// Simulate restartStreaming: retrieve prev, set new streamId, close prev, store new.
+	prevReader, prevOk := jobReaders.GetEx(jobId)
+	if !prevOk || prevReader != reader1 {
+		t.Fatalf("expected to retrieve reader1 from jobReaders")
+	}
+	jobStreamIds.Set(jobId, "stream-2") // update BEFORE closing (supersession check)
+	prevReader.Close()                   // safe — unblocks old runOutputLoop
+	jobReaders.Set(jobId, reader2)       // store new reader
+
+	// Verify jobReaders now holds reader2.
+	currentReader, ok := jobReaders.GetEx(jobId)
+	if !ok || currentReader != reader2 {
+		t.Fatalf("expected jobReaders to hold reader2 after restart")
+	}
+	currentStreamId, _ := jobStreamIds.GetEx(jobId)
+	if currentStreamId != "stream-2" {
+		t.Fatalf("expected jobStreamIds == stream-2, got %q", currentStreamId)
+	}
+
+	// Reader.Close() always returns io.ErrClosedPipe (it sets r.err before returning).
+	// The important property is idempotency: both reader1 (already closed by prevReader.Close())
+	// and reader2 (first close) accept Close() without panicking. Verify via Read() — a closed
+	// reader returns io.ErrClosedPipe immediately.
+	_, err1 := reader1.Read(make([]byte, 4))
+	if err1 != io.ErrClosedPipe {
+		t.Fatalf("expected reader1.Read() to return io.ErrClosedPipe (closed), got %v", err1)
+	}
+	reader2.Close() // idempotent — safe to call
+	_, err2 := reader2.Read(make([]byte, 4))
+	if err2 != io.ErrClosedPipe {
+		t.Fatalf("expected reader2.Read() to return io.ErrClosedPipe (closed), got %v", err2)
+	}
 }

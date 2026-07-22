@@ -112,6 +112,12 @@ var (
 
 	jobStreamIds = ds.MakeSyncMap[string]()
 
+	// jobReaders tracks the active *streamclient.Reader for each job's output stream.
+	// Used by restartStreaming to close the previous reader so its runOutputLoop exits
+	// (the old reader's Read() blocks forever once a new stream starts; without closing it,
+	// the goroutine leaks — see Phase 2H in .pi/specs/reconnection.md).
+	jobReaders = ds.MakeSyncMap[*streamclient.Reader]()
+
 	// jobStreamHealth tracks the health of each job's output stream (runOutputLoop).
 	// Used to diagnose whether a "Connected" job has an active stream pulling data
 	// from the remote, or is stuck in a Connected-but-no-stream state (failure mode B).
@@ -1186,6 +1192,7 @@ func StartJob(ctx context.Context, params StartJobParams) (string, error) {
 	writerRouteId := wshutil.MakeJobRouteId(jobId)
 	reader, streamMeta := broker.CreateStreamReader(readerRouteId, writerRouteId, DefaultStreamRwnd)
 	jobStreamIds.Set(jobId, streamMeta.Id)
+	jobReaders.Set(jobId, reader)
 
 	fileOpts := wshrpc.FileOpts{
 		MaxSize:  10 * 1024 * 1024,
@@ -1783,8 +1790,25 @@ func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rt
 	broker := bareRpc.StreamBroker
 	readerRouteId := wshclient.GetBareRpcClientRouteId()
 	writerRouteId := wshutil.MakeJobRouteId(jobId)
+
+	// Retrieve the previous reader (if any) before creating the new one.
+	// It will be closed after the new streamId is set so that the old
+	// runOutputLoop's supersession check (jobStreamIds != old streamId) fires
+	// and exits cleanly instead of blocking forever on the dead stream.
+	prevReader, prevReaderOk := jobReaders.GetEx(jobId)
+
 	reader, streamMeta := broker.CreateStreamReaderWithSeq(readerRouteId, writerRouteId, DefaultStreamRwnd, currentSeq)
 	jobStreamIds.Set(jobId, streamMeta.Id)
+	jobReaders.Set(jobId, reader)
+
+	// Close the previous reader to unblock its runOutputLoop. The old stream
+	// is superseded by the new one (jobStreamIds was just updated), so the old
+	// loop's supersession check will see the new streamId and break cleanly
+	// ("stream superseded by [new]") rather than hitting the error path.
+	// Reader.Close is safe to call on an already-closed reader.
+	if prevReaderOk {
+		prevReader.Close()
+	}
 
 	prepareData := wshrpc.CommandJobPrepareConnectData{
 		StreamMeta: *streamMeta,

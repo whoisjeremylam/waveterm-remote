@@ -431,3 +431,60 @@ With 'x' now hiding (keep-alive) instead of deleting, reopening a widget restore
 **Files changed:** `pkg/jobcontroller/jobcontroller.go` (`startReconnectScheduler`, `StartConnectionReconnectScheduler`, `needsInteractiveAuthTestHook`), `pkg/blockcontroller/blockcontroller.go` (`StartupReconnectDurableShells` calls `StartConnectionReconnectScheduler` on failure), `pkg/jobcontroller/jobcontroller_test.go` (4 tests).
 
 **Detection:** `starting reconnect scheduler after startup failure` in log after `failed to establish connection` at app start.
+
+## 2026-07-21: Resume-from-sleep: terminal "connected but typing invisible" (Phase 2G — diagnosis)
+
+**Symptom:** After laptop sleep/wake, a durable remote terminal block shows "connected" but typing produces no visible output. The keystrokes ARE sent (visible after app restart, which rebuilds the terminal from WaveFS). Devtools shows `[PW-CONN] connected` and `setFocusedChild`.
+
+**Root cause (frontend rendering, NOT backend stream):** The backend reconnection is fully successful — all 4 jobs reconnect, `restartStreaming` runs, new output loops start, data appends to WaveFS. The bug is in the **frontend xterm.js renderer pause state**.
+
+xterm.js `RenderService` (`@xterm/xterm` 6.1.0-beta) gates every render behind `_isPaused`:
+- `RenderService.refreshRows()` (src/browser/services/RenderService.ts:156) early-returns when `_isPaused` is true (`_needsFullRefresh = true; return`).
+- `_isPaused` is set/cleared only by `_handleIntersectionChange` (the `IntersectionObserver` callback, line 140) — `true` when the terminal element is NOT intersecting the viewport (background tab/split).
+- After OS sleep/wake, Chromium's `IntersectionObserver` often does **not** re-fire (the element's intersection didn't change — it was visible before suspend and visible after). So `_isPaused` stays stuck at its pre-sleep value.
+
+The existing fix (commit `9aacb9e7` "fix: restore terminal rendering after system sleep/resume") added `refreshAfterVisibilityChange()` in `frontend/app/view/term/termwrap.ts:787`, triggered by `document.visibilitychange`. But it only calls `renderer.renderRows(0, rows-1)` directly (bypassing the `_isPaused` gate) — a **one-shot** render of the current buffer. It does **NOT** reset `core._renderService._isPaused` to `false`. So:
+- The pre-sleep buffer content IS rendered (one-shot) → terminal looks "connected" with old content.
+- But subsequent `terminal.write()` calls (from `handleNewFileSubjectData` → `doTerminalWrite`) trigger `RenderService.refreshRows()`, which still early-returns because `_isPaused` is still `true`.
+- New output (echoed keystrokes) is written to xterm.js's internal buffer but never rendered to the canvas → typing invisible.
+- After app restart, `loadInitialTerminalData` rebuilds the terminal from WaveFS (which has all the data) → everything visible.
+
+**Evidence:**
+- Commit `9aacb9e7` message explicitly describes this: "leaving `_isPaused=true` and deferring all `refreshRows()` calls. This corrupts the canvas display while the underlying terminal buffer remains intact."
+- xterm.js source confirms `refreshRows` early-returns on `_isPaused` and only `_handleIntersectionChange` clears it.
+- Backend log (10:39:26) shows the new output loop (stream `6f007fa3`) started successfully; data path is intact.
+
+**Proposed fix (NOT yet implemented — awaiting approval):** In `refreshAfterVisibilityChange`, reset `_isPaused` before rendering:
+```ts
+const core = (this.terminal as any)._core;
+const renderService = core?._renderService;
+if (renderService) {
+    renderService._isPaused = false;   // unpause — IntersectionObserver may not fire after sleep
+    renderService.refreshRows(0, this.terminal.rows - 1);  // full refresh via the normal path
+} else {
+    // fallback to the existing direct-render path
+    const renderer = core?._renderService?._renderer?.value;
+    if (renderer && typeof renderer.renderRows === "function") {
+        renderer.renderRows(0, this.terminal.rows - 1);
+    }
+}
+this.fitAddon.fit();
+```
+This uses the same private-API access pattern already in the file (`core._renderService._renderer.value`). Calling `refreshRows` (not `renderer.renderRows`) ensures the render debouncer and `_needsFullRefresh` are handled correctly, and future `terminal.write()` calls render normally because `_isPaused` is now `false`.
+
+**Secondary finding (backend goroutine leak, separate bug):** `runOutputLoop` goroutines never exit. Across the 10k-line log: **85 "output loop started"**, **0 "output loop finished"**, **0 "superseded"**. `onConnectionDown` does NOT close old stream readers; `restartStreaming` overwrites `jobStreamIds` but leaves the old reader blocked on `reader.Read()` forever (the old streamId never receives data after the new stream starts, so `Read()` never returns, so the supersession check never runs). Each reconnect leaks one goroutine + one broker reader per job. This is a resource leak but does NOT cause the "typing invisible" symptom (the new stream's reader receives data correctly — `processRecvData` keys by streamId). Worth a separate fix (close old reader / cancel old output loop on conn-down or before starting a new stream in `restartStreaming`).
+
+**Files to change (Phase 2G):** `frontend/app/view/term/termwrap.ts` (`refreshAfterVisibilityChange`).
+**Files to change (leak fix, separate):** `pkg/jobcontroller/jobcontroller.go` (`onConnectionDown` / `restartStreaming` — close old reader).
+
+## 2026-07-21: Output-loop goroutine leak fix (Phase 2H)
+
+**Decision:** `runOutputLoop` goroutines never exited on reconnect (85 started, 0 finished, 0 superseded in the log). Each `restartStreaming` call created a new `streamclient.Reader` (new streamId) but left the old reader blocked on `Read()` forever — the old streamId never receives data after the new stream starts, so `Read()` never returns, and the supersession check (which runs after `Read()`) never fires.
+
+**Fix:** Added `jobReaders` (`ds.MakeSyncMap[*streamclient.Reader]`) to track the active reader per job. In `restartStreaming`, after creating the new reader and setting `jobStreamIds` to the new streamId, close the previous reader (`prevReader.Close()`). This unblocks the old `runOutputLoop`'s `Read()` (returns `io.ErrClosedPipe`), the supersession check sees the new streamId, and the loop exits cleanly ("stream superseded by [new]"). `Reader.Close()` is idempotent (safe to call on an already-closed reader — the `runOutputLoop` defer also calls it).
+
+**Ordering invariant:** `jobStreamIds.Set(newId)` MUST happen before `prevReader.Close()` so the supersession check sees the new streamId. If closed before the update, the old loop would hit the error path (`tryTerminateJobManager`) instead of the supersession path.
+
+**Files changed:** `pkg/jobcontroller/jobcontroller.go` (`jobReaders` map, `StartJob` stores reader, `restartStreaming` closes prev reader), `pkg/jobcontroller/jobcontroller_test.go` (2 tests: `TestRunOutputLoopExitsOnReaderCloseWithSupersession`, `TestRestartStreamingClosesPrevReader`).
+
+**Detection:** `grep "output loop finished" <log>` should now show entries (was 0 before). `grep "stream superseded"` should show the supersession exits.
