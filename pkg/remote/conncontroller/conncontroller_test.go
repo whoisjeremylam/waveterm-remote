@@ -1675,3 +1675,85 @@ func TestNeedsInteractiveAuth_UnknownConservative(t *testing.T) {
 		t.Fatal("expected NeedsInteractiveAuth=true when flag unknown (conservative, generous timeout)")
 	}
 }
+
+// --- CloseInvoluntary tests: cached password preservation ---
+
+// TestCloseInvoluntary_PreservesCachedPassword verifies that CloseInvoluntary
+// (used by stall auto-disconnect and HandleSystemResume) does NOT clear the
+// cached password. This is the core fix for sleep/wake losing the cached
+// password: an involuntary disconnect must preserve it so reconnect can reuse
+// it silently.
+func TestCloseInvoluntary_PreservesCachedPassword(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("secret123")
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected password to be cached before CloseInvoluntary")
+	}
+
+	conn.CloseInvoluntary()
+	time.Sleep(100 * time.Millisecond)
+
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected cached password to be PRESERVED after CloseInvoluntary")
+	} else if *pw != "secret123" {
+		t.Fatalf("expected cached password 'secret123' to be preserved, got %q", *pw)
+	}
+
+	if status := conn.GetStatus(); status != Status_Disconnected {
+		t.Fatalf("expected Status=Disconnected after CloseInvoluntary, got %s", status)
+	}
+}
+
+// TestDisconnectOnStall_PreservesCachedPassword verifies that the stall
+// auto-disconnect path (disconnectOnStall → CloseInvoluntary) preserves the
+// cached password. This is the regression test for the sleep/wake bug: the
+// stall monitor fires after a network drop, and previously Close() wiped the
+// cached password, turning a reconnectable password connection into one that
+// requires a prompt.
+func TestDisconnectOnStall_PreservesCachedPassword(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+	cm := makeTestMonitor(conn)
+
+	conn.cachePassword("stall-secret")
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected password to be cached before stall disconnect")
+	}
+
+	cm.disconnectOnStall()
+	time.Sleep(100 * time.Millisecond)
+
+	if status := conn.GetStatus(); status != Status_Disconnected {
+		t.Fatalf("expected Status=Disconnected after stall disconnect, got %s", status)
+	}
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected cached password to be PRESERVED after stall disconnect (CloseInvoluntary)")
+	} else if *pw != "stall-secret" {
+		t.Fatalf("expected cached password 'stall-secret' to be preserved, got %q", *pw)
+	}
+}
+
+// TestClose_ClearsCachedPassword verifies that explicit Close() DOES clear the
+// cached password (contrast with CloseInvoluntary above). Only involuntary
+// disconnects preserve the cache; user-initiated disconnects wipe it.
+func TestClose_ClearsCachedPassword(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("secret123")
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected password to be cached before Close")
+	}
+
+	conn.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	if pw := conn.getCachedPassword(); pw != nil {
+		t.Fatalf("expected cached password to be CLEARED after Close, got %q", *pw)
+	}
+	if status := conn.GetStatus(); status != Status_Disconnected {
+		t.Fatalf("expected Status=Disconnected after Close, got %s", status)
+	}
+}
