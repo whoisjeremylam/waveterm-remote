@@ -749,8 +749,10 @@ func HandleSystemResume(ctx context.Context) {
 			if err == nil {
 				conn := conncontroller.MaybeGetConn(connOpts)
 				if conn != nil {
-					// Close synchronously — ensures status is Disconnected before we attempt reconnect
-					conn.Close()
+					// Close synchronously — ensures status is Disconnected before we attempt reconnect.
+					// Involuntary disconnect — preserve the cached password so the
+					// immediate AttemptReconnect below can reuse it silently.
+					conn.CloseInvoluntary()
 				}
 			}
 		}

@@ -248,6 +248,24 @@ func (conn *SSHConn) FireConnChangeEvent() {
 }
 
 func (conn *SSHConn) Close() error {
+	return conn.closeInternal(true /* clearPassword */)
+}
+
+// CloseInvoluntary disconnects the connection WITHOUT clearing the cached
+// password. It is used by non-user-initiated disconnect paths (stall
+// auto-disconnect, system-resume stall handling) so that a subsequent
+// reconnect can reuse the cached password silently. Only explicit user
+// disconnect (Close) and auth-failed (clearCachedPassword called directly
+// from Connect) should clear the cached password.
+func (conn *SSHConn) CloseInvoluntary() error {
+	return conn.closeInternal(false /* clearPassword */)
+}
+
+// closeInternal is the shared disconnect path. When clearPassword is true,
+// the cached password is wiped (explicit user disconnect). When false, it is
+// preserved (involuntary disconnect — stall, sleep/wake) so reconnect can
+// reuse it.
+func (conn *SSHConn) closeInternal(clearPassword bool) error {
 	conn.lifecycleLock.Lock()
 	defer conn.lifecycleLock.Unlock()
 
@@ -258,8 +276,10 @@ func (conn *SSHConn) Close() error {
 		}
 		conn.ConnHealthStatus = ConnHealthStatus_Good
 	})
-	// Clear cached password on explicit disconnect
-	conn.clearCachedPassword()
+	if clearPassword {
+		// Clear cached password on explicit disconnect
+		conn.clearCachedPassword()
+	}
 	// Fire event BEFORE closeInternal_withlifecyclelock so the UI updates
 	// even if client.Close() blocks on a dead network connection.
 	conn.FireConnChangeEvent()
