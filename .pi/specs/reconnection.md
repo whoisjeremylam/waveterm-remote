@@ -391,7 +391,7 @@ connected   max 5 min   no durable jobs
 
 | # | Gap | Priority | Plan Phase |
 |---|-----|----------|------------|
-| G1 | No tab-switch trigger for disconnected connections | High | Phase 8 |
+| G1 | No tab-switch trigger for disconnected connections | High | Fixed 2026-07-23 — `VisibilityReconnectHandler` (see Phase 2I below) |
 | G2 | Auth-failed leaves prompt permanently dismissed (no re-prompt without manual Reconnect) | Critical | Phase 6.5 |
 | G3 | Password lost when context timeout kills parent goroutine before user responds | High | Phase 2A |
 | G4 | `connchange` events not buffered — late windows miss dismissals | High | Phase 5 |
@@ -418,7 +418,7 @@ Phase 2 decoupled the password timeout from the connection context by using `con
 | `pkg/jobcontroller/jobcontroller.go` | Scheduler, `onConnectionDown`, `needsInteractiveAuth` (delegates to `CanReconnectWithoutPrompt`), system resume |
 | `pkg/remote/conncontroller/conncontroller.go` | `Connect()`, `EnsureConnection`, `AttemptReconnect`, password cache, `CanReconnectWithoutPrompt`, `authPromptState`, `authPrompt*` constants |
 | `pkg/remote/sshclient.go` | `ConnectToClient`, `AuthTracker` (password/passphrase/kbd-interactive prompt tracking), `HasPublicKeyAuth` (~/.ssh/config fallback), `ClassifyConnError` |
-| `pkg/userinput/userinput.go` | `GetUserInput`, window scope resolution |
+| `pkg/userinput/userinput.go` | `GetUserInput`, window scope resolution, `windowPromptLocks` (per-window SSH auth prompt serialization) |
 | `pkg/service/userinputservice/userinputservice.go` | `SendUserInputResponse` handler |
 | `pkg/wps/wps.go` | Event broker, buffering, scoping |
 | `frontend/app/store/modalmodel.ts` | `activeUserInputPromptsAtom`, dismiss, reset |
@@ -426,7 +426,11 @@ Phase 2 decoupled the password timeout from the connection context by using `con
 | `frontend/app/block/connstatusoverlay.tsx` | Reconnect button, status display |
 | `frontend/app/block/blockframe.tsx` | `ConnEnsureCommand` on mount, `UserInputPromptOverlay` |
 | `frontend/app/tab/tabuserinputpromptoverlay.tsx` | Tab-level password prompt overlay (phase 1) |
-| `frontend/app/workspace/workspace.tsx` | Overlay rendering at workspace level (phase 1 fix) |
+| `frontend/app/workspace/workspace.tsx` | Overlay rendering at workspace level (phase 1 fix), mounts `VisibilityReconnectHandler` |
+| `frontend/app/tab/visibilityreconnect.tsx` | `VisibilityReconnectHandler` — fires `ConnEnsureCommand` on tab switch / app focus for disconnected connections |
+| `pkg/jobmanager/streammanager.go` | `StreamManager` — `handleSendFailure` (backpressure break), `activateDiskBuffering`/`drainDiskToCirBuf` (disk-backed history), `ClientDisconnected`/`ClientConnected` lifecycle |
+| `pkg/jobmanager/cirbuf.go` | `CirBuf` — `SetTotalSize`, `SetEffectiveWindow`, `WriteAvailable` (sync/async modes) |
+| `pkg/jobmanager/jobmanager.go` | `JobManager` — `connectToStreamHelper_withlock`, `disconnectFromStreamHelper` (remote-side disconnect → `ClientDisconnected` + `activateDiskBuffering`) |
 | `frontend/app/modals/userinputprompt.tsx` | Password prompt component |
 
 ---
@@ -695,3 +699,171 @@ After the fix: each reconnect's old output loop should log "stream superseded by
 
 - `TestRunOutputLoopExitsOnReaderCloseWithSupersession`: Verifies that closing the old reader (after updating `jobStreamIds`) causes `runOutputLoop` to exit via the supersession path (clean break, no DB access), not the error path. This is the core invariant that prevents the leak.
 - `TestRestartStreamingClosesPrevReader`: Verifies the `jobReaders` map mechanics (retrieve prev, set new streamId, close prev, store new) and `Reader.Close()` idempotency.
+
+---
+
+## Phase 2I: Visibility-Driven Reconnect (2026-07-23)
+
+**Implemented in commit `d519f484`.** Spec: [[visibility-driven-reconnect.md]] Change 3.
+
+### The gap
+
+There was no trigger that re-established a disconnected connection when the user's attention returned to it. `TermResyncHandler` only fires `resyncController` on a status *change*; the backend `ResyncController` → `CheckConnStatus` returns an error for a down connection without reconnecting. The user had to click "Reconnect" manually after a sleep/wake or network drop.
+
+### The fix
+
+`VisibilityReconnectHandler` (frontend, `frontend/app/tab/visibilityreconnect.tsx`) is a side-effect-only React component mounted in `WorkspaceElem` alongside `TabUserInputPromptOverlay`. It fires `ConnEnsureCommand` for disconnected/error connections on the active tab when the user's attention returns to waveterm:
+
+- **Trigger 1: tab switch** — when `tabId` changes, scan the new tab's blocks.
+- **Trigger 2: window focus** — when waveterm regains focus, re-scan the active tab.
+
+Both triggers are debounced (200ms) to coalesce rapid tab switches / focus bursts.
+
+### Safeguards
+
+- Only terminal blocks with a connection are considered; local and WSL connections are skipped.
+- Connections that are already `connected` or `connecting` are left alone (skip unnecessary RPC).
+- If a password prompt is already active for a connection (`modalsModel.activeUserInputPromptsAtom[connName]`), that connection is skipped — the user is being asked; don't pile on another `Connect`.
+- The backend `EnsureConnection` is idempotent and cooldown-guarded (5s `isWithinConnectCooldown`), so rapid tab switches do not cause reconnect storms.
+- `Connect()` is serialized by `lifecycleLock` — if a scheduler or `HandleSystemResume` fast-path is already connecting, visibility-driven `EnsureConnection` waits via `WaitForConnect` or `waitForPendingAuth`.
+
+### Interaction with the scheduler
+
+The background scheduler (`scheduleConnectionReconnect`) and visibility-driven reconnect are complementary:
+- Scheduler: fires on a timer (5s interval, 5min/15min cap), best for background reconnection while the user is away.
+- Visibility: fires on user attention, best for immediate reconnection when the user returns.
+- Both funnel through `Connect()` / `EnsureConnection`, serialized by `lifecycleLock`. No double-connect.
+
+---
+
+## Phase 2J: Per-Window Password Prompt Serialization (2026-07-23)
+
+**Implemented in commit `98bbd632`.** Spec: [[visibility-driven-reconnect.md]] Change 4.
+
+### The gap
+
+When visibility-driven reconnect fires `EnsureConnection` for multiple disconnected password-connections on the same tab, all prompts rendered simultaneously. The desired UX is serialized: one prompt at a time per window.
+
+### The fix
+
+`windowPromptLocks` (`pkg/userinput/userinput.go`) — a `map[windowId]*sync.Mutex` that serializes SSH auth prompts (password, keyboard-interactive, passphrase) per-window. When `GetUserInput` is called for an SSH auth prompt, it:
+
+1. Resolves the window scope (via `findWindowsForConnection` by connName, or all-windows fallback).
+2. Acquires the per-window mutex (`acquireWindowPromptLock`).
+3. Sends the prompt to the frontend (only one prompt visible at a time).
+4. Releases the mutex when the user responds (connect, cancel, or timeout).
+
+### Safeguards
+
+- Non-auth prompts (confirm dialogs) are never serialized.
+- If the window scope can't be determined (fallback to all-windows), serialization is skipped — prompts may appear simultaneously, which is the pre-existing behavior.
+- The SSH handshake timeout (60s, `DefaultConnectionTimeout`) covers the lock wait. If a previous prompt holds the lock for a long time, a later connection's handshake may time out while waiting. That connection will retry on the next visibility-driven reconnect event — acceptable degradation in exchange for one-prompt-at-a-time UX.
+- Cached-password and publickey connections skip the lock entirely (no `GetUserInput` call — the SSH callback uses the cached password or agent key directly).
+
+### Interaction with cached password / CloseInvoluntary
+
+If `CloseInvoluntary` preserved a cached password (Phase 2K below), the SSH callback uses it directly — no `GetUserInput`, no lock acquired. The lock only fires for connections that genuinely need a prompt.
+
+---
+
+## Phase 2K: Involuntary Disconnect Preserves Cached Password (2026-07-23)
+
+**Implemented in commit `402acb77`.** Spec: [[visibility-driven-reconnect.md]] Change 2. Tests: commit `8f9c0a67`.
+
+### The gap
+
+`disconnectOnStall` (the stall auto-disconnect path) and `HandleSystemResume` (the sleep/wake path) called `Close()`, which unconditionally clears the cached password via `clearCachedPassword()`. An involuntary network drop (sleep/wake, TCP stall) wiped the cached password, so even password connections that *would* auto-reconnect silently lost their cache. The user was forced to re-enter the password after every sleep/wake.
+
+### The fix
+
+Refactored `Close()` into `closeInternal(clearPassword bool)`:
+- `Close()` → `closeInternal(true)` — clears cached password (explicit user disconnect, e.g. "Disconnect" button).
+- `CloseInvoluntary()` → `closeInternal(false)` — preserves cached password (stall auto-disconnect, sleep/wake).
+
+`disconnectOnStall` (`connmonitor.go`) and `HandleSystemResume` (`jobcontroller.go`) now call `CloseInvoluntary()` instead of `Close()`.
+
+### What `closeInternal` does NOT change
+
+- `authPromptState` is preserved (both `Close` and `CloseInvoluntary` keep it). Only `auth-failed` in `Connect()`'s error path resets it to `authPromptUnknown`.
+- The connection status transitions to `Disconnected` in both cases.
+- `FireConnChangeEvent` fires in both cases (UI updates).
+- `closeInternal_withlifecyclelock` cleans up SSH client, listener, controller, monitor, forwarding rules in both cases.
+
+### `CanReconnectWithoutPrompt` decision order (after CloseInvoluntary)
+
+1. `CachedPassword != nil` → **true** (CloseInvoluntary preserved it → silent reconnect)
+2. `LastErrorCode == "auth-failed"` → **false** (retry won't help)
+3. `authPromptState == authPromptNone` → **true** (publickey, replayable)
+4. `authPromptState == authPromptUsed` → **false** (prompt was needed, no cache)
+5. `authPromptUnknown` → config-based fallback (`canReconnectFromKeywordsOrPubkey`)
+
+### Test coverage
+
+- `TestCloseInvoluntary_PreservesCachedPassword`: cache a password, call `CloseInvoluntary`, assert cache preserved + status=Disconnected.
+- `TestDisconnectOnStall_PreservesCachedPassword`: cache a password, call `disconnectOnStall`, assert cache preserved (regression test for the sleep/wake bug).
+- `TestClose_ClearsCachedPassword`: contrast — explicit `Close()` DOES clear the cached password.
+
+---
+
+## Phase 2L: Scheduler Tuning — Silent Cap + Early Terminate (2026-07-23)
+
+**Implemented in commit `fd78d03a`.** Spec: [[visibility-driven-reconnect.md]] Change 5.
+
+### The changes
+
+1. **`ConnReconnectMaxDurationSilent` (15 minutes)** — a longer cap for silently-reconnectable connections (key-based / cached password). The scheduler checks `needsInteractiveAuth(connName)` at start; if the connection can reconnect without a prompt, it uses the 15-minute cap instead of the 5-minute `ConnReconnectMaxDuration`. Silent retries are cheap — they don't prompt the user — so a longer cap gives the network more time to recover after a sleep/wake or VPN bounce. Interactive-attempt connections keep the 5-minute cap (defensive; they rarely reach the scheduler post-fix-#1 since `needsInteractiveAuth` gates `onConnectionDown`).
+
+2. **Early termination on `auth-failed`** — the server is up but rejecting credentials. Retrying won't help — the user must fix credentials. `requestPasswordRePrompt` handles re-prompting; the scheduler exits.
+
+3. **Early termination on `connection-refused`** (dial-error/refused) — the server is reachable but the SSH service is not accepting connections (port closed, daemon stopped, firewall rejecting). Retrying every 5s is wasteful — visibility-driven reconnect (Phase 2I) will retry on the next tab switch / app focus when the user returns.
+
+Network-unreachable errors (no-route, timeout, DNS failure) continue to retry with aggressive mode (5s interval, 2-minute window), unchanged.
+
+### Constants
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `ConnReconnectInterval` | 5s | Normal retry interval |
+| `ConnReconnectMaxDuration` | 5min | Cap for interactive-attempt connections |
+| `ConnReconnectMaxDurationSilent` | 15min | Cap for silently-reconnectable connections (key-based / cached password) |
+| `ConnReconnectAggressiveInterval` | 3s | Aggressive retry interval (network-unreachable) |
+| `ConnReconnectAggressiveDuration` | 2min | Aggressive window duration |
+
+### Interaction with visibility-driven reconnect
+
+After the scheduler early-terminates (auth-failed / connection-refused), visibility-driven reconnect can still fire `EnsureConnection` on the next tab switch / app focus. The connection status is `Error`; `EnsureConnection` → `Status_Error` → `Connect()` retries. If the prompt is active (`activeUserInputPromptsAtom`), visibility reconnect skips that connection. `lifecycleLock` serializes concurrent `Connect()` calls.
+
+---
+
+## Phase 2M: Disk-Backed Stream History & Backpressure Break (2026-07-23)
+
+**Implemented in commits `cf039928` + `953a4961` + `b8090029`.** Spec: [[disk-backed-stream-history.md]].
+
+### The gap (root cause: PTY backpressure cascade)
+
+When the network drops, the remote `StreamManager` stays in connected/sync mode (64KB `CwndSize`). No ACKs arrive → `senderLoop` blocks on `drainCond.Wait()` → `readLoop` blocks on `WriteAvailable` (CirBuf full in sync mode) → PTY kernel buffer (4KB) fills → pi's `write()` to the PTY slave blocks → **pi freezes**. `ClientDisconnected()` was only called explicitly (new-client-replaces-old at `jobmanager.go:177`, explicit disconnect at `jobmanager.go:207`); it was never called during a network outage because the local machine can't send the command (SSH is down). There was no timeout or keepalive on the remote to detect lost ACKs.
+
+### The fix (Part A: break backpressure)
+
+`DataSender.SendData` now returns an `error` and has a 5-second `SendDataTimeout`. When the SSH channel breaks (network drop), `SendData` fails or times out → `handleSendFailure` → `ClientDisconnected()` + `activateDiskBuffering()`. This switches the `StreamManager` to async mode (2MB CirBuf) and starts writing PTY output to a disk file (`<jobid>.stream`). The `readLoop` resumes (it writes to disk, not the full CirBuf), so pi's `write()` to the PTY slave no longer blocks.
+
+### The fix (Part B: disk-backed history)
+
+On reconnect, `ClientConnected` checks if a disk file exists and `clientSeq < diskEndSeq` (client is behind). If so, it starts a `drainDiskToCirBuf` goroutine that reads from the disk file and writes to the CirBuf. The `senderLoop` reads from the CirBuf and sends to the client. When the disk is fully drained, the disk file is closed and deleted, and the `readLoop` resumes writing to the CirBuf directly.
+
+### Interaction with reconnect subsystems
+
+The disk-backed fix interacts with the reconnect subsystems at three points:
+
+1. **Local stall monitor (5s)** → `disconnectOnStall` → `CloseInvoluntary` → SSH disconnect. Preserves cached password (Phase 2K). The remote detects the SSH channel close → `disconnectFromStreamHelper` → `ClientDisconnected` + `activateDiskBuffering` (idempotent — may already be activated by `handleSendFailure`).
+
+2. **Remote backpressure break (5s `SendDataTimeout`)** → `handleSendFailure` → `ClientDisconnected` + `activateDiskBuffering`. This fires when the SSH channel breaks and `SendData` fails. PTY output is buffered to disk.
+
+3. **Reconnect** (scheduler / `HandleSystemResume` / visibility-driven) → `Connect()` → SSH channel established → `restartStreaming` (Phase 2H closes the old reader) → `connectToStreamHelper_withlock` → `ClientConnected` → `drainDiskToCirBuf` replays buffered data → terminal shows missed output.
+
+All three paths are idempotent: `ClientDisconnected` checks `if !sm.connected { return }`; `activateDiskBuffering` checks `if sm.diskFile != nil { return }`. Firing order doesn't matter.
+
+### What this does NOT change
+
+- The reconnect triggers (scheduler, `HandleSystemResume`, visibility-driven) are unchanged — they still call `Connect()` / `EnsureConnection` as before. The disk-backed fix is transparent to them.
+- `CloseInvoluntary` (Phase 2K) and the scheduler tuning (Phase 2L) are independent of the disk-backed fix. They compose correctly: `CloseInvoluntary` preserves the cached password so the reconnect can be silent; the scheduler tuning gives the network more time to recover; the disk-backed fix ensures no PTY output is lost during the outage.

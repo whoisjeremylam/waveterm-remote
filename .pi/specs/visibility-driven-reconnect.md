@@ -1,9 +1,17 @@
 # Visibility-Driven Reconnect & Auto-Reconnect Fixes — Spec
 
-> Status: Spec (awaiting approval)
+> Status: Implemented (2026-07-23)
 > Created: 2026-07-07
 > Design reference: [[reconnection-design.md]]
 > Implementation reference: [[reconnection.md]]
+>
+> Implementation commits:
+> - Change 2 (CloseInvoluntary): `402acb77` (tests: `8f9c0a67`)
+> - Change 3 (VisibilityReconnectHandler): `d519f484`
+> - Change 4 (windowPromptLocks): `98bbd632`
+> - Change 5 (scheduler tuning): `fd78d03a`
+> - Change 1: **superseded** by main's runtime `authPromptState`/`CanReconnectWithoutPrompt` model (commit `634bdc27`) — see note below
+> - Change 6 (HandleSystemResume): code-complete via `CloseInvoluntary` (Change 2)
 
 ## Problem
 
@@ -37,11 +45,19 @@ Two supporting issues compound the above:
 
 ## Change 1 — Fix the "can reconnect without a prompt" heuristic
 
+> **SUPERSEDED (2026-07-17):** This change was implemented on the feature branch using a `HasConnected` heuristic (check `conn.LastConnectTime > 0`). Main's runtime `authPromptState`/`CanReconnectWithoutPrompt` model (commit `634bdc27`) is more comprehensive and supersedes it. The `authPromptState` model:
+> - Tracks whether the last successful SSH handshake used an interactive prompt (`authPromptUsed`) or not (`authPromptNone`), set by `AuthTracker` during `ConnectToClient`.
+> - Handles passphrase-encrypted keys correctly (the `HasConnected` heuristic could not distinguish a key that connected silently from one that needed a passphrase).
+> - Falls back to a `~/.ssh/config` publickey check (`canReconnectFromKeywordsOrPubkey`) when the flag is unknown (cold start or after auth-failed).
+> - Checks cached password first, then `authPromptState`, then config fallback — see `CanReconnectWithoutPrompt` in [[reconnection.md]].
+>
+> The `HasConnected` heuristic was NOT adopted. See Phase 2K in [[reconnection.md]] for the implemented `CloseInvoluntary` + `authPromptState` interaction.
+
 ### Files
 - `pkg/jobcontroller/jobcontroller.go` — `needsInteractiveAuth`
 - `pkg/remote/conncontroller/conncontroller.go` — `canAutoReconnectLocked`
 
-### Current (buggy) logic
+### Original (buggy) logic
 
 Both functions return `true` (interactive) when `SshPasswordAuthentication` or `SshKbdInteractiveAuthentication` are nil/unset (SSH defaults), regardless of whether the connection has ever connected via key.
 
@@ -223,7 +239,7 @@ The explicit-disconnect callers (`DisconnectClient`, `ConnDisconnectCommand`) ke
 ## Change 3 — Visibility-driven reconnect on tab switch / app focus
 
 ### Files
-- `frontend/app/view/term/term.tsx` or a new hook — detect tab activation / app focus, fire reconnect
+- `frontend/app/tab/visibilityreconnect.tsx` — `VisibilityReconnectHandler` component (side-effect-only, mounted in `workspace.tsx`)
 - `frontend/app/store/wshclientapi.ts` — already has `ConnConnectCommand` (no new RPC needed)
 - `pkg/wshrpc/wshserver/wshserver.go` — `ConnConnectCommand` already calls `EnsureConnection` (no backend change needed)
 

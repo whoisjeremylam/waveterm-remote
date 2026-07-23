@@ -488,3 +488,52 @@ This uses the same private-API access pattern already in the file (`core._render
 **Files changed:** `pkg/jobcontroller/jobcontroller.go` (`jobReaders` map, `StartJob` stores reader, `restartStreaming` closes prev reader), `pkg/jobcontroller/jobcontroller_test.go` (2 tests: `TestRunOutputLoopExitsOnReaderCloseWithSupersession`, `TestRestartStreamingClosesPrevReader`).
 
 **Detection:** `grep "output loop finished" <log>` should now show entries (was 0 before). `grep "stream superseded"` should show the supersession exits.
+
+## 2026-07-21: New-Tab Connection Dropdown — typeahead + frecency sort
+
+**Context:** The `+ New Tab` connection dropdown (`connectiondropdown.tsx`) was a bare static list with non-deterministic backend ordering (Go map iteration), no keyboard filtering, no Edit Connections, and `Cmd-t` bypassed it entirely. The block-header dropdown (`conntypeahead.tsx`) had a typeahead but sorted only by `display:order` and included a Disconnect item.
+
+**Decisions:**
+
+1. **Sort = frecency** (Raycast/Alfred-style): `score = connectCount × exp(-ageDays/14)`, tie-break `display:order` → name. Half-life 14 days. Both dropdowns use the same ranking via a shared `conn-suggestions.ts` module.
+2. **Persist `ConnectCount`** in `connections.json` (`conn:connectcount`) so frecency accumulates across restarts. `LastConnectTime` stays in-memory (avoids stale-timestamp edge case; re-populates on first reconnect).
+3. **`Cmd-t` opens the dropdown** via a global `newTabDropdownOpenAtom` (in `global-atoms.ts`), replacing the direct `createTab()` call.
+4. **New Connection fallback** when filter matches nothing, but **not highlighted by default** — user must explicitly arrow-down to it before Enter can create. Prevents accidental creates from fast typing.
+5. **Edit Connections** added to `+` dropdown (opens `connections.json` in current tab); **removed** from block-header dropdown.
+6. **Disconnect** item removed from block-header dropdown. **Reconnect** kept (block-specific, for disconnected durable sessions).
+7. **Filter is case-insensitive** in both dropdowns (block-header was case-sensitive; fixed via shared module).
+8. **`TypeAheadModal` not reused for new-tab** — it portals into a `blockRef` and positions relative to a block, which doesn't exist in the tab bar. New `NewTabConnTypeahead` portals to `document.body` and anchors to the `+` button ref.
+
+See [[specs/newtab-connect-dropdown.md]] for full spec.
+
+**Focus fix (prerequisite, shipped):** `frontend/app/view/term/term.tsx` — `wasFocused` guard removed the dead `termRef.current != null` check so the post-init `giveFocus()` fires on first terminal mount (commit `1aa02211`).
+
+## 2026-07-23: Disk-backed stream history & backpressure break
+
+**Decision:** When the network drops, the remote `StreamManager` stays in connected/sync mode (64KB `CwndSize`). No ACKs arrive → `senderLoop` blocks → `readLoop` blocks → PTY kernel buffer fills → pi's `write()` blocks → pi freezes. Fixed with a two-part approach: (A) break backpressure via `SendData` error + 5s timeout → `handleSendFailure` → `ClientDisconnected` + `activateDiskBuffering`; (B) disk-backed history with `drainDiskToCirBuf` — PTY output is buffered to a disk file (`<jobid>.stream`) during disconnect and replayed on reconnect.
+
+**Files changed:** `pkg/jobmanager/streammanager.go` (handleSendFailure, activateDiskBuffering, drainDiskToCirBuf, ClientConnected bounds expansion, terminal-packet deferral), `pkg/jobmanager/cirbuf.go` (SetTotalSize), `pkg/jobmanager/mainserverconn.go` (SendData returns error, SendDataTimeout), `pkg/jobmanager/jobmanager.go` (SetupJobManager cleans stale .stream files), `pkg/jobmanager/streammanager_test.go` (full test suite). Spec: [[specs/disk-backed-stream-history.md]]. Commits: `cf039928`, `953a4961`, `b8090029`.
+
+## 2026-07-23: CloseInvoluntary — preserve cached password on involuntary disconnect
+
+**Decision:** `disconnectOnStall` (stall auto-disconnect) and `HandleSystemResume` (sleep/wake) called `Close()`, which unconditionally cleared the cached password. An involuntary network drop wiped the cache, forcing a re-prompt. Refactored `Close()` into `closeInternal(clearPassword bool)`: `Close()` clears the cache (explicit disconnect), `CloseInvoluntary()` preserves it (stall, sleep/wake). `authPromptState` is preserved in both cases (only `auth-failed` resets it).
+
+**Files changed:** `pkg/remote/conncontroller/conncontroller.go` (closeInternal, CloseInvoluntary), `pkg/remote/conncontroller/connmonitor.go` (disconnectOnStall → CloseInvoluntary), `pkg/jobcontroller/jobcontroller.go` (HandleSystemResume → CloseInvoluntary), `pkg/remote/conncontroller/conncontroller_test.go` (3 tests). Commit: `402acb77` (tests: `8f9c0a67`). See [[reconnection.md]] Phase 2K.
+
+## 2026-07-23: Visibility-driven reconnect (tab switch / app focus)
+
+**Decision:** No trigger re-established a disconnected connection when the user's attention returned. Added `VisibilityReconnectHandler` (frontend, `visibilityreconnect.tsx`) — a side-effect-only React component mounted in `WorkspaceElem` that fires `ConnEnsureCommand` for disconnected/error connections on the active tab when the user switches tabs or focuses the app. Debounced 200ms. Skips local/WSL, connected, connecting, and connections with an active password prompt. Backend `EnsureConnection` is idempotent + cooldown-guarded; `Connect()` is serialized by `lifecycleLock`.
+
+**Files changed:** `frontend/app/tab/visibilityreconnect.tsx` (new), `frontend/app/workspace/workspace.tsx` (mounts the handler). Commit: `d519f484`. See [[reconnection.md]] Phase 2I, [[visibility-driven-reconnect.md]] Change 3.
+
+## 2026-07-23: Per-window password prompt serialization
+
+**Decision:** When visibility-driven reconnect fires `EnsureConnection` for multiple disconnected password-connections on the same tab, all prompts rendered simultaneously. Added `windowPromptLocks` (`pkg/userinput/userinput.go`) — a per-window mutex that serializes SSH auth prompts (password, keyboard-interactive, passphrase). Only one prompt is shown at a time per window. Cached-password and publickey connections skip the lock (no `GetUserInput` call). Non-auth prompts (confirm dialogs) are never serialized.
+
+**Files changed:** `pkg/userinput/userinput.go` (windowPromptLocks, acquireWindowPromptLock, isSSHAuthPrompt). Commit: `98bbd632`. See [[reconnection.md]] Phase 2J, [[visibility-driven-reconnect.md]] Change 4.
+
+## 2026-07-23: Scheduler tuning — silent cap + early-terminate
+
+**Decision:** (1) Added `ConnReconnectMaxDurationSilent` (15min) for silently-reconnectable connections (key-based / cached password) — silent retries are cheap. Interactive-attempt connections keep the 5min cap. (2) Early-terminate the scheduler on `auth-failed` (server rejecting credentials — retrying won't help, `requestPasswordRePrompt` handles re-prompting) and `connection-refused` (server not accepting SSH — visibility-driven reconnect will retry on next tab switch). Network-unreachable errors continue to retry with aggressive mode unchanged.
+
+**Files changed:** `pkg/jobcontroller/jobcontroller.go` (constants, scheduleConnectionReconnect). Commit: `fd78d03a`. See [[reconnection.md]] Phase 2L, [[visibility-driven-reconnect.md]] Change 5.

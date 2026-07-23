@@ -70,12 +70,28 @@
   - Diagnostic logging: `jobStreamHealth` map, `runOutputLoop` start/exit/bytes, `doReconnectJob` skip path with stream health, `handleRouteEvent` route-up without stream restart, `restartStreaming` success/failure, `connectInternal`/`startConnServerWithRetry` timing
   - See [[decisions.md#2026-07-12-wsh-startup-timeout-fix-layer-12--stream-restart-diagnostic-logging]] for the Layer 3 hypothesis (failure mode B: Connected-but-no-stream)
   - Branch: `fix/wsh-startup-timeout`
-- [ ] **Visibility-driven reconnect & auto-reconnect fixes** (spec: [[.pi/specs/visibility-driven-reconnect.md]], design: [[.pi/specs/reconnection-design.md]])
+
+- [x] **Phase 2G: Resume-from-sleep renderer unpause** — 2026-07-21 (commit `b6f7487a`, on `origin/main`)
+  - Symptom: After laptop sleep/wake, a durable remote terminal block shows "connected" but typing produces no visible output. Keystrokes ARE sent (visible after app restart). Backend reconnection is fully successful; the bug is in the frontend xterm.js renderer pause state (`_isPaused` stuck `true` after sleep/wake because Chromium's `IntersectionObserver` does not re-fire).
+  - Fix: In `refreshAfterVisibilityChange` (`termwrap.ts`), reset `_isPaused = false` before calling `renderRows` via the normal `RenderService.refreshRows` path. Future `terminal.write()` calls render normally.
+  - See [[reconnection.md#phase-2g-resume-from-sleep-renderer-unpause-2026-07-21]].
+
+- [x] **Phase 2H: Output-loop goroutine leak on reconnect** — 2026-07-21 (commit `6f04028a`, on `origin/main`)
+  - Symptom: `runOutputLoop` goroutines never exited on reconnect (85 started, 0 finished, 0 superseded in the log). Each `restartStreaming` created a new `streamclient.Reader` but left the old reader blocked on `Read()` forever.
+  - Fix: Added `jobReaders` (`ds.MakeSyncMap[*streamclient.Reader]`) to track the active reader per job. In `restartStreaming`, after setting `jobStreamIds` to the new streamId, close the previous reader. The old loop's `Read()` returns `io.ErrClosedPipe`, the supersession check sees the new streamId, and the loop exits cleanly.
+  - See [[reconnection.md#phase-2h-output-loop-goroutine-leak-on-reconnect-2026-07-21]].
+
+- [x] **Disk-backed stream history & backpressure break** — 2026-07-23 (commits `cf039928`, `953a4961`, `b8090029`)
+  - Symptom: Dropping network connectivity to a remote durable connection froze pi (PTY backpressure cascade: `readLoop` blocks on `WriteAvailable` → PTY kernel buffer fills → pi's `write()` blocks). `ClientDisconnected` was never called during a network outage.
+  - Fix Part A: `DataSender.SendData` returns `error` with 5s `SendDataTimeout` → `handleSendFailure` → `ClientDisconnected` + `activateDiskBuffering` (switches to 2MB async CirBuf + disk file).
+  - Fix Part B: On reconnect, `ClientConnected` starts `drainDiskToCirBuf` to replay buffered PTY output from the disk file. No data lost during the outage.
+  - Spec: [[disk-backed-stream-history.md]]. See [[reconnection.md#phase-2m-disk-backed-stream-history--backpressure-break-2026-07-23]].
+- [x] **Visibility-driven reconnect & auto-reconnect fixes** (spec: [[.pi/specs/visibility-driven-reconnect.md]], design: [[.pi/specs/reconnection-design.md]]) — 2026-07-23
   - [~] Change 1: Fix `needsInteractiveAuth` / `canAutoReconnectLocked` — **superseded by main's runtime `authPromptState`/`CanReconnectWithoutPrompt` model** (commit 634bdc27), which is more comprehensive (handles passphrase-encrypted keys, auth-failed state, config fallback). The feature branch's `HasConnected` heuristic is NOT adopted.
-  - [x] Change 2: Don't clear cached password on stall auto-disconnect (`CloseInvoluntary` for involuntary disconnects) — adopted (commit 4ca8d183)
-  - [x] Change 3: Visibility-driven reconnect — fire `ConnEnsureCommand` on tab switch / app focus for disconnected blocks (`frontend/app/tab/visibilityreconnect.tsx`, mounted in `workspace.tsx`)
-  - [x] Change 4: Serialize password prompts per-window (backend semaphore in `userinput.go`)
-  - [x] Change 5: Tune scheduler bounds (15min cap for silent-reconnectable via `ConnReconnectMaxDurationSilent`) + early-stop on `auth-failed` and `connection-refused`
+  - [x] Change 2: Don't clear cached password on stall auto-disconnect (`CloseInvoluntary` for involuntary disconnects) — adopted (commit `402acb77`, tests `8f9c0a67`). See [[reconnection.md#phase-2k-involuntary-disconnect-preserves-cached-password-2026-07-23]].
+  - [x] Change 3: Visibility-driven reconnect — fire `ConnEnsureCommand` on tab switch / app focus for disconnected blocks (`frontend/app/tab/visibilityreconnect.tsx`, mounted in `workspace.tsx`) — commit `d519f484`. See [[reconnection.md#phase-2i-visibility-driven-reconnect-2026-07-23]].
+  - [x] Change 4: Serialize password prompts per-window (backend semaphore in `userinput.go`) — commit `98bbd632`. See [[reconnection.md#phase-2j-per-window-password-prompt-serialization-2026-07-23]].
+  - [x] Change 5: Tune scheduler bounds (15min cap for silent-reconnectable via `ConnReconnectMaxDurationSilent`) + early-stop on `auth-failed` and `connection-refused` — commit `fd78d03a`. See [[reconnection.md#phase-2l-scheduler-tuning-silent-cap--early-terminate-2026-07-23]].
   - [x] Change 6: `HandleSystemResume` stall path uses `CloseInvoluntary` (Change 2). Code-complete, pending manual validation.
   - Root cause: `needsInteractiveAuth` infers interactive auth from SSH default flags (password/kbd-interactive enabled when nil), not from whether the connection has authenticated via key before. Key-based connections never auto-reconnect on wake; `disconnectOnStall` → `Close()` clears the cached password ~10s after wake.
 
@@ -366,3 +382,35 @@ Full VS Code SCM diff view feature analysis done on `~/project/vscode`. Source f
   - [ ] Test: refresh on show catches up on changes
   - [ ] Test: true block deletion (X button) still disposes ViewModel
   - [ ] Test: multiple connections (hide SCM for conn A, open for conn B → new block, not reuse)
+
+## New-Tab Connection Dropdown (typeahead + frecency)
+
+Spec: [[.pi/specs/newtab-connect-dropdown.md]]
+
+### Backend
+- [ ] Add `ConnectCount int64` to `ConnController` struct (`pkg/remote/conncontroller/conncontroller.go`)
+- [ ] Increment `ConnectCount` on successful connect (~line 938) and persist via `wconfig.SetConnectionsConfigValue("conn:connectcount")`
+- [ ] Load `ConnectCount` from `connections.json` at connection init
+- [ ] Add `ConnectCount`/`LastConnectTime` to `ConnStatus` (`pkg/wshrpc/wshrpctypes.go`); populate in `DeriveConnStatus`
+- [ ] Add `ConnConnectCount`/`ConnLastConnectTime` to `ConnKeywords` (`pkg/wconfig/settingsconfig.go`)
+- [ ] Go unit tests: `frecencyScore` table-driven; `DeriveConnStatus` exposes new fields; persistence round-trip
+
+### Frontend
+- [ ] Create `frontend/app/modals/conn-suggestions.ts` (shared: `filterConnections` case-insensitive, `sortConnSuggestionItems` frecency, `buildNewTabSuggestions`, `getConnectionsEditItem`, `getNewConnectionSuggestionItem`)
+- [ ] Rewrite `frontend/app/tab/connectiondropdown.tsx` → `NewTabConnTypeahead` (input, filter, ↑/↓/Enter/Esc, portal to body, anchor to `+` ref)
+- [ ] Add `newTabDropdownOpenAtom` to `frontend/app/store/global-atoms.ts`
+- [ ] `frontend/app/store/keymodel.ts`: `Cmd:t` sets `newTabDropdownOpenAtom` instead of `createTab()`
+- [ ] `frontend/app/tab/tabbar.tsx`: replace `showConnectionDropdown` state with atom; render `NewTabConnTypeahead`
+- [ ] `frontend/app/tab/vtabbar.tsx`: same changes as `tabbar.tsx`
+- [ ] `frontend/app/modals/conntypeahead.tsx`: import shared helpers; remove `getDisconnectItem`; case-insensitive filter
+
+### Manual verification
+- [ ] Frecency ordering (count × recency) ranks most-used/recent on top
+- [ ] `ConnectCount` survives restart (persisted in `connections.json`)
+- [ ] Cold start falls back to `display:order` → name (deterministic)
+- [ ] Typing filters case-insensitively; Enter selects top match (no accidental New Connection)
+- [ ] No-match: New Connection shown but NOT highlighted; explicit ↓ required to select it
+- [ ] `Cmd-t` and `+` click both open dropdown with input focused
+- [ ] Edit Connections in `+` dropdown opens `connections.json` in current tab
+- [ ] Edit Connections + Disconnect removed from block-header dropdown; Reconnect kept
+- [ ] Vertical tab bar parity with horizontal tab bar

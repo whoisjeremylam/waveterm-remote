@@ -613,3 +613,46 @@ StreamManager lock remains available for `readLoop` and `senderLoop`.
 - No existing integration test infrastructure for remote jobs — manual testing with a
   remote SSH connection and `kill -STOP`/`kill -CONT` on the `wsh` process to simulate
   freeze/thaw.
+
+---
+
+## Interaction with Reconnect Subsystems (2026-07-23)
+
+The disk-backed stream history fix is transparent to the reconnect subsystems — it does not change any reconnect trigger, scheduler, or prompt logic. It composes with them at three points:
+
+### 1. Local stall monitor → CloseInvoluntary → remote disconnect detection
+
+When the network drops, the local stall monitor (`ConnMonitor`) detects no data flow for 5s (`getStallDisconnectThresholdMs`) and calls `disconnectOnStall` → `CloseInvoluntary` (Phase 2K — preserves the cached password). This closes the local SSH connection. On the remote side:
+
+- The domain socket closes → `handleJobDomainSocketClient`'s deferred `disconnectFromStreamHelper` fires → `ClientDisconnected()` + `activateDiskBuffering()`.
+- If the remote `StreamManager` was already in connected/sync mode, `ClientDisconnected` resets to async mode and `activateDiskBuffering` starts writing PTY output to disk.
+- `ClientDisconnected` and `activateDiskBuffering` are idempotent — if `handleSendFailure` already fired (see #2), these are no-ops.
+
+### 2. Remote backpressure break → handleSendFailure → disk buffering
+
+When the SSH channel breaks, `routedDataSender.SendData` fails (SSH broken) or times out (5s `SendDataTimeout`). `handleSendFailure` calls `ClientDisconnected()` + `activateDiskBuffering()`. This is the **backpressure break**: the `readLoop` was blocked on `WriteAvailable` (CirBuf full in sync mode); after `ClientDisconnected` switches to async mode (2MB CirBuf) and `activateDiskBuffering` starts the disk file, the `readLoop` resumes writing to disk instead of the full CirBuf. pi's `write()` to the PTY slave no longer blocks.
+
+This fires independently of the local stall monitor — the remote detects the broken SSH channel via the `SendData` timeout, while the local detects it via the stall monitor. Both are 5s; either may fire first. Both lead to the same idempotent `ClientDisconnected` + `activateDiskBuffering`.
+
+### 3. Reconnect → ClientConnected → drainDiskToCirBuf
+
+When a reconnect trigger fires (background scheduler, `HandleSystemResume` fast-path, or visibility-driven reconnect), `Connect()` establishes a new SSH channel → `restartStreaming` (Phase 2H closes the old reader) → `connectToStreamHelper_withlock` → `ClientConnected`:
+
+- If a disk file exists and `clientSeq < diskEndSeq` (client is behind), `drainDiskToCirBuf` starts reading from the disk file and writing to the CirBuf. The `senderLoop` reads from the CirBuf and sends to the client. The terminal shows the missed output.
+- If the client is caught up or ahead (`clientSeq >= diskEndSeq`), `deactivateDiskBuffering` closes and deletes the disk file; the `readLoop` resumes writing to the CirBuf directly.
+- If no disk file exists (no data was produced during the outage, e.g. idle session), `ClientConnected` proceeds normally with no drain.
+
+### Idempotency guarantees
+
+| Operation | Guard | Effect on second call |
+|-----------|-------|----------------------|
+| `ClientDisconnected` | `if !sm.connected { return }` | No-op (already disconnected) |
+| `activateDiskBuffering` | `if sm.diskFile != nil { return }` | No-op (disk file already exists) |
+| `drainDiskToCirBuf` | `drainGen` generation check | Old goroutine exits; new generation starts |
+| `deactivateDiskBuffering` | `if sm.diskFile == nil { return }` | No-op (already deactivated) |
+
+### Ordering invariants
+
+- `ClientDisconnected` is called **before** `activateDiskBuffering` in `handleSendFailure` and `disconnectFromStreamHelper`. This ensures the `StreamManager` is in async mode before the disk file is created.
+- In `connectToStreamHelper_withlock`, `ClientDisconnected` is called **before** `ClientConnected`. This ensures the old stream is fully torn down before the new stream starts.
+- Phase 2H's `jobStreamIds.Set(newId)` happens **before** `prevReader.Close()`. This ensures the old `runOutputLoop`'s supersession check sees the new streamId and exits cleanly. The new reader is ready before `ClientConnected` fires.
