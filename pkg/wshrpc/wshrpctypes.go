@@ -422,6 +422,8 @@ type ConnStatus struct {
 	Connected                     bool     `json:"connected"`
 	HasConnected                  bool     `json:"hasconnected"` // true if it has *ever* connected successfully
 	ActiveConnNum                 int      `json:"activeconnnum"`
+	ConnectCount                  int64    `json:"connectcount"`
+	LastConnectTime               int64    `json:"lastconnecttime"`
 	Error                         string   `json:"error,omitempty"`
 	ErrorCode                     string   `json:"errorcode,omitempty"`
 	WshError                      string   `json:"wsherror,omitempty"`

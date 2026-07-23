@@ -832,6 +832,8 @@ declare global {
         connected: boolean;
         hasconnected: boolean;
         activeconnnum: number;
+        connectcount: number;
+        lastconnecttime: number;
         error?: string;
         errorcode?: string;
         wsherror?: string;

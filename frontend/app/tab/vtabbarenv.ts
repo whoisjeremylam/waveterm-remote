@@ -24,6 +24,7 @@ export type VTabBarEnv = WaveEnvSubset<{
         documentHasFocus: WaveEnv["atoms"]["documentHasFocus"];
         workspace: WaveEnv["atoms"]["workspace"];
         isFullScreen: WaveEnv["atoms"]["isFullScreen"];
+        newTabDropdownOpen: WaveEnv["atoms"]["newTabDropdownOpen"];
     };
     services: {
         workspace: WaveEnv["services"]["workspace"];

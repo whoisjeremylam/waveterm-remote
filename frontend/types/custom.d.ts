@@ -23,6 +23,7 @@ declare global {
         prefersReducedMotionAtom: jotai.Atom<boolean>;
         documentHasFocus: jotai.PrimitiveAtom<boolean>;
         modalOpen: jotai.PrimitiveAtom<boolean>;
+        newTabDropdownOpen: jotai.PrimitiveAtom<boolean>;
         allConnStatus: jotai.Atom<ConnStatus[]>;
         reinitVersion: jotai.PrimitiveAtom<number>;
     };

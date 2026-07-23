@@ -6,6 +6,7 @@ package conncontroller
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -1755,5 +1756,71 @@ func TestClose_ClearsCachedPassword(t *testing.T) {
 	}
 	if status := conn.GetStatus(); status != Status_Disconnected {
 		t.Fatalf("expected Status=Disconnected after Close, got %s", status)
+	}
+}
+
+// TestDeriveConnStatus_ExposesConnectCount verifies that DeriveConnStatus
+// exposes ConnectCount and LastConnectTime fields in the returned ConnStatus.
+func TestDeriveConnStatus_ExposesConnectCount(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	conn.WithLock(func() {
+		conn.ConnectCount = 42
+		conn.LastConnectTime = 1234567890000
+	})
+
+	status := conn.DeriveConnStatus()
+	if status.ConnectCount != 42 {
+		t.Fatalf("expected ConnectCount=42, got %d", status.ConnectCount)
+	}
+	if status.LastConnectTime != 1234567890000 {
+		t.Fatalf("expected LastConnectTime=1234567890000, got %d", status.LastConnectTime)
+	}
+}
+
+// TestConnectCount_PersistenceRoundTrip verifies that ConnConnectCount can be
+// marshaled/unmarshaled correctly via JSON (the persistence format).
+func TestConnectCount_PersistenceRoundTrip(t *testing.T) {
+	// Verify ConnKeywords has the ConnConnectCount field with correct JSON tag
+	keywords := wconfig.ConnKeywords{
+		ConnConnectCount: func() *int64 { v := int64(7); return &v }(),
+	}
+
+	// Marshal and check the JSON contains the right key
+	data, err := json.Marshal(keywords)
+	if err != nil {
+		t.Fatalf("error marshaling ConnKeywords: %v", err)
+	}
+
+	// Check that conn:connectcount is in the JSON
+	if !bytes.Contains(data, []byte("conn:connectcount")) {
+		t.Fatalf("expected conn:connectcount in JSON, got: %s", string(data))
+	}
+	if !bytes.Contains(data, []byte("7")) {
+		t.Fatalf("expected value 7 in JSON, got: %s", string(data))
+	}
+
+	// Unmarshal back and verify
+	var keywords2 wconfig.ConnKeywords
+	if err := json.Unmarshal(data, &keywords2); err != nil {
+		t.Fatalf("error unmarshaling ConnKeywords: %v", err)
+	}
+	if keywords2.ConnConnectCount == nil {
+		t.Fatal("expected ConnConnectCount to be non-nil after unmarshal")
+	}
+	if *keywords2.ConnConnectCount != 7 {
+		t.Fatalf("expected ConnConnectCount=7, got %d", *keywords2.ConnConnectCount)
+	}
+}
+
+// TestConnectCount_ZeroByDefault verifies that a newly created SSHConn
+// has ConnectCount=0 by default.
+func TestConnectCount_ZeroByDefault(t *testing.T) {
+	conn := makeTestConn(Status_Init)
+	defer cleanupTestConn(conn)
+
+	if conn.ConnectCount != 0 {
+		t.Fatalf("expected ConnectCount=0 for new connection, got %d", conn.ConnectCount)
 	}
 }

@@ -96,6 +96,7 @@ function initGlobalAtoms(initOpts: GlobalInitOptions) {
     }
 
     const modalOpen = atom(false);
+    const newTabDropdownOpenAtom = atom(false) as PrimitiveAtom<boolean>;
     const allConnStatusAtom = atom<ConnStatus[]>((get) => {
         const connStatusMap = get(ConnStatusMapAtom);
         const connStatuses = Array.from(connStatusMap.values()).map((atom) => get(atom));
@@ -119,6 +120,7 @@ function initGlobalAtoms(initOpts: GlobalInitOptions) {
         prefersReducedMotionAtom,
         documentHasFocus: documentHasFocusAtom,
         modalOpen,
+        newTabDropdownOpen: newTabDropdownOpenAtom,
         allConnStatus: allConnStatusAtom,
         reinitVersion,
     } as GlobalAtomsType;

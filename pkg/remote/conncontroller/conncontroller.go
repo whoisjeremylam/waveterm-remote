@@ -100,6 +100,7 @@ type SSHConn struct {
 	NoWshReason          string
 	WshVersion           string
 	LastConnectTime      int64
+	ConnectCount         int64
 	ActiveConnNum        int
 	Monitor              *ConnMonitor // will not be nil
 	ReconnectAttempt     int
@@ -208,6 +209,8 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 		Connection:                    conn.Opts.String(),
 		HasConnected:                  (conn.LastConnectTime > 0),
 		ActiveConnNum:                 conn.ActiveConnNum,
+		ConnectCount:                  conn.ConnectCount,
+		LastConnectTime:               conn.LastConnectTime,
 		Error:                         conn.Error,
 		ErrorCode:                     conn.LastErrorCode,
 		WshEnabled:                    conn.WshEnabled.Load(),
@@ -953,14 +956,26 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 		conn.closeInternal_withlifecyclelock(nil)
 	} else {
 		conn.Infof(ctx, "successfully connected (wsh:%v)\n\n", conn.WshEnabled.Load())
+		var connectCount int64
+		var connName string
 		conn.WithLock(func() {
 			conn.Status = Status_Connected
 			conn.LastConnectTime = time.Now().UnixMilli()
+			conn.ConnectCount++
+			connectCount = conn.ConnectCount
+			connName = conn.GetName()
 			conn.LastErrorCode = "" // clear error code on success
 			if conn.ActiveConnNum == 0 {
 				conn.ActiveConnNum = int(activeConnCounter.Add(1))
 			}
 		})
+		// persist connectcount outside the lock to avoid holding it during disk IO.
+		// A persistence failure is not a connect failure — the SSH connection succeeded;
+		// we log the warning and continue (same pattern as conn:wshenabled below).
+		persistErr := wconfig.SetConnectionsConfigValue(connName, waveobj.MetaMapType{"conn:connectcount": connectCount})
+		if persistErr != nil {
+			log.Printf("warning: error writing conn:connectcount to connections file: %v\n", persistErr)
+		}
 	}
 	conn.FireConnChangeEvent()
 	if err != nil {
@@ -1912,6 +1927,12 @@ func getConnInternal(opts *remote.SSHOpts, createIfNotExists bool) *SSHConn {
 	defer globalLock.Unlock()
 	rtn := clientControllerMap[*opts]
 	if rtn == nil && createIfNotExists {
+		// Load persisted ConnectCount from connections.json
+		var connectCount int64
+		config := wconfig.GetWatcher().GetFullConfig()
+		if connSettings, ok := config.Connections[opts.String()]; ok && connSettings.ConnConnectCount != nil {
+			connectCount = *connSettings.ConnConnectCount
+		}
 		rtn = &SSHConn{
 			lock:             &sync.Mutex{},
 			lifecycleLock:    &sync.Mutex{},
@@ -1919,6 +1940,7 @@ func getConnInternal(opts *remote.SSHOpts, createIfNotExists bool) *SSHConn {
 			ConnHealthStatus: ConnHealthStatus_Good,
 			WshEnabled:       &atomic.Bool{},
 			Opts:             opts,
+			ConnectCount:     connectCount,
 		}
 		clientControllerMap[*opts] = rtn
 	}

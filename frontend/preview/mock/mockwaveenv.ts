@@ -181,6 +181,7 @@ function makeMockGlobalAtoms(
         prefersReducedMotionAtom: atom(false),
         documentHasFocus: atom(true) as any,
         modalOpen: atom(false) as any,
+        newTabDropdownOpen: atom(false) as any,
         allConnStatus: atom([] as ConnStatus[]),
         reinitVersion: atom(0) as any,
     };

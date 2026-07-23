@@ -1,12 +1,18 @@
 // Copyright 2025, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { computeConnColorNum } from "@/app/block/blockutil";
 import { TypeAheadModal } from "@/app/modals/typeaheadmodal";
+import {
+    filterConnections,
+    sortConnSuggestionItems,
+    createRemoteSuggestionItems,
+    createWslSuggestionItems,
+    createFilteredLocalSuggestionItem,
+    getNewConnectionSuggestionItem,
+} from "@/app/modals/conn-suggestions";
 import { ConnectionsModel } from "@/app/store/connections-model";
 import {
     atoms,
-    createBlock,
     getConnStatusAtom,
     getLocalHostDisplayNameAtom,
     globalStore,
@@ -21,97 +27,7 @@ import * as util from "@/util/util";
 import * as jotai from "jotai";
 import * as React from "react";
 
-// newConnList -> connList => filteredList -> remoteItems -> sortedRemoteItems => remoteSuggestion
-// filteredList -> createNew
-
-function filterConnections(
-    connList: Array<string>,
-    connSelected: string,
-    fullConfig: FullConfigType,
-    filterOutNowsh: boolean
-): Array<string> {
-    const connectionsConfig = fullConfig.connections;
-    return connList.filter((conn) => {
-        const hidden = connectionsConfig?.[conn]?.["display:hidden"] ?? false;
-        const wshEnabled = connectionsConfig?.[conn]?.["conn:wshenabled"] ?? true;
-        return conn.includes(connSelected) && !hidden && (wshEnabled || !filterOutNowsh);
-    });
-}
-
-function sortConnSuggestionItems(
-    connSuggestions: Array<SuggestionConnectionItem>,
-    fullConfig: FullConfigType
-): Array<SuggestionConnectionItem> {
-    const connectionsConfig = fullConfig.connections;
-    return connSuggestions.sort((itemA: SuggestionConnectionItem, itemB: SuggestionConnectionItem) => {
-        const connNameA = itemA.value;
-        const connNameB = itemB.value;
-        const valueA = connectionsConfig?.[connNameA]?.["display:order"] ?? 0;
-        const valueB = connectionsConfig?.[connNameB]?.["display:order"] ?? 0;
-        return valueA - valueB;
-    });
-}
-
-function createRemoteSuggestionItems(
-    filteredList: Array<string>,
-    connection: string,
-    connStatusMap: Map<string, ConnStatus>
-): Array<SuggestionConnectionItem> {
-    return filteredList.map((connName) => {
-        const connStatus = connStatusMap.get(connName);
-        const connColorNum = computeConnColorNum(connStatus);
-        const item: SuggestionConnectionItem = {
-            status: "connected",
-            icon: "arrow-right-arrow-left",
-            iconColor:
-                connStatus?.status == "connected" ? `var(--conn-icon-color-${connColorNum})` : "var(--grey-text-color)",
-            value: connName,
-            label: connName,
-            current: connName == connection,
-        };
-        return item;
-    });
-}
-
-function createWslSuggestionItems(
-    filteredList: Array<string>,
-    connection: string,
-    connStatusMap: Map<string, ConnStatus>
-): Array<SuggestionConnectionItem> {
-    return filteredList.map((connName) => {
-        const connStatus = connStatusMap.get(`wsl://${connName}`);
-        const connColorNum = computeConnColorNum(connStatus);
-        const item: SuggestionConnectionItem = {
-            status: "connected",
-            icon: "arrow-right-arrow-left",
-            iconColor:
-                connStatus?.status == "connected" ? `var(--conn-icon-color-${connColorNum})` : "var(--grey-text-color)",
-            value: "wsl://" + connName,
-            label: "wsl://" + connName,
-            current: "wsl://" + connName == connection,
-        };
-        return item;
-    });
-}
-
-function createFilteredLocalSuggestionItem(
-    localName: string,
-    connection: string,
-    connSelected: string
-): Array<SuggestionConnectionItem> {
-    if (localName.includes(connSelected)) {
-        const localSuggestion: SuggestionConnectionItem = {
-            status: "connected",
-            icon: "laptop",
-            iconColor: "var(--grey-text-color)",
-            value: "",
-            label: localName,
-            current: util.isBlank(connection),
-        };
-        return [localSuggestion];
-    }
-    return [];
-}
+// ─── Block-specific helpers ──────────────────────────────────────────────────
 
 function getReconnectItem(
     connStatus: ConnStatus,
@@ -168,7 +84,7 @@ function getLocalSuggestions(
     }
 
     const combinedSuggestionItems = [...localSuggestionItem, ...gitBashItems, ...wslSuggestionItems];
-    const sortedSuggestionItems = sortConnSuggestionItems(combinedSuggestionItems, fullConfig);
+    const sortedSuggestionItems = sortConnSuggestionItems(combinedSuggestionItems, fullConfig, connStatusMap);
     if (sortedSuggestionItems.length == 0) {
         return null;
     }
@@ -189,7 +105,7 @@ function getRemoteSuggestions(
 ): SuggestionConnectionScope | null {
     const filtered = filterConnections(connList, connSelected, fullConfig, filterOutNowsh);
     const suggestionItems = createRemoteSuggestionItems(filtered, connection, connStatusMap);
-    const sortedSuggestionItems = sortConnSuggestionItems(suggestionItems, fullConfig);
+    const sortedSuggestionItems = sortConnSuggestionItems(suggestionItems, fullConfig, connStatusMap);
     if (sortedSuggestionItems.length == 0) {
         return null;
     }
@@ -200,89 +116,7 @@ function getRemoteSuggestions(
     return remoteSuggestions;
 }
 
-function getDisconnectItem(
-    connection: string,
-    connStatusMap: Map<string, ConnStatus>,
-    changeConnModalAtom: jotai.PrimitiveAtom<boolean>
-): SuggestionConnectionItem | null {
-    if (util.isLocalConnName(connection)) {
-        return null;
-    }
-    const connStatus = connStatusMap.get(connection);
-    if (!connStatus || connStatus.status != "connected") {
-        return null;
-    }
-    const disconnectSuggestionItem: SuggestionConnectionItem = {
-        status: "connected",
-        icon: "xmark",
-        iconColor: "var(--grey-text-color)",
-        label: `Disconnect ${connStatus.connection}`,
-        value: "",
-        onSelect: async (_: string) => {
-            globalStore.set(changeConnModalAtom, false);
-            const prtn = RpcApi.ConnDisconnectCommand(TabRpcClient, connection, { timeout: 60000 });
-            prtn.catch((e) => console.log("error disconnecting", connStatus.connection, e));
-        },
-    };
-    return disconnectSuggestionItem;
-}
-
-function getConnectionsEditItem(
-    changeConnModalAtom: jotai.PrimitiveAtom<boolean>,
-    connSelected: string
-): SuggestionConnectionItem | null {
-    if (connSelected != "") {
-        return null;
-    }
-    const connectionsEditItem: SuggestionConnectionItem = {
-        status: "disconnected",
-        icon: "gear",
-        iconColor: "var(--grey-text-color)",
-        value: "Edit Connections",
-        label: "Edit Connections",
-        onSelect: () => {
-            util.fireAndForget(async () => {
-                globalStore.set(changeConnModalAtom, false);
-                const blockDef: BlockDef = {
-                    meta: {
-                        view: "waveconfig",
-                        file: "connections.json",
-                    },
-                };
-                await createBlock(blockDef, false, true);
-            });
-        },
-    };
-    return connectionsEditItem;
-}
-
-function getNewConnectionSuggestionItem(
-    connSelected: string,
-    localName: string,
-    remoteConns: Array<string>,
-    wslConns: Array<string>,
-    changeConnection: (connName: string) => Promise<void>,
-    changeConnModalAtom: jotai.PrimitiveAtom<boolean>
-): SuggestionConnectionItem | null {
-    const allCons = ["", localName, ...remoteConns, ...wslConns];
-    if (allCons.includes(connSelected)) {
-        // do not offer to create a new connection if one
-        // with the exact name already exists
-        return null;
-    }
-    const newConnectionSuggestion: SuggestionConnectionItem = {
-        status: "connected",
-        icon: "plus",
-        iconColor: "var(--grey-text-color)",
-        label: `${connSelected} (New Connection)`,
-        value: "",
-        onSelect: (_: string) => {
-            changeConnection(connSelected);
-            globalStore.set(changeConnModalAtom, false);
-        },
-    };
-    return newConnectionSuggestion;
-}
+// ─── Block-header modal ──────────────────────────────────────────────────────
 
 const ChangeConnectionBlockModal = React.memo(
     ({
@@ -340,7 +174,7 @@ const ChangeConnectionBlockModal = React.memo(
                     setWslList(newWslList ?? []);
                 })
                 .catch((e) => {
-                    // removing this log and failing silentyly since it will happen
+                    // removing this log and failing silently since it will happen
                     // if a system isn't using the wsl. and would happen every time the
                     // typeahead was opened. good candidate for verbose log level.
                     //console.log("unable to load wsl list from backend. using blank list: ", e)
@@ -394,23 +228,22 @@ const ChangeConnectionBlockModal = React.memo(
             fullConfig,
             filterOutNowsh
         );
-        const connectionsEditItem = getConnectionsEditItem(changeConnModalAtom, connSelected);
-        const disconnectItem = getDisconnectItem(connection, connStatusMap, changeConnModalAtom);
         const newConnectionSuggestionItem = getNewConnectionSuggestionItem(
             connSelected,
             localName,
             connList,
             wslList,
-            changeConnection,
-            changeConnModalAtom
+            (connName: string) => {
+                util.fireAndForget(async () => {
+                    await changeConnection(connName);
+                });
+            }
         );
 
         const suggestions: Array<SuggestionsType> = [
             ...(reconnectSuggestionItem ? [reconnectSuggestionItem] : []),
             ...(localSuggestions ? [localSuggestions] : []),
             ...(remoteSuggestions ? [remoteSuggestions] : []),
-            ...(disconnectItem ? [disconnectItem] : []),
-            ...(connectionsEditItem ? [connectionsEditItem] : []),
             ...(newConnectionSuggestionItem ? [newConnectionSuggestionItem] : []),
         ];
 

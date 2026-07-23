@@ -7,7 +7,6 @@ import {
     createBlock,
     createBlockSplitHorizontally,
     createBlockSplitVertically,
-    createTab,
     getAllBlockComponentModels,
     getApi,
     getBlockComponentModel,
@@ -451,7 +450,7 @@ function registerGlobalKeys() {
         return true;
     });
     globalKeyMap.set("Cmd:t", () => {
-        createTab();
+        globalStore.set(atoms.newTabDropdownOpen, true);
         return true;
     });
     globalKeyMap.set("Cmd:w", () => {

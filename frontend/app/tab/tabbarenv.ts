@@ -21,6 +21,7 @@ export type TabBarEnv = WaveEnvSubset<{
         staticTabId: WaveEnv["atoms"]["staticTabId"];
         isFullScreen: WaveEnv["atoms"]["isFullScreen"];
         zoomFactorAtom: WaveEnv["atoms"]["zoomFactorAtom"];
+        newTabDropdownOpen: WaveEnv["atoms"]["newTabDropdownOpen"];
         reinitVersion: WaveEnv["atoms"]["reinitVersion"];
     };
     wos: WaveEnv["wos"];

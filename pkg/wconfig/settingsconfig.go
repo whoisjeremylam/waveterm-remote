@@ -233,6 +233,8 @@ type ConnKeywords struct {
 	ConnIgnoreSshConfig          *bool `json:"conn:ignoresshconfig,omitempty"`
 	ConnStallAutoDisconnect      *bool `json:"conn:stallautodisconnect,omitempty"`
 	ConnStallDisconnectThreshold *int  `json:"conn:stalldisconnectthreshold,omitempty"`
+	ConnConnectCount        *int64 `json:"conn:connectcount,omitempty"`
+	ConnLastConnectTime     *int64 `json:"conn:lastconnecttime,omitempty"`
 
 	DisplayHidden *bool   `json:"display:hidden,omitempty"`
 	DisplayOrder  float32 `json:"display:order,omitempty"`

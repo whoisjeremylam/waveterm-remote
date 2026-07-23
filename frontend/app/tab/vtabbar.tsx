@@ -12,10 +12,10 @@ import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { validateCssColor } from "@/util/color-validator";
 import { cn, fireAndForget } from "@/util/util";
-import { useAtomValue } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { buildTabBarContextMenu, buildTabContextMenu } from "./tabcontextmenu";
-import { ConnectionDropdown } from "./connectiondropdown";
+import { NewTabConnTypeahead } from "./connectiondropdown";
 import { VTab, VTabItem } from "./vtab";
 import { VTabBarEnv } from "./vtabbarenv";
 import { WorkspaceSwitcher } from "./workspaceswitcher";
@@ -169,7 +169,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
     const [hoverResetVersion, setHoverResetVersion] = useState(0);
     const [hoveredTabId, setHoveredTabId] = useState<string | null>(null);
     const [isNewTabHovered, setIsNewTabHovered] = useState(false);
-    const [showConnectionDropdown, setShowConnectionDropdown] = useState(false);
+    const [showConnectionDropdown, setShowConnectionDropdown] = useAtom(env.atoms.newTabDropdownOpen);
     const dragSourceRef = useRef<string | null>(null);
     const didResetHoverForDragRef = useRef(false);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -400,11 +400,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                     className="group relative flex h-9 w-full shrink-0 cursor-pointer items-center gap-1.5 pl-3 pr-3 text-xs text-secondary/60 transition-colors hover:text-primary select-none whitespace-nowrap"
                     onMouseDown={(e) => e.stopPropagation()}
                     onClick={() => {
-                        if (showConnectionDropdown) {
-                            setShowConnectionDropdown(false);
-                            return;
-                        }
-                        setShowConnectionDropdown(true);
+                        setShowConnectionDropdown(!showConnectionDropdown);
                     }}
                     onMouseEnter={() => setIsNewTabHovered(true)}
                     onMouseLeave={() => setIsNewTabHovered(false)}
@@ -415,7 +411,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                     <span>New Tab</span>
                 </button>
                 {showConnectionDropdown && (
-                    <ConnectionDropdown
+                    <NewTabConnTypeahead
                         anchorRef={newTabBtnRef}
                         onSelect={(connName) => {
                             setShowConnectionDropdown(false);

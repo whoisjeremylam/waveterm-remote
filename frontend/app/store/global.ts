@@ -810,6 +810,8 @@ function makeDefaultConnStatus(conn: string): ConnStatus {
             status: "connected",
             hasconnected: true,
             activeconnnum: 0,
+            connectcount: 0,
+            lastconnecttime: 0,
             wshenabled: false,
             canautoreconnect: false,
         };
@@ -821,6 +823,8 @@ function makeDefaultConnStatus(conn: string): ConnStatus {
         status: "disconnected",
         hasconnected: false,
         activeconnnum: 0,
+        connectcount: 0,
+        lastconnecttime: 0,
         wshenabled: false,
         canautoreconnect: false,
     };

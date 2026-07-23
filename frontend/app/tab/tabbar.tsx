@@ -9,11 +9,11 @@ import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { deleteLayoutModelForTab } from "@/layout/index";
 import { isMacOSTahoeOrLater } from "@/util/platformutil";
 import { fireAndForget } from "@/util/util";
-import { useAtomValue } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import { OverlayScrollbars } from "overlayscrollbars";
 import { createRef, memo, useCallback, useEffect, useRef, useState } from "react";
 import { debounce } from "throttle-debounce";
-import { ConnectionDropdown } from "./connectiondropdown";
+import { NewTabConnTypeahead } from "./connectiondropdown";
 import { Tab } from "./tab";
 import "./tabbar.scss";
 import { TabBarEnv } from "./tabbarenv";
@@ -72,7 +72,7 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
     const [draggingTab, setDraggingTab] = useState<string>();
     const [tabsLoaded, setTabsLoaded] = useState({});
     const [newTabId, setNewTabId] = useState<string | null>(null);
-    const [showConnectionDropdown, setShowConnectionDropdown] = useState(false);
+    const [showConnectionDropdown, setShowConnectionDropdown] = useAtom(env.atoms.newTabDropdownOpen);
 
     const tabbarWrapperRef = useRef<HTMLDivElement>(null);
     const tabBarRef = useRef<HTMLDivElement>(null);
@@ -495,11 +495,7 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
     );
 
     const handleAddTab = () => {
-        if (showConnectionDropdown) {
-            setShowConnectionDropdown(false);
-            return;
-        }
-        setShowConnectionDropdown(true);
+        setShowConnectionDropdown(!showConnectionDropdown);
     };
 
     const handleSelectConnection = async (connName: string) => {
@@ -637,7 +633,7 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
                     <i className="fa fa-solid fa-plus" />
                 </button>
                 {showConnectionDropdown && (
-                    <ConnectionDropdown
+                    <NewTabConnTypeahead
                         anchorRef={addBtnRef}
                         onSelect={handleSelectConnection}
                         onClose={() => setShowConnectionDropdown(false)}
