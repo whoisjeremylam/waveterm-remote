@@ -537,3 +537,23 @@ See [[specs/newtab-connect-dropdown.md]] for full spec.
 **Decision:** (1) Added `ConnReconnectMaxDurationSilent` (15min) for silently-reconnectable connections (key-based / cached password) — silent retries are cheap. Interactive-attempt connections keep the 5min cap. (2) Early-terminate the scheduler on `auth-failed` (server rejecting credentials — retrying won't help, `requestPasswordRePrompt` handles re-prompting) and `connection-refused` (server not accepting SSH — visibility-driven reconnect will retry on next tab switch). Network-unreachable errors continue to retry with aggressive mode unchanged.
 
 **Files changed:** `pkg/jobcontroller/jobcontroller.go` (constants, scheduleConnectionReconnect). Commit: `fd78d03a`. See [[reconnection.md]] Phase 2L, [[visibility-driven-reconnect.md]] Change 5.
+
+## 2026-07-24: Reconnection UX P0 product decisions (D1–D6)
+
+**Context:** Production-ready reconnection UX for remote-first workflows. Spec: [[specs/reconnection-ux-backlog.md]] (UX-0.1 … UX-0.5).
+
+| ID | Decision |
+|----|----------|
+| **D1** | After user Disconnect, visibility reconnect must **not** auto-connect — require explicit Reconnect. Implemented via sticky `SSHConn.SuppressAutoReconnect` set only by `Close()` / `ConnDisconnectCommand`. |
+| **D2** | Stop auto-retry **keeps** password cache; Disconnect **clears** it. `PauseAutoReconnect()` vs `Close()`. |
+| **D3** | Password Cancel is sticky until **manual Reconnect** (not timed cool-down). Connect failure with `user-cancelled` sets `SuppressAutoReconnect`. |
+| **D4** | Attention heartbeat default **30s**; **10s** when last error was network/dial-unreachable. Frontend hybrid in `VisibilityReconnectHandler`. |
+| **D5** | Heartbeat may call `EnsureConnection` for interactive (no cache) when tab **visible** (prompt OK if user present). |
+| **D6** | `JobManagerGone`: **no** auto-start new shell; one-click **Start new durable session** CTA only (`forceRestartController`). |
+
+**Also:**
+- Permanent handshake failures (`remote.IsPermanentConnError`: host-key, known_hosts, config) stop scheduler + set suppress; overlay shows dedicated copy (UX-0.4).
+- New RPC `ConnStopAutoRetryCommand` for Stop auto-retry UI control (UX-0.5).
+- Job-level overlay when `conn.status === connected` but durable job is reconnecting / failed / gone (UX-0.2).
+
+**Key files:** `pkg/remote/conncontroller/conncontroller.go`, `pkg/jobcontroller/jobcontroller.go`, `pkg/remote/sshclient.go`, `pkg/wshrpc/wshserver/wshserver.go`, `frontend/app/tab/visibilityreconnect.tsx`, `frontend/app/block/connstatusoverlay.tsx`.
