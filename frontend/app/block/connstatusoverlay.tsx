@@ -238,7 +238,7 @@ const DisconnectedOverlay = React.memo(
                                 )}
                                 {connStatus.suppressautoreconnect && !hasCountdown && (
                                     <div className="text-[10px] text-white/70 mt-0.5">
-                                        Auto-retry paused — click Reconnect when ready
+                                        Auto-retry stopped — click Reconnect when ready
                                     </div>
                                 )}
                             </>
@@ -635,7 +635,7 @@ export const ConnStatusOverlay = React.memo(
             canAutoReconnect && connStatus.status == "disconnected" && (connStatus.reconnectnextattempt ?? 0) > 0;
         // Disconnected-style overlay: plain disconnect, permanent host-key, or
         // suppress-on-error (password Cancel / Stop / permanent) so users see
-        // "Auto-retry paused — click Reconnect" instead of a raw error shell.
+        // "Auto-retry stopped — click Reconnect" instead of a raw error shell.
         const showDisconnected =
             (connStatus.status == "disconnected" && !connStatus.connected) ||
             !!permanentErrorTitle(connStatus.errorcode) ||

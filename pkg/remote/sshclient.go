@@ -529,7 +529,8 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 		if err != nil {
 			blocklogger.Infof(connCtx, "[conndebug] ERROR Password Authentication failed: %v\n", SimpleMessageFromPossibleConnectionError(err))
 			errStr := err.Error()
-			if strings.Contains(errStr, "Canceled") || strings.Contains(errStr, "cancel") || errors.Is(err, context.Canceled) {
+			// Explicit UI Cancel only (CancelAllAuthPrompts / userinput response).
+			if strings.Contains(errStr, "Canceled by the user") {
 				return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: utilds.MakeCodedError(ConnErrCode_UserCancelled, err)}
 			}
 			// Tag timeouts so Connect can re-prompt (ClassifyConnError would otherwise
@@ -537,6 +538,8 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errStr, "timed out") {
 				return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: utilds.MakeCodedError(ConnErrCode_UserTimeout, err)}
 			}
+			// Parent/AbortConnect cancel — plain error; Connect uses userAbortConnect
+			// flag to decide sticky suppress (not this string).
 			return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
 		}
 		blocklogger.Infof(connCtx, "[conndebug] got password from user, sending to ssh\n")

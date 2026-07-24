@@ -296,6 +296,12 @@ func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputR
 	case resp := <-uiCh:
 		response = resp
 	case <-ctx.Done():
+		// Do NOT use "Canceled by the user" here — that string is reserved for
+		// explicit UI Cancel / CancelAllAuthPrompts. Parent/scheduler context
+		// cancel must not sticky-suppress auto-reconnect.
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, fmt.Errorf("input wait canceled: %w", ctx.Err())
+		}
 		return nil, fmt.Errorf("timed out waiting for user input")
 	}
 

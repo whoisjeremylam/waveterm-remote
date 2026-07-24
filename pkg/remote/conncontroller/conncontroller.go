@@ -145,6 +145,10 @@ type SSHConn struct {
 	// connectCancel cancels the in-flight Connect() context (A2 hard-abort Stop).
 	// Set while Connect runs under lifecycleLock; cleared when Connect returns.
 	connectCancel context.CancelFunc
+	// userAbortConnect is set only by AbortConnect (Stop / password Cancel).
+	// Distinguishes user hard-abort from parent-context deadline (scheduler /
+	// EnsureConnection timeout) — the latter must NOT set sticky suppress.
+	userAbortConnect bool
 }
 
 type ForwardingRule struct {
@@ -377,8 +381,11 @@ func (conn *SSHConn) PauseAutoReconnect() {
 }
 
 // AbortConnect cancels the in-flight Connect() context, if any (A2).
+// Marks userAbortConnect so Connect's error path applies sticky suppress only
+// for real user Stop/Cancel — not for scheduler/Ensure timeouts on the parent ctx.
 func (conn *SSHConn) AbortConnect() {
 	conn.lock.Lock()
+	conn.userAbortConnect = true
 	cancel := conn.connectCancel
 	conn.connectCancel = nil
 	conn.lock.Unlock()
@@ -1082,17 +1089,18 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 
 	// Child context so PauseAutoReconnect / CancelAuth can hard-abort the dial
 	// and password wait (A2 / A3) without waiting for network timeouts.
+	// IMPORTANT: parent ctx deadline (scheduler / EnsureConnection) must NOT be
+	// treated as user Cancel — that was setting sticky suppress on every timed-out
+	// reconnect and freezing auto-retry for all hosts that hit a timeout.
 	connectCtx, connectCancel := context.WithCancel(ctx)
 	conn.lock.Lock()
+	conn.userAbortConnect = false
 	conn.connectCancel = connectCancel
 	conn.lock.Unlock()
 	defer func() {
 		connectCancel()
 		conn.lock.Lock()
-		if conn.connectCancel != nil {
-			// only clear if still ours
-			conn.connectCancel = nil
-		}
+		conn.connectCancel = nil
 		conn.lock.Unlock()
 	}()
 
@@ -1100,13 +1108,19 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 
 	if err != nil {
 		errorCode, _ := remote.ClassifyConnError(err)
-		// AbortConnect / Stop / password Cancel cancel connectCtx — treat as user-cancelled
-		// unless the handshake already reported auth-failed or a permanent error.
-		if connectCtx.Err() != nil && errorCode != remote.ConnErrCode_AuthFailed && !remote.IsPermanentConnError(errorCode) {
+		conn.lock.Lock()
+		userAbort := conn.userAbortConnect
+		conn.userAbortConnect = false
+		conn.lock.Unlock()
+
+		// Sticky suppress only for:
+		//  - userAbort (Stop / AbortConnect), or
+		//  - coded user-cancelled from password UI Cancel ("Canceled by the user").
+		// Parent scheduler/Ensure timeouts must NOT suppress.
+		if userAbort {
 			errorCode = remote.ConnErrCode_UserCancelled
-		}
-		if errorCode == remote.ConnErrCode_Unknown || errorCode == "" {
-			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "Canceled") {
+		} else if errorCode != remote.ConnErrCode_UserCancelled {
+			if strings.Contains(err.Error(), "Canceled by the user") {
 				errorCode = remote.ConnErrCode_UserCancelled
 			}
 		}
@@ -1120,9 +1134,8 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 				conn.Error = err.Error()
 			}
 			conn.LastErrorCode = errorCode
-			// Sticky suppress on permanent failures and password Cancel so
-			// visibility/scheduler do not immediately re-prompt or storm retries
-			// (UX-0.4, UX-0.5). Cleared on next explicit Connect.
+			// Sticky suppress ONLY for real user Stop/Cancel or permanent failures.
+			// Never for dial timeouts / network errors (those must keep auto-retrying).
 			if remote.IsPermanentConnError(errorCode) || errorCode == remote.ConnErrCode_UserCancelled {
 				conn.SuppressAutoReconnect = true
 			}

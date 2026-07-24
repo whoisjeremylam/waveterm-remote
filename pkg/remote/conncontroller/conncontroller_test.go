@@ -2158,3 +2158,61 @@ func TestRecordConnectionUsage_SkipsLocal(t *testing.T) {
 	RecordConnectionUsage("local:default")
 	// no panic / no controller created for empty name
 }
+
+// TestConnect_ParentContextCancel_DoesNotSuppress: scheduler/Ensure timeouts must
+// NOT set sticky suppress (regression — was freezing auto-retry on all hosts).
+func TestConnect_ParentContextCancel_DoesNotSuppress(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2401", Status_Init)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptNone)
+
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel parent shortly after Connect starts (simulates Ensure/scheduler timeout).
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	_ = conn.Connect(ctx, &wconfig.ConnKeywords{})
+
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("parent context cancel must NOT set SuppressAutoReconnect")
+	}
+}
+
+// TestConnect_UserAbort_SetsSuppress: AbortConnect during Connect sets suppress.
+func TestConnect_UserAbort_SetsSuppress(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2402", Status_Init)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptNone)
+
+	started := make(chan struct{})
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = conn.Connect(context.Background(), &wconfig.ConnKeywords{})
+	}()
+	<-started
+	conn.AbortConnect()
+	<-done
+
+	if !conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected SuppressAutoReconnect after user AbortConnect")
+	}
+}
