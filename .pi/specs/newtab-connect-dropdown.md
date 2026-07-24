@@ -145,11 +145,11 @@ icon: plus
 
 **Highlight guard:** the flattened `selectionList` for keyboard navigation excludes the New Connection item from the default `rowIndex` range. Specifically:
 - Compute `selectableItems` = all items **except** the New Connection item.
-- `rowIndex` clamps to `[0, selectableItems.length - 1]` (so ↑ at top stays at 0, ↓ at bottom wraps or stops — match `conntypeahead`'s `Math.min(idx + 1, len - 1)` behavior).
-- Enter when the New Connection item is *not* explicitly focused selects `selectableItems[rowIndex]`.
-- The New Connection item is only actionable via an **explicit arrow-down past the last selectable item** (one more ↓ moves `rowIndex` to point at the New Connection item, visually highlighted distinctly) **or a mouse click**. This is the subtlety: fast typing + Enter never creates a new connection; the user must deliberately navigate to it.
+- When `selectableItems.length > 0`, `rowIndex` clamps to `[0, selectableItems.length - 1]`.
+- When `selectableItems.length === 0` (only New Connection shown), `rowIndex = -1` (no highlight). Enter does nothing.
+- The New Connection item is only actionable via an **explicit arrow-down** (first ↓ from `-1` highlights it) **or a mouse click**. Fast typing + Enter never creates a new connection.
 
-This requires the renderer to track two index spaces: `selectableIndex` (for the frecency-sorted real connections) and a sentinel position for New Connection. Implementation detail left to the typeahead component, but the contract is: **Enter on the default-highlighted item never creates a new connection.**
+Contract: **Enter never creates a new connection unless New Connection is explicitly highlighted (`rowIndex === newConnectionIndex`).**
 
 ## [S7] Keyboard map
 

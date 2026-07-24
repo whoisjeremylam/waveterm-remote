@@ -69,7 +69,7 @@ This means:
 
 1. Verify `task dev` and `task start` work (build tools installed)
 2. Implement SSH port forwarding (`LocalForward`/`RemoteForward`) — spec ready
-3. Later: remove/disable AI features, MOSH support, vertical tabs, UX improvements
+3. Later: remove/disable AI features, UX improvements
 
 ## Conventions
 

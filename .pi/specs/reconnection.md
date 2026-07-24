@@ -234,7 +234,7 @@ All three auto-reconnect gates (`onConnectionDown` scheduler, `HandleSystemResum
 | 2 | `conn.LastErrorCode == "auth-failed"` | ❌ false | Credential rejected; retry won't help. Wait for user re-auth (`requestPasswordRePrompt`) or key fix. Prevents retry storm. |
 | 3 | `conn.authPromptState == authPromptNone` | ✅ true | Last successful connect used no prompt (unencrypted key, agent key, replayable secret) |
 | 4 | `conn.authPromptState == authPromptUsed` | ❌ false | Last successful connect needed a prompt (password typed, key passphrase, keyboard-interactive) and no password was cached (step 1) |
-| 5 | `conn.authPromptState == authPromptUnknown` (never connected or cleared after auth-failed) | config fallback | `canReconnectFromKeywordsOrPubkey`: checks `connections.json` (batch mode, password secret, preferred auth, disabled password/kbd) then `~/.ssh/config` (`HasPublicKeyAuth`: IdentityFile exists + PubkeyAuthentication enabled) |
+| 5 | `conn.authPromptState == authPromptUnknown` (never connected or cleared after auth-failed) | config fallback | First checks persisted `conn:authpromptused` in connections.json; else `canReconnectFromKeywordsOrPubkey` (batch mode / password secret / preferred auth / `HasPublicKeyAuth`) |
 
 `NeedsInteractiveAuth` (startup reconnect) is intentionally conservative — it only trusts the runtime flag and cached password, NOT the publickey fallback, because a configured key may be passphrase-encrypted (requiring a prompt). This gives the startup connect a generous no-deadline context.
 
@@ -249,6 +249,8 @@ Stored on `SSHConn.authPromptState` (atomic.Int32). Set after a successful `Conn
 | 2 | `authPromptUsed` | Successful connect with `InteractivePromptUsed() == true` |
 
 Cleared to `authPromptUnknown` in `Connect` when `errorCode == "auth-failed"` (alongside `clearCachedPassword`).
+
+**Persistence (`conn:authpromptused`):** After each successful connect, the flag is written to `connections.json`. On cold start, `getConnInternal` seeds `authPromptState` from this value so password-auth hosts are not misclassified as silent-reconnectable just because a local IdentityFile exists. When `authPromptUsed` and no cached password, `connectInternal` also reorders PreferredAuthentications to try password/kbd before publickey — so the user is prompted immediately instead of waiting through a failed publickey cycle.
 
 ### `AuthTracker` (replaces `PasswordUsedTracker`)
 

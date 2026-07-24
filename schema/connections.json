@@ -24,6 +24,15 @@
         "conn:stalldisconnectthreshold": {
           "type": "integer"
         },
+        "conn:connectcount": {
+          "type": "integer"
+        },
+        "conn:lastconnecttime": {
+          "type": "integer"
+        },
+        "conn:authpromptused": {
+          "type": "boolean"
+        },
         "display:hidden": {
           "type": "boolean"
         },

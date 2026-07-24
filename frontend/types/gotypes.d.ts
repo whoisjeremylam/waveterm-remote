@@ -782,6 +782,9 @@ declare global {
         "conn:ignoresshconfig"?: boolean;
         "conn:stallautodisconnect"?: boolean;
         "conn:stalldisconnectthreshold"?: number;
+        "conn:connectcount"?: number;
+        "conn:lastconnecttime"?: number;
+        "conn:authpromptused"?: boolean;
         "display:hidden"?: boolean;
         "display:order"?: number;
         "term:*"?: boolean;

@@ -1631,6 +1631,61 @@ func TestCanReconnectWithoutPrompt_PubkeyFallbackNoKey(t *testing.T) {
 	}
 }
 
+// TestCanReconnectWithoutPrompt_PersistedAuthPromptUsed verifies that a cold-start
+// connection seeded from connections.json conn:authpromptused=true does NOT
+// auto-reconnect even when a publickey IdentityFile exists. This is the fix for
+// password-auth hosts that wait one failed publickey retry before prompting.
+func TestCanReconnectWithoutPrompt_PersistedAuthPromptUsed(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2310", Status_Init)
+	defer cleanupTestConn(conn)
+	// Simulate cold start: runtime flag unknown, but connections.json says the
+	// last successful handshake needed an interactive prompt.
+	used := true
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{ConnAuthPromptUsed: &used}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+	// Local IdentityFiles would make HasPublicKeyAuth true — the false positive.
+	hasPublicKeyAuthForTest = func(string) bool { return true }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
+	if conn.canReconnectWithoutPromptLocked() {
+		t.Fatal("expected canReconnectWithoutPromptLocked=false when conn:authpromptused=true is persisted")
+	}
+	if conn.authPromptState.Load() != authPromptUsed {
+		t.Fatalf("expected authPromptState seeded to authPromptUsed, got %d", conn.authPromptState.Load())
+	}
+	if CanReconnectWithoutPrompt(conn.GetName()) {
+		t.Fatal("expected CanReconnectWithoutPrompt=false for persisted authpromptused")
+	}
+}
+
+// TestCanReconnectWithoutPrompt_PersistedAuthPromptNone verifies that a cold-start
+// connection seeded from conn:authpromptused=false can auto-reconnect without a
+// prompt (key-based hosts after upgrade).
+func TestCanReconnectWithoutPrompt_PersistedAuthPromptNone(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2311", Status_Disconnected)
+	defer cleanupTestConn(conn)
+	used := false
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{ConnAuthPromptUsed: &used}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+	hasPublicKeyAuthForTest = func(string) bool { return false }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
+	if !conn.canReconnectWithoutPromptLocked() {
+		t.Fatal("expected canReconnectWithoutPromptLocked=true when conn:authpromptused=false is persisted")
+	}
+	if conn.authPromptState.Load() != authPromptNone {
+		t.Fatalf("expected authPromptState seeded to authPromptNone, got %d", conn.authPromptState.Load())
+	}
+}
+
 // TestNeedsInteractiveAuth_FlagNone verifies that NeedsInteractiveAuth (used by
 // startup reconnect to pick a timeout) returns false (no timeout needed) when
 // the flag says no prompt was needed.

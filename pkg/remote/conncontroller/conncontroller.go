@@ -228,7 +228,9 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 		Status:                        conn.Status,
 		Connected:                     conn.Status == Status_Connected,
 		Connection:                    conn.Opts.String(),
-		HasConnected:                  (conn.LastConnectTime > 0),
+		// ConnectCount is persisted across restarts; LastConnectTime is session-scoped.
+		// Either signal means this host has been used and belongs in ConnList.
+		HasConnected:                  (conn.LastConnectTime > 0 || conn.ConnectCount > 0),
 		ActiveConnNum:                 conn.ActiveConnNum,
 		ConnectCount:                  conn.ConnectCount,
 		LastConnectTime:               conn.LastConnectTime,
@@ -1045,6 +1047,7 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 		conn.Infof(ctx, "successfully connected (wsh:%v)\n\n", conn.WshEnabled.Load())
 		var connectCount int64
 		var connName string
+		var interactivePromptUsed bool
 		conn.WithLock(func() {
 			conn.Status = Status_Connected
 			conn.LastConnectTime = time.Now().UnixMilli()
@@ -1052,16 +1055,23 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 			connectCount = conn.ConnectCount
 			connName = conn.GetName()
 			conn.LastErrorCode = "" // clear error code on success
+			// authPromptState is set in connectInternal before we get here.
+			interactivePromptUsed = conn.authPromptState.Load() == authPromptUsed
 			if conn.ActiveConnNum == 0 {
 				conn.ActiveConnNum = int(activeConnCounter.Add(1))
 			}
 		})
-		// persist connectcount outside the lock to avoid holding it during disk IO.
+		// persist connectcount + authpromptused outside the lock to avoid holding it
+		// during disk IO. authpromptused lets cold-start reconnect know this host
+		// needs a password/passphrase prompt (avoids publickey false-positive).
 		// A persistence failure is not a connect failure — the SSH connection succeeded;
 		// we log the warning and continue (same pattern as conn:wshenabled below).
-		persistErr := wconfig.SetConnectionsConfigValue(connName, waveobj.MetaMapType{"conn:connectcount": connectCount})
+		persistErr := wconfig.SetConnectionsConfigValue(connName, waveobj.MetaMapType{
+			"conn:connectcount":   connectCount,
+			"conn:authpromptused": interactivePromptUsed,
+		})
 		if persistErr != nil {
-			log.Printf("warning: error writing conn:connectcount to connections file: %v\n", persistErr)
+			log.Printf("warning: error writing connection persistence fields to connections file: %v\n", persistErr)
 		}
 	}
 	conn.FireConnChangeEvent()
@@ -1226,7 +1236,8 @@ func (conn *SSHConn) canAutoReconnectLocked() bool {
 //  1. Cached password (in-memory, from a prior successful prompt) — replayable.
 //  2. Last error was auth-failed — credential is wrong; retry won't help, so
 //     skip the scheduler and wait for the user to re-auth.
-//  3. Runtime auth-prompt flag (set after a successful handshake):
+//  3. Runtime auth-prompt flag (set after a successful handshake, or seeded
+//     from connections.json conn:authpromptused on cold start):
 //     - authPromptNone: no prompt was needed (unencrypted key, agent key, or
 //     replayable secret) — auto-reconnect is safe.
 //     - authPromptUsed: a prompt was needed and no password was cached (cached
@@ -1260,6 +1271,9 @@ func (conn *SSHConn) canReconnectWithoutPromptLocked() bool {
 	if conn.LastErrorCode == remote.ConnErrCode_UserCancelled {
 		return false
 	}
+	// Re-seed from connections.json if still unknown (covers test conns created
+	// without going through getConnInternal, and late-written config values).
+	conn.seedAuthPromptStateFromConfig_nolock()
 	switch conn.authPromptState.Load() {
 	case authPromptNone:
 		// Last successful connect used no prompt (replayable key/secret).
@@ -1274,6 +1288,24 @@ func (conn *SSHConn) canReconnectWithoutPromptLocked() bool {
 		// for a publickey. Uses conn.getConnectionConfig() so the connections.json
 		// settings (batch mode, password secret, preferred auth) are respected.
 		return conn.canReconnectFromKeywordsOrPubkey()
+	}
+}
+
+// seedAuthPromptStateFromConfig_nolock loads conn:authpromptused from
+// connections.json into authPromptState when the runtime flag is still unknown.
+// Must be called with conn.lock held (or before the conn is shared).
+func (conn *SSHConn) seedAuthPromptStateFromConfig_nolock() {
+	if conn.authPromptState.Load() != authPromptUnknown {
+		return
+	}
+	connConfig, ok := conn.getConnectionConfig()
+	if !ok || connConfig.ConnAuthPromptUsed == nil {
+		return
+	}
+	if *connConfig.ConnAuthPromptUsed {
+		conn.authPromptState.Store(authPromptUsed)
+	} else {
+		conn.authPromptState.Store(authPromptNone)
 	}
 }
 
@@ -1363,14 +1395,27 @@ func hasPublicKeyAuthForConn(connName string) bool {
 }
 
 // canReconnectFromConfigByName is the config-based fallback for a connection
-// that does NOT exist in the controller map (e.g., cold start). It reads
-// connections.json directly (not via the conn's getConnectionConfig, since
-// there is no conn) and checks ~/.ssh/config for a publickey.
+// that does NOT exist in the controller map (e.g., cold start before GetConn).
+// It reads connections.json directly and checks ~/.ssh/config for a publickey.
+//
+// Order:
+//  1. conn:authpromptused=true → cannot silent-reconnect (needs a prompt)
+//  2. conn:authpromptused=false → can silent-reconnect (prior key/secret auth)
+//  3. connections.json keywords (batch mode, password secret, preferred auth)
+//  4. ~/.ssh/config publickey (IdentityFile present)
 func canReconnectFromConfigByName(connName string) bool {
 	config := wconfig.GetWatcher().GetFullConfig()
 	connConfig, ok := config.Connections[connName]
-	if ok && connKeywordsAllowReconnect(&connConfig) {
-		return true
+	if ok {
+		if connConfig.ConnAuthPromptUsed != nil {
+			// Persisted from a prior successful handshake — trust it over the
+			// publickey false-positive (local IdentityFiles that this host
+			// does not accept).
+			return !*connConfig.ConnAuthPromptUsed
+		}
+		if connKeywordsAllowReconnect(&connConfig) {
+			return true
+		}
 	}
 	return hasPublicKeyAuthForConn(connName)
 }
@@ -1840,6 +1885,22 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 	if cachedPw != nil {
 		ctx = remote.ContextWithCachedPassword(ctx, cachedPw)
 	}
+	// When a previous successful handshake needed an interactive prompt and we
+	// have no cached password, try password/kbd-interactive before publickey.
+	// Otherwise cold-start reconnect burns MaxAuthTries on local IdentityFiles
+	// that this host does not accept, fails once, and only then shows the
+	// password prompt (feels like "wait one retry").
+	conn.WithLock(func() {
+		conn.seedAuthPromptStateFromConfig_nolock()
+	})
+	if conn.authPromptState.Load() == authPromptUsed && cachedPw == nil {
+		flagsCopy := *connFlags
+		// Override PreferredAuthentications so password methods run first.
+		// mergeKeywords in ConnectToClient applies connFlags after ssh config.
+		flagsCopy.SshPreferredAuthentications = []string{"password", "keyboard-interactive", "publickey"}
+		connFlags = &flagsCopy
+		conn.Infof(ctx, "preferring interactive auth methods (prior session needed a prompt)\n")
+	}
 	connectStart := time.Now()
 	client, _, sshKeywords, authTracker, err := remote.ConnectToClient(ctx, conn.Opts, nil, 0, connFlags)
 	connectDuration := time.Since(connectStart)
@@ -2028,11 +2089,25 @@ func getConnInternal(opts *remote.SSHOpts, createIfNotExists bool) *SSHConn {
 	defer globalLock.Unlock()
 	rtn := clientControllerMap[*opts]
 	if rtn == nil && createIfNotExists {
-		// Load persisted ConnectCount from connections.json
+		// Load persisted ConnectCount and auth-prompt flag from connections.json
 		var connectCount int64
+		var authPromptSeed int32 = authPromptUnknown
 		config := wconfig.GetWatcher().GetFullConfig()
-		if connSettings, ok := config.Connections[opts.String()]; ok && connSettings.ConnConnectCount != nil {
-			connectCount = *connSettings.ConnConnectCount
+		if connSettings, ok := config.Connections[opts.String()]; ok {
+			if connSettings.ConnConnectCount != nil {
+				connectCount = *connSettings.ConnConnectCount
+			}
+			// Seed authPromptState so cold-start reconnect knows whether the last
+			// successful handshake needed a password/passphrase prompt. Without
+			// this, password-auth hosts that also have local IdentityFiles are
+			// misclassified as silent-reconnectable via the publickey fallback.
+			if connSettings.ConnAuthPromptUsed != nil {
+				if *connSettings.ConnAuthPromptUsed {
+					authPromptSeed = authPromptUsed
+				} else {
+					authPromptSeed = authPromptNone
+				}
+			}
 		}
 		rtn = &SSHConn{
 			lock:             &sync.Mutex{},
@@ -2043,6 +2118,7 @@ func getConnInternal(opts *remote.SSHOpts, createIfNotExists bool) *SSHConn {
 			Opts:             opts,
 			ConnectCount:     connectCount,
 		}
+		rtn.authPromptState.Store(authPromptSeed)
 		clientControllerMap[*opts] = rtn
 	}
 	return rtn
@@ -2124,9 +2200,12 @@ func sureNoPromptNeeded(connName string) bool {
 	if err != nil {
 		return false
 	}
-	conn := MaybeGetConn(connOpts)
+	// Prefer GetConn so cold-start seeds authPromptState from connections.json
+	// before we decide on a startup timeout.
+	conn := GetConn(connOpts)
 	if conn != nil {
 		conn.lock.Lock()
+		conn.seedAuthPromptStateFromConfig_nolock()
 		state := conn.authPromptState.Load()
 		conn.lock.Unlock()
 		if state == authPromptNone {

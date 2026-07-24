@@ -121,21 +121,11 @@
 
 **Decision:** Keep the underlying OSC 16162 shell integration infrastructure intact for now. Only the visual indicator (sparkle/Claude icon) and Wave-AI-specific tooltips were removed. If we want pi agent integration later, we can add `piActiveAtom` and a pi icon with minimal changes.
 
-## 2026-05-20: MOSH Research — Not a Priority
+## 2026-05-20: MOSH Research — Out of Scope
 
-**Finding:** MOSH (Mobile Shell) provides seamless reconnection (roaming, sleep/wake) and client-side local echo via UDP-based State Synchronization Protocol. However, it's not a priority for this fork.
+**Decision:** MOSH is not applicable to this fork and is not planned.
 
-**Why not:**
-- **No port forwarding** — open issue since 2014, no movement. Port forwarding is a core requirement.
-- **No OSC52 clipboard** — remote programs can't put text in local clipboard.
-- **No scrollback** — only syncs visible terminal state.
-- **No file transfer** (scp/sftp).
-- **C++ only** — no Go or JS library implementations of the core protocol.
-- **Slow development** — last release 1.4.0 (October 2022).
-
-**Alternative: tsshd (trzsz-ssh)** — Go-based, supports full SSH features (port forwarding, agent forwarding, X11, scrollback, OSC52) + UDP roaming via QUIC/KCP. More architecturally relevant but would require significant integration effort.
-
-**Local echo with wsh** — Technically possible (Wave Terminal already knows screen state and intercepts keystrokes), but non-trivial (must detect line-editing vs application mode, validate predictions against round-trip timing). Low value for typical homelab latency (<50ms).
+**Finding (historical):** MOSH provides seamless reconnection and client-side local echo via UDP, but lacks port forwarding, OSC52 clipboard, scrollback, and file transfer; it is C++-only with slow upstream development. tsshd was noted as a more relevant alternative if roaming ever mattered; durable-session reconnect work supersedes the need for either.
 
 ## 2026-05-23: Auto-Reconnect P0 Fixed; Server Reboot → Manual Reconnect
 
@@ -185,7 +175,6 @@
 1. Fix auto-reconnect bugs in durable sessions (#4) — DONE 2026-05-23
 2. SSH port forwarding (spec ready)
 3. Remote file paste (image paste + drag-drop for SSH sessions) — primary use case: pi / Claude Code TUI
-4. MOSH/tsshd support (backlog, if roaming becomes a real pain point)
 
 
 ---

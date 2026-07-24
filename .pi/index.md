@@ -19,6 +19,7 @@ Most developer terminals assume code is installed, built, and tested locally. Th
 - [[specs/portforwarding.md]] — SSH port forwarding (`LocalForward` / `RemoteForward`)
 - [[specs/tmux-cwd-tracking.md]] — CWD tracking under tmux/screen via `wsh setmeta`
 - [[specs/widget-keepalive.md]] — Widget state persistence across toggle (keep-alive with poll backoff)
+- [[specs/reconnection-ux-backlog.md]] — Production reconnection UX backlog (P0–P3)
 
 ## Context & Decisions
 

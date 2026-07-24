@@ -304,12 +304,30 @@ Full VS Code SCM diff view feature analysis done on `~/project/vscode`. Source f
 
 ## Backlog / Ideas
 
-### Features to Add (discuss, spec, scope later)
+### Reconnection UX (production readiness)
 
-- **MOSH support** — Research done 2026-05-20. MOSH's main benefits: seamless reconnection (roaming, sleep/wake) and client-side local echo. Not a priority because: (1) no port forwarding (open issue since 2014), (2) no OSC52 clipboard, (3) no scrollback, (4) C++ only, slow development. tsshd (trzsz-ssh) is the more relevant reference — Go-based, full SSH features + UDP roaming, but significant architectural change. Local echo is technically possible with wsh but non-trivial and low-value for typical latency.
-- **Vertical tabs** — Tab layout optimized for remote host switching
+Spec: [[.pi/specs/reconnection-ux-backlog.md]]
 
+Backend reconnection is largely done; remaining work is user-visible recovery, honesty, and edge scenarios.
 
+**P0 — Trust & recovery**
+- [ ] UX-0.1 Sticky suppress after user Disconnect
+- [ ] UX-0.2 Job-level status when conn up / session down
+- [ ] UX-0.3 Attention-bound recovery while dead tab is visible
+- [ ] UX-0.4 Permanent failures (host key, etc.) stop silent retry
+- [ ] UX-0.5 Cancel auto-retry + password Cancel semantics
+
+**P1 — Clarity** (see full spec for acceptance criteria)
+- [ ] UX-1.1 Post-give-up / early-stop overlay copy
+- [ ] UX-1.2 Interactive-auth idle overlay
+- [ ] UX-1.3 Stalled overlay heal-first actions
+- [ ] UX-1.4 Wrong-password prompt feedback
+- [ ] UX-1.5 Session gone CTA
+- [ ] UX-1.6 Multi-connection password queue UX
+- [ ] UX-1.7 Disk drain / catch-up indicator
+- [ ] UX-1.8 Passphrase vs password prompt strings
+
+**Ship gate:** all P0 + UX-1.1, 1.2, 1.5 + QA matrix Q1–Q12 in the backlog spec.
 
 ### Agent Orchestration API
 
