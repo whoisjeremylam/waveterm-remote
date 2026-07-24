@@ -74,17 +74,18 @@ export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
     useEffect(() => {
         async function loadConnections() {
             try {
-                const [connResult, wslResult] = await Promise.all([
-                    RpcApi.ConnListCommand(TabRpcClient, { timeout: 2000 }),
-                    RpcApi.WslListCommand(TabRpcClient, { timeout: 2000 }),
-                ]);
+                const connResult = await RpcApi.ConnListCommand(TabRpcClient, { timeout: 2000 });
                 setConnList(connResult || []);
-                setWslList(wslResult || []);
             } catch (e) {
                 console.error("Failed to load connections:", e);
-            } finally {
-                setLoading(false);
             }
+            try {
+                const wslResult = await RpcApi.WslListCommand(TabRpcClient, { timeout: 2000 });
+                setWslList(wslResult || []);
+            } catch (_e) {
+                // WSL not available on non-Windows — fail silently
+            }
+            setLoading(false);
         }
         loadConnections();
     }, []);
