@@ -1759,6 +1759,170 @@ func TestClose_ClearsCachedPassword(t *testing.T) {
 	}
 }
 
+// --- UX-0.1 SuppressAutoReconnect tests ---
+
+// TestClose_SetsSuppressAutoReconnect (0.1.1): user Disconnect sets sticky suppress.
+func TestClose_SetsSuppressAutoReconnect(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected suppress=false initially")
+	}
+	conn.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if !conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected SuppressAutoReconnect=true after user Close")
+	}
+	status := conn.DeriveConnStatus()
+	if !status.SuppressAutoReconnect {
+		t.Fatal("expected DeriveConnStatus.SuppressAutoReconnect=true")
+	}
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false when suppress is set")
+	}
+}
+
+// TestCloseInvoluntary_DoesNotSetSuppress (0.1.3): stall path must not suppress.
+func TestCloseInvoluntary_DoesNotSetSuppress(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("keep-me")
+	conn.CloseInvoluntary()
+	time.Sleep(50 * time.Millisecond)
+
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected SuppressAutoReconnect=false after CloseInvoluntary")
+	}
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected password preserved after CloseInvoluntary")
+	}
+}
+
+// TestEnsureConnection_NoopWhenSuppressed (0.1.1 visibility gate).
+func TestEnsureConnection_NoopWhenSuppressed(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.SetSuppressAutoReconnect(true)
+
+	called := false
+	prev := connectInternalTestHook
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		called = true
+		return nil
+	}
+	defer func() { connectInternalTestHook = prev }()
+
+	err := EnsureConnection(context.Background(), conn.GetName())
+	if err != nil {
+		t.Fatalf("expected nil from suppressed EnsureConnection, got %v", err)
+	}
+	if called {
+		t.Fatal("EnsureConnection must not call Connect when suppress is set")
+	}
+}
+
+// TestAttemptReconnect_ErrorsWhenSuppressed.
+func TestAttemptReconnect_ErrorsWhenSuppressed(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.SetSuppressAutoReconnect(true)
+
+	err := AttemptReconnect(context.Background(), conn.GetName())
+	if err == nil {
+		t.Fatal("expected error from suppressed AttemptReconnect")
+	}
+	if err.Error() != "auto-reconnect suppressed" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestConnect_ClearsSuppress (0.1.2): explicit Connect clears the flag.
+func TestConnect_ClearsSuppress(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.SetSuppressAutoReconnect(true)
+
+	prev := connectInternalTestHook
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		return nil
+	}
+	defer func() { connectInternalTestHook = prev }()
+
+	err := conn.Connect(context.Background(), &wconfig.ConnKeywords{})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected suppress cleared after explicit Connect")
+	}
+}
+
+// TestPauseAutoReconnect_KeepsPassword (0.5.4): Stop auto-retry keeps cache.
+func TestPauseAutoReconnect_KeepsPassword(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("cached-secret")
+	conn.WithLock(func() {
+		conn.ReconnectAttempt = 3
+		conn.ReconnectNextAttempt = time.Now().Add(5 * time.Second).UnixMilli()
+		conn.ReconnectError = "dial timeout"
+	})
+
+	conn.PauseAutoReconnect()
+
+	if !conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected suppress set after PauseAutoReconnect")
+	}
+	if pw := conn.getCachedPassword(); pw == nil || *pw != "cached-secret" {
+		t.Fatal("expected password preserved after PauseAutoReconnect")
+	}
+	status := conn.DeriveConnStatus()
+	if status.ReconnectAttempt != 0 || status.ReconnectNextAttempt != 0 {
+		t.Fatalf("expected reconnect state cleared, got attempt=%d next=%d",
+			status.ReconnectAttempt, status.ReconnectNextAttempt)
+	}
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false after PauseAutoReconnect")
+	}
+}
+
+// TestCanAutoReconnect_FalseForPermanentError (UX-0.4).
+func TestCanAutoReconnect_FalseForPermanentError(t *testing.T) {
+	conn := makeTestConn(Status_Error)
+	defer cleanupTestConn(conn)
+
+	// Cached password would normally allow reconnect; permanent error blocks it.
+	conn.cachePassword("x")
+	conn.WithLock(func() {
+		conn.LastErrorCode = remote.ConnErrCode_HostKeyChanged
+	})
+	status := conn.DeriveConnStatus()
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false for hostkey-changed")
+	}
+}
+
+// TestCanAutoReconnect_FalseForUserCancelled (UX-0.5 password Cancel sticky).
+func TestCanAutoReconnect_FalseForUserCancelled(t *testing.T) {
+	conn := makeTestConn(Status_Error)
+	defer cleanupTestConn(conn)
+	conn.WithLock(func() {
+		conn.LastErrorCode = remote.ConnErrCode_UserCancelled
+		conn.SuppressAutoReconnect = true
+	})
+	status := conn.DeriveConnStatus()
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false after password cancel")
+	}
+	if !status.SuppressAutoReconnect {
+		t.Fatal("expected SuppressAutoReconnect exposed in status")
+	}
+}
+
 // TestDeriveConnStatus_ExposesConnectCount verifies that DeriveConnStatus
 // exposes ConnectCount and LastConnectTime fields in the returned ConnStatus.
 func TestDeriveConnStatus_ExposesConnectCount(t *testing.T) {

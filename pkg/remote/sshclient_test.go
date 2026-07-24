@@ -8,6 +8,47 @@ import (
 	"testing"
 )
 
+func TestIsPermanentConnError(t *testing.T) {
+	t.Parallel()
+
+	permanent := []string{
+		ConnErrCode_HostKeyChanged,
+		ConnErrCode_HostKeyRevoked,
+		ConnErrCode_HostKeyVerify,
+		ConnErrCode_KnownHostsNone,
+		ConnErrCode_KnownHostsFmt,
+		ConnErrCode_ConfigParse,
+		ConnErrCode_ConfigDefault,
+		ConnErrCode_ProxyDepth,
+		ConnErrCode_ProxyParse,
+	}
+	for _, code := range permanent {
+		t.Run(code, func(t *testing.T) {
+			t.Parallel()
+			if !IsPermanentConnError(code) {
+				t.Fatalf("expected IsPermanentConnError(%q)=true", code)
+			}
+		})
+	}
+
+	transient := []string{
+		ConnErrCode_Dial,
+		ConnErrCode_AuthFailed,
+		ConnErrCode_UserCancelled,
+		ConnErrCode_UserTimeout,
+		ConnErrCode_Unknown,
+		"",
+	}
+	for _, code := range transient {
+		t.Run("not_"+code, func(t *testing.T) {
+			t.Parallel()
+			if IsPermanentConnError(code) {
+				t.Fatalf("expected IsPermanentConnError(%q)=false", code)
+			}
+		})
+	}
+}
+
 func TestContextWithCachedPassword(t *testing.T) {
 	t.Parallel()
 

@@ -897,6 +897,41 @@ func TestStartConnectionReconnectScheduler_StartsAndStopsScheduler(t *testing.T)
 	t.Fatalf("scheduler entry still set after 2s — goroutine did not clean up")
 }
 
+// TestOnConnectionDown_SkipsWhenSuppressed (UX-0.1): user Disconnect must not
+// start the reconnect scheduler.
+func TestOnConnectionDown_SkipsWhenSuppressed(t *testing.T) {
+	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
+	NeedsInteractiveAuthTestHook = func(string) bool { return false }
+	defer func() { NeedsInteractiveAuthTestHook = nil }()
+
+	// Create a real SSHConn with suppress set so IsSuppressAutoReconnectByName works.
+	// Use non-default port so ParseOpts(GetName()) round-trips the map key.
+	testOpts := &remote.SSHOpts{SSHHost: "suppress-host", SSHUser: "u", SSHPort: "2222"}
+	conn := conncontroller.GetConn(testOpts)
+	conn.Status = conncontroller.Status_Disconnected
+	conn.SetSuppressAutoReconnect(true)
+	connName := conn.GetName()
+
+	if !conncontroller.IsSuppressAutoReconnectByName(connName) {
+		t.Fatalf("precondition: IsSuppressAutoReconnectByName(%q) should be true", connName)
+	}
+
+	onConnectionDown(connName)
+	if _, exists := connectionReconnectSchedulers.GetEx(connName); exists {
+		t.Fatal("expected no scheduler when SuppressAutoReconnect is set")
+	}
+}
+
+// TestStopReconnectScheduler_ClearsDedup (UX-0.5).
+func TestStopReconnectScheduler_ClearsDedup(t *testing.T) {
+	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
+	connectionReconnectSchedulers.Set("conn:stop-test", true)
+	StopReconnectScheduler("conn:stop-test")
+	if _, exists := connectionReconnectSchedulers.GetEx("conn:stop-test"); exists {
+		t.Fatal("expected scheduler entry deleted after StopReconnectScheduler")
+	}
+}
+
 // TestStartConnectionReconnectScheduler_DedupSharedWithOnConnectionDown verifies
 // the dedup map is shared — calling onConnectionDown then
 // StartConnectionReconnectScheduler for the same conn does NOT spawn a second

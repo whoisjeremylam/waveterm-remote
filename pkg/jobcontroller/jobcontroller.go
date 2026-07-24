@@ -727,6 +727,11 @@ func HandleSystemResume(ctx context.Context) {
 		if conncontroller.IsLocalConnName(connName) {
 			continue
 		}
+		// UX-0.1: user Disconnect / Stop auto-retry must not auto-reconnect on resume.
+		if status.SuppressAutoReconnect || conncontroller.IsSuppressAutoReconnectByName(connName) {
+			log.Printf("[system] connection %s has auto-reconnect suppressed, skipping fast-path reconnect", connName)
+			continue
+		}
 		if !hasRunningDurableJobsForConn(ctx, connName) {
 			continue
 		}
@@ -806,6 +811,12 @@ func startReconnectScheduler(connName string) {
 		return
 	}
 
+	// UX-0.1 / UX-0.5: user Disconnect or Stop auto-retry — do not schedule.
+	if conncontroller.IsSuppressAutoReconnectByName(connName) {
+		log.Printf("[conn:%s] auto-reconnect suppressed, skipping reconnect scheduler", connName)
+		return
+	}
+
 	// Connections requiring interactive auth (password/keyboard-interactive)
 	// without a cached password never start the auto-reconnect scheduler.
 	// The password prompt is a persistent buffer independent of connection
@@ -828,6 +839,16 @@ func startReconnectScheduler(connName string) {
 		defer connectionReconnectSchedulers.Delete(connName)
 		scheduleConnectionReconnect(connName)
 	}()
+}
+
+// StopReconnectScheduler requests the reconnect scheduler for connName to exit
+// on its next loop check and removes the dedup entry so a future deliberate
+// reconnect can start a new scheduler after involuntary drops. Also clears
+// UI reconnect countdown state. Used by ConnStopAutoRetryCommand (UX-0.5).
+func StopReconnectScheduler(connName string) {
+	connectionReconnectSchedulers.Delete(connName)
+	clearRetryState(connName)
+	log.Printf("[conn:%s] reconnect scheduler stop requested", connName)
 }
 
 // StartConnectionReconnectScheduler starts the reconnect scheduler for a
@@ -941,6 +962,13 @@ func scheduleConnectionReconnect(connName string) {
 	attempt := 0
 
 	for {
+		// UX-0.1 / UX-0.5: exit if user disconnected or stopped auto-retry mid-loop.
+		if conncontroller.IsSuppressAutoReconnectByName(connName) {
+			log.Printf("[conn:%s] auto-reconnect suppressed, stopping reconnect scheduler", connName)
+			clearRetryState(connName)
+			return
+		}
+
 		if time.Since(startTime) > maxDuration {
 			log.Printf("[conn:%s] reconnect scheduler reached max duration, stopping", connName)
 			clearRetryState(connName)
@@ -991,6 +1019,21 @@ func scheduleConnectionReconnect(connName string) {
 				errorCode, errorSubCode := remote.ClassifyConnError(err)
 				if errorCode == remote.ConnErrCode_AuthFailed {
 					log.Printf("[conn:%s] auth-failed during reconnect, stopping scheduler (server rejecting credentials)", connName)
+					clearRetryState(connName)
+					return
+				}
+				// UX-0.4: permanent handshake failures (host-key, known_hosts,
+				// config) must not silent-retry. Suppress is set in Connect;
+				// exit the scheduler immediately.
+				if remote.IsPermanentConnError(errorCode) {
+					log.Printf("[conn:%s] permanent error %q during reconnect, stopping scheduler", connName, errorCode)
+					clearRetryState(connName)
+					return
+				}
+				// Auto-reconnect suppressed (user Disconnect mid-attempt, or
+				// AttemptReconnect returned the suppress error).
+				if strings.Contains(err.Error(), "auto-reconnect suppressed") {
+					log.Printf("[conn:%s] auto-reconnect suppressed during attempt, stopping scheduler", connName)
 					clearRetryState(connName)
 					return
 				}

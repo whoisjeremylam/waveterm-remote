@@ -227,6 +227,39 @@ func ClassifyConnError(err error) (string, string) {
 	return ConnErrCode_Unknown, ""
 }
 
+// IsPermanentConnError returns true for handshake/config failures that will not
+// succeed on retry without user action (host-key change, known_hosts problems,
+// unrecoverable config). Scheduler and attention-bound retry must stop on these;
+// never auto-accept host key changes (UX-0.4).
+func IsPermanentConnError(code string) bool {
+	switch code {
+	case ConnErrCode_HostKeyChanged,
+		ConnErrCode_HostKeyRevoked,
+		ConnErrCode_HostKeyVerify,
+		ConnErrCode_KnownHostsNone,
+		ConnErrCode_KnownHostsFmt,
+		ConnErrCode_ConfigParse,
+		ConnErrCode_ConfigDefault,
+		ConnErrCode_ProxyDepth,
+		ConnErrCode_ProxyParse:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsNetworkUnreachableErrorCode is true when a dial subcode indicates local
+// network unavailability (useful for attention-heartbeat interval tuning).
+func IsNetworkUnreachableDialSubCode(subCode string) bool {
+	switch subCode {
+	case DialSubCode_NoRoute, DialSubCode_HostUnreach, DialSubCode_NetUnreach,
+		DialSubCode_Timeout, DialSubCode_DNS:
+		return true
+	default:
+		return false
+	}
+}
+
 // ClassifyDialErrorSubCode provides more granular classification of dial errors
 // to help identify root causes (DNS, VPN, timeouts, etc.)
 func ClassifyDialErrorSubCode(err error) string {
