@@ -1,8 +1,9 @@
 # New-Tab Connection Dropdown: Typeahead + Frecency Sort
 
-**Date:** 2026-07-21
-**Status:** Ready
-**Related:** `.pi/specs/tab-name-from-connection.md` (tab naming, already shipped)
+**Date:** 2026-07-21  
+**Status:** **Implemented on `feat/reconnect-ux-p0`** (pending final user retest + merge)  
+**Related:** `.pi/specs/tab-name-from-connection.md` (tab naming, already shipped)  
+**Branch tip notes:** Cmd-T toggles open/close; no default selection; placeholder "Type to filter connections…"; `ConnectCount` via `RecordConnectionUsage` on `CreateTab` only (not SSH reconnect); frecency uses count when `lastConnectTime==0` after restart.
 
 ## [S1] Problem
 

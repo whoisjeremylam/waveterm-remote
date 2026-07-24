@@ -869,3 +869,39 @@ All three paths are idempotent: `ClientDisconnected` checks `if !sm.connected { 
 
 - The reconnect triggers (scheduler, `HandleSystemResume`, visibility-driven) are unchanged — they still call `Connect()` / `EnsureConnection` as before. The disk-backed fix is transparent to them.
 - `CloseInvoluntary` (Phase 2K) and the scheduler tuning (Phase 2L) are independent of the disk-backed fix. They compose correctly: `CloseInvoluntary` preserves the cached password so the reconnect can be silent; the scheduler tuning gives the network more time to recover; the disk-backed fix ensures no PTY output is lost during the outage.
+
+---
+
+## Phase 2N — Reconnection UX P0 + password/suppress hardening (2026-07-24)
+
+**Branch:** `feat/reconnect-ux-p0` (not yet merged to main at time of writing).
+
+### Product (UX-0.1 … UX-0.5)
+
+Implemented sticky `SuppressAutoReconnect`, `ConnStopAutoRetryCommand`, job-level session overlay, attention heartbeat (30s/10s), permanent host-key/known_hosts stop, Stop auto-retry UI. Decisions D1–D6 in [[decisions.md]].
+
+### Hardening from user testing
+
+| Issue | Fix |
+|-------|-----|
+| ~60s password prompt on cold start | Defer `NeedsInteractiveAuth` hosts at startup; UI-driven `ConnEnsure` after frontend ready (`50f3e3e8`) |
+| Stop does not abort in-flight dial | `AbortConnect` + cancel connect ctx; leave connecting immediately (`73349acd`) |
+| Password Cancel → second prompt (two tabs, same conn) | `CancelAllAuthPromptsForConn` + `CancelAuthForConnection` (`73349acd`) |
+| Sticky "paused" on many hosts after timeouts | Only `userAbortConnect` / UI "Canceled by the user" set suppress — not parent ctx deadline (`c6540dbb`) |
+| Overlay said "paused" | Copy → **"stopped"** |
+| Password re-prompt after network flap | Clear cache/`authPromptState` only on **credential rejection** (`unable to authenticate`); handshake failed/EOF/reset = dial (`f86644ed`) |
+
+### Flags (scope)
+
+| Flag | Scope | Meaning |
+|------|--------|---------|
+| `userAbortConnect` | **Per connection** | User Stop/Cancel aborted *this* connect |
+| `SuppressAutoReconnect` | **Per connection** | No auto Ensure/scheduler until explicit Reconnect |
+| `CachedPassword` | **Per connection** (memory) | Survives involuntary disconnect + network flaps |
+| `authPromptState` / `conn:authpromptused` | **Per connection** | Interactive vs silent; persist for cold start |
+
+### Not done (P1 / optional)
+
+- Drain/catch-up indicator (UX-1.7)
+- Friendlier permanent-failure copy (raw known_hosts path OK for now)
+- Pause reconnect on app blur (not required; keepalive unchanged)

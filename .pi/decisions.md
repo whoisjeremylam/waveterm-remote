@@ -546,3 +546,15 @@ See [[specs/newtab-connect-dropdown.md]] for full spec.
 - Job-level overlay when `conn.status === connected` but durable job is reconnecting / failed / gone (UX-0.2).
 
 **Key files:** `pkg/remote/conncontroller/conncontroller.go`, `pkg/jobcontroller/jobcontroller.go`, `pkg/remote/sshclient.go`, `pkg/wshrpc/wshserver/wshserver.go`, `frontend/app/tab/visibilityreconnect.tsx`, `frontend/app/block/connstatusoverlay.tsx`.
+
+## 2026-07-24: Password cache and suppress classification
+
+**Decision:**
+
+1. **`userAbortConnect` is per-connection** — Stop/Cancel on host A must not abort host B.
+2. **Sticky suppress** only for real user Stop/Cancel (or permanent host-key errors), **never** for scheduler/`EnsureConnection` parent-context timeouts.
+3. **Cached password + `authPromptState`** cleared only on **true credential rejection** (`ssh: unable to authenticate`). Transport failures (`handshake failed`, EOF, reset, dial timeout) preserve cache so reconnect is silent when the network returns.
+4. **Involuntary disconnect** still uses `CloseInvoluntary` (preserve cache); user Disconnect uses `Close` (clear cache + suppress).
+5. **Frecency `ConnectCount`** increments on `CreateTab` (`RecordConnectionUsage`), not on every SSH `Connect` (avoids password re-auth and durable reconnect inflating rank).
+
+**Commits:** `c6540dbb`, `f86644ed`, `c9f2e782`, `73349acd`, `50f3e3e8`. Branch: `feat/reconnect-ux-p0`.

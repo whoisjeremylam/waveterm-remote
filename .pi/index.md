@@ -14,12 +14,19 @@ Most developer terminals assume code is installed, built, and tested locally. Th
 
 ## Active Specs
 
-- [[specs/remove-telemetry.md]] — Remove all telemetry, analytics, and tracking
-- [[specs/remove-waveai.md]] — Remove/disable all Wave AI features
-- [[specs/portforwarding.md]] — SSH port forwarding (`LocalForward` / `RemoteForward`)
+- [[specs/reconnection-ux-backlog.md]] — **P0 done on `feat/reconnect-ux-p0`**; P1 clarity next after merge
+- [[specs/reconnection.md]] — Implementation log (phases through password-cache / suppress hardening)
+- [[specs/newtab-connect-dropdown.md]] — **Implemented on same branch**; frecency + typeahead
+- [[specs/portforwarding.md]] — SSH port forwarding (`LocalForward` / `RemoteForward`) — landed earlier
 - [[specs/tmux-cwd-tracking.md]] — CWD tracking under tmux/screen via `wsh setmeta`
-- [[specs/widget-keepalive.md]] — Widget state persistence across toggle (keep-alive with poll backoff)
-- [[specs/reconnection-ux-backlog.md]] — Production reconnection UX backlog (P0–P3)
+- [[specs/widget-keepalive.md]] — Widget state persistence across toggle
+- [[specs/remove-telemetry.md]] / [[specs/remove-waveai.md]] — earlier fork goals
+
+## Current branch / handoff
+
+- **Branch:** `feat/reconnect-ux-p0` (worktree `../waveterm-remote-reconnect-ux-p0`)
+- **Next:** finish user retest → push → PR → merge → then P1 from reconnection UX backlog
+- **Todos:** [[todos.md]] — see **Current focus (2026-07-24)** at top
 
 ## Context & Decisions
 

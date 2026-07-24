@@ -1,10 +1,27 @@
 # Reconnection UX Backlog
 
-> Status: Open backlog  
-> Created: 2026-07-24  
+> Status: **P0 implemented on `feat/reconnect-ux-p0`** (pending final user retest + merge to main)  
+> Created: 2026-07-24 · Updated: 2026-07-24  
 > Design reference: [[reconnection-design.md]]  
 > Implementation reference: [[reconnection.md]]  
-> Related: [[visibility-driven-reconnect.md]], [[reconnect-ui-overlay.md]], [[disk-backed-stream-history.md]]
+> Related: [[visibility-driven-reconnect.md]], [[reconnect-ui-overlay.md]], [[disk-backed-stream-history.md]], [[newtab-connect-dropdown.md]]  
+> Branch: `feat/reconnect-ux-p0` (worktree `waveterm-remote-reconnect-ux-p0`)
+
+## Session handoff (post-compact)
+
+**Land next:** push branch → finish retest matrix in [[todos.md#current-focus-2026-07-24--featreconnect-ux-p0]] → PR → merge.
+
+**P0 code complete.** Hardening commits of note:
+
+| Commit (approx) | Fix |
+|-----------------|-----|
+| `170d8865`…`bcfc490e` | UX-0.1–0.5 core (suppress, stop-retry RPC, job overlay, heartbeat, permanent errors) |
+| `50f3e3e8` | Defer interactive Ensure at startup (no ~60s invisible password prompt) |
+| `73349acd` | Hard-abort Stop; Cancel all password prompts for one conn |
+| `c6540dbb` | Scheduler timeouts must not sticky-suppress; copy "stopped" |
+| `f86644ed` | Keep cached password across network flaps (only clear on true credential rejection) |
+
+**Open after merge:** P1 clarity items below; optional permanent-failure copy polish; A6 focus-pause not required (retries while unfocused OK; focus regain Ensures).
 
 ## Goal
 
@@ -42,12 +59,15 @@ Backend reconnection (scheduler, `CloseInvoluntary`, visibility-driven `ConnEnsu
 | Password buffer + per-window prompt serialization | Done |
 | Disk-backed stream history + backpressure break | Done |
 | Job reconnect convergence + bounded retry | Done (Phase 2E) |
-| Cancel auto-retry / stop scheduler from UI | **Done (UX-0.5)** |
+| Cancel auto-retry / stop scheduler from UI | **Done (UX-0.5)** + hard-abort in-flight Connect |
 | Attention-bound retry while staring at dead tab | **Done (UX-0.3 hybrid)** |
-| Job-level overlay (conn up, session down) | **Done (UX-0.2)** |
+| Job-level overlay (conn up, session down) | **Done (UX-0.2)** — confirmed kill jobmanager |
 | Manual-disconnect sticky suppress | **Done (UX-0.1)** |
-| Host-key / permanent-failure UX | **Done (UX-0.4)** |
-| Catch-up / drain UX | **Missing** |
+| Host-key / permanent-failure UX | **Done (UX-0.4)** — confirmed known_hosts corrupt |
+| Password Cancel = per-connection (all prompts) | **Done (A3)** |
+| Password cache survives network flaps | **Done** — clear only on `unable to authenticate` |
+| Sticky suppress only on real user abort | **Done** — not on scheduler/Ensure timeouts |
+| Catch-up / drain UX | **Missing (P1 UX-1.7)** |
 
 ---
 

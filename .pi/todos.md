@@ -1,5 +1,50 @@
 # Active Tasks
 
+## Current focus (2026-07-24) — `feat/reconnect-ux-p0`
+
+**Branch:** `feat/reconnect-ux-p0` (worktree: `../waveterm-remote-reconnect-ux-p0`)  
+**Base:** merged with `origin/main` (includes Promise.all new-tab fix)  
+**Tip (as of last session):** `f86644ed` and ancestors — **push if not yet on origin**
+
+Kitchen-sink branch covering reconnection UX P0 + password cold-start + new-tab dropdown polish. Specs: [[specs/reconnection-ux-backlog.md]], [[specs/reconnection.md]], [[specs/newtab-connect-dropdown.md]].
+
+### Done on this branch (code complete; retest after rebuild)
+
+| Area | Status | Notes |
+|------|--------|--------|
+| UX-0.1 Sticky suppress after Disconnect | Done | Per-conn `SuppressAutoReconnect` |
+| UX-0.2 Job-level overlay (conn up / session down) | Done | Confirmed: kill `wsh jobmanager --jobid …` |
+| UX-0.3 Attention heartbeat while tab visible | Done | 30s / 10s network; focus regain → Ensure |
+| UX-0.4 Permanent failures (known_hosts / host key) | Done | Confirmed with corrupted known_hosts |
+| UX-0.5 Stop auto-retry + password Cancel | Done + hardened | Hard-abort Stop; Cancel-all prompts per conn |
+| Password cold-start (defer interactive Ensure) | Done | No ~60s invisible prompt race |
+| Password cache across network flaps | Done | Only clear on true credential rejection |
+| Suppress only on real user abort | Done | Scheduler timeouts must not sticky-suppress |
+| Overlay copy "stopped" not "paused" | Done | |
+| New-tab typeahead + frecency | Done | Count on CreateTab only; Cmd-T toggle; no default selection |
+
+### Remaining test / ship checklist (user)
+
+**Must retest after latest commits (`c6540dbb`+`f86644ed`+`73349acd`):**
+
+1. **A2 Stop hard-abort** — Stop while "Attempt N — connecting…"; only **that** host stops; overlay says **stopped**; others keep retrying if down.
+2. **Network flap + cached password** — password host connected → bad network → auto-retry fails → good network → **silent reconnect, no password prompt**.
+3. **A3 Cancel** (regression) — two tabs same password host → Cancel once → no second dialog.
+4. **Sticky suppress after Stop** — intentional until **Reconnect**; after Reconnect, later network drops auto-heal again.
+5. **New-tab** C1–C12 if not finished (Cmd-T toggle, no default selection, frecency via new tabs not reconnects).
+
+**Confirmed earlier (optional smoke):** A4 known_hosts, A5 job kill overlay, password cold-start prompt speed, A3 cancel once.
+
+### Next engineering steps (after ship / if bugs)
+
+1. **Land branch** — push `feat/reconnect-ux-p0`, open PR → merge to `main` when tests pass.
+2. **P1 clarity** from [[specs/reconnection-ux-backlog.md]] (not blocking P0 ship): UX-1.1 post-give-up copy, UX-1.2 interactive idle overlay, UX-1.4 wrong-password feedback, UX-1.7 drain indicator, etc.
+3. **A6 optional polish** — reconnect retries while app unfocused is OK; focus regain already Ensures. Only if needed: do **not** set suppress on blur (already fixed). No keepalive changes.
+4. **Permanent-failure copy polish** — known_hosts error still shows raw Go path; friendlier message later.
+5. **Main workspace hygiene** — leftover untracked junk on `main` checkout (`.mimocode/`, `noclick_*`, etc.) is not part of this branch.
+
+---
+
 ## Phase 1: Dev Environment ✅
 
 - [x] Install Task (build runner)
@@ -306,28 +351,29 @@ Full VS Code SCM diff view feature analysis done on `~/project/vscode`. Source f
 
 ### Reconnection UX (production readiness)
 
-Spec: [[.pi/specs/reconnection-ux-backlog.md]]
+Spec: [[.pi/specs/reconnection-ux-backlog.md]] · Branch: `feat/reconnect-ux-p0`
 
-Backend reconnection is largely done; remaining work is user-visible recovery, honesty, and edge scenarios.
+Backend + **P0 product loop** implemented on the feature branch (see **Current focus** at top). Remaining is P1 clarity + optional polish.
 
-**P0 — Trust & recovery**
-- [ ] UX-0.1 Sticky suppress after user Disconnect
-- [ ] UX-0.2 Job-level status when conn up / session down
-- [ ] UX-0.3 Attention-bound recovery while dead tab is visible
-- [ ] UX-0.4 Permanent failures (host key, etc.) stop silent retry
-- [ ] UX-0.5 Cancel auto-retry + password Cancel semantics
+**P0 — Trust & recovery** (code on `feat/reconnect-ux-p0`; finish user retest then merge)
+- [x] UX-0.1 Sticky suppress after user Disconnect
+- [x] UX-0.2 Job-level status when conn up / session down
+- [x] UX-0.3 Attention-bound recovery while dead tab is visible
+- [x] UX-0.4 Permanent failures (host key, etc.) stop silent retry
+- [x] UX-0.5 Cancel auto-retry + password Cancel semantics (+ hard-abort Stop; cancel-all prompts per conn)
+- [x] Hardening: no sticky suppress on scheduler timeouts; password cache survives network flaps
 
-**P1 — Clarity** (see full spec for acceptance criteria)
+**P1 — Clarity** (see full spec for acceptance criteria) — **next after merge**
 - [ ] UX-1.1 Post-give-up / early-stop overlay copy
 - [ ] UX-1.2 Interactive-auth idle overlay
 - [ ] UX-1.3 Stalled overlay heal-first actions
 - [ ] UX-1.4 Wrong-password prompt feedback
-- [ ] UX-1.5 Session gone CTA
-- [ ] UX-1.6 Multi-connection password queue UX
+- [ ] UX-1.5 Session gone CTA polish (basic CTA already in job overlay)
+- [ ] UX-1.6 Multi-connection password queue UX (serialization done; queue UX polish optional)
 - [ ] UX-1.7 Disk drain / catch-up indicator
 - [ ] UX-1.8 Passphrase vs password prompt strings
 
-**Ship gate:** all P0 + UX-1.1, 1.2, 1.5 + QA matrix Q1–Q12 in the backlog spec.
+**Ship gate (updated):** P0 code complete on branch → user retest matrix (Current focus) → merge. P1 not required for first land of P0.
 
 ### Agent Orchestration API
 
@@ -403,32 +449,19 @@ Backend reconnection is largely done; remaining work is user-visible recovery, h
 
 ## New-Tab Connection Dropdown (typeahead + frecency)
 
-Spec: [[.pi/specs/newtab-connect-dropdown.md]]
+Spec: [[.pi/specs/newtab-connect-dropdown.md]] · **Implemented on `feat/reconnect-ux-p0`**
 
 ### Backend
-- [ ] Add `ConnectCount int64` to `ConnController` struct (`pkg/remote/conncontroller/conncontroller.go`)
-- [ ] Increment `ConnectCount` on successful connect (~line 938) and persist via `wconfig.SetConnectionsConfigValue("conn:connectcount")`
-- [ ] Load `ConnectCount` from `connections.json` at connection init
-- [ ] Add `ConnectCount`/`LastConnectTime` to `ConnStatus` (`pkg/wshrpc/wshrpctypes.go`); populate in `DeriveConnStatus`
-- [ ] Add `ConnConnectCount`/`ConnLastConnectTime` to `ConnKeywords` (`pkg/wconfig/settingsconfig.go`)
-- [ ] Go unit tests: `frecencyScore` table-driven; `DeriveConnStatus` exposes new fields; persistence round-trip
+- [x] `ConnectCount` / `LastConnectTime` on conn + `ConnStatus`; persist count
+- [x] Count via `RecordConnectionUsage` on **CreateTab** (not every SSH Connect)
+- [x] Go tests for status fields / usage / classification
 
 ### Frontend
-- [ ] Create `frontend/app/modals/conn-suggestions.ts` (shared: `filterConnections` case-insensitive, `sortConnSuggestionItems` frecency, `buildNewTabSuggestions`, `getConnectionsEditItem`, `getNewConnectionSuggestionItem`)
-- [ ] Rewrite `frontend/app/tab/connectiondropdown.tsx` → `NewTabConnTypeahead` (input, filter, ↑/↓/Enter/Esc, portal to body, anchor to `+` ref)
-- [ ] Add `newTabDropdownOpenAtom` to `frontend/app/store/global-atoms.ts`
-- [ ] `frontend/app/store/keymodel.ts`: `Cmd:t` sets `newTabDropdownOpenAtom` instead of `createTab()`
-- [ ] `frontend/app/tab/tabbar.tsx`: replace `showConnectionDropdown` state with atom; render `NewTabConnTypeahead`
-- [ ] `frontend/app/tab/vtabbar.tsx`: same changes as `tabbar.tsx`
-- [ ] `frontend/app/modals/conntypeahead.tsx`: import shared helpers; remove `getDisconnectItem`; case-insensitive filter
+- [x] `conn-suggestions.ts` + `NewTabConnTypeahead` (filter, ↑/↓/Enter/Esc, portal)
+- [x] `newTabDropdownOpenAtom`; Cmd-T **toggles**; no default selection; filter placeholder
+- [x] tabbar + vtabbar wiring; shared helpers in conntypeahead
 
-### Manual verification
-- [ ] Frecency ordering (count × recency) ranks most-used/recent on top
-- [ ] `ConnectCount` survives restart (persisted in `connections.json`)
-- [ ] Cold start falls back to `display:order` → name (deterministic)
-- [ ] Typing filters case-insensitively; Enter selects top match (no accidental New Connection)
-- [ ] No-match: New Connection shown but NOT highlighted; explicit ↓ required to select it
-- [ ] `Cmd-t` and `+` click both open dropdown with input focused
-- [ ] Edit Connections in `+` dropdown opens `connections.json` in current tab
-- [ ] Edit Connections + Disconnect removed from block-header dropdown; Reconnect kept
-- [ ] Vertical tab bar parity with horizontal tab bar
+### Manual verification (finish on branch before merge)
+- [ ] Cmd-T open/close; nothing selected by default; Enter guard + New Connection ↓
+- [ ] Remote list populated; frecency rises from **new tabs** not password restarts
+- [ ] Vertical tab bar parity if used
