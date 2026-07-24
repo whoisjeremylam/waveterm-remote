@@ -456,7 +456,8 @@ export const ConnStatusOverlay = React.memo(
         }, [width, connStatus, setShowError]);
 
         React.useEffect(() => {
-            const isDurable = termConfigedDurable !== false;
+            // Strict durable: null/undefined is not durable (avoids overlay on standard shells).
+            const isDurable = termConfigedDurable === true;
             const connUp = connStatus?.status === "connected" && connStatus?.connhealthstatus !== "stalled";
             if (!isDurable || !connUp || !termDurableStatus) {
                 jobDisconnectedSinceRef.current = null;
@@ -475,7 +476,14 @@ export const ConnStatusOverlay = React.memo(
                 setJobOverlayMode("gone");
                 return;
             }
-            if (status === "disconnected" || status === "init") {
+            // init: show reconnecting, never auto-promote to failed (slow start is normal).
+            if (status === "init") {
+                jobDisconnectedSinceRef.current = null;
+                setJobOverlayMode("reconnecting");
+                return;
+            }
+            // disconnected: grace timer, then failed + Retry.
+            if (status === "disconnected") {
                 if (jobDisconnectedSinceRef.current == null) {
                     jobDisconnectedSinceRef.current = Date.now();
                 }
@@ -492,6 +500,8 @@ export const ConnStatusOverlay = React.memo(
         }, [connStatus?.status, connStatus?.connhealthstatus, termDurableStatus, termConfigedDurable]);
 
         // Tick job grace period so reconnecting → failed transitions without new events.
+        // Only promotes when grace timer was started for status === "disconnected"
+        // (jobDisconnectedSinceRef is set); init never arms the timer.
         React.useEffect(() => {
             if (jobOverlayMode !== "reconnecting") {
                 return;
@@ -623,9 +633,14 @@ export const ConnStatusOverlay = React.memo(
             canAutoReconnect && connStatus.status == "connecting" && (connStatus.reconnectattempt ?? 0) > 0;
         const showCountdown =
             canAutoReconnect && connStatus.status == "disconnected" && (connStatus.reconnectnextattempt ?? 0) > 0;
+        // Disconnected-style overlay: plain disconnect, permanent host-key, or
+        // suppress-on-error (password Cancel / Stop / permanent) so users see
+        // "Auto-retry paused — click Reconnect" instead of a raw error shell.
         const showDisconnected =
             (connStatus.status == "disconnected" && !connStatus.connected) ||
-            (connStatus.status == "error" && !!permanentErrorTitle(connStatus.errorcode));
+            !!permanentErrorTitle(connStatus.errorcode) ||
+            (!!connStatus.suppressautoreconnect &&
+                (connStatus.status == "error" || connStatus.status == "disconnected"));
 
         // Hide status overlay when a password prompt is active for this connection
         // and not dismissed on this tab

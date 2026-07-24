@@ -6,6 +6,7 @@ package jobcontroller
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -171,6 +172,10 @@ const ConnReconnectAggressiveDuration    = 2 * time.Minute
 func InitJobController() {
 	go connReconcileWorker()
 	go jobPruningWorker()
+
+	// Stop reconnect scheduler whenever user Disconnect or Stop auto-retry
+	// sets suppress — avoids import cycle (conncontroller cannot import us).
+	conncontroller.OnUserSuppressAutoReconnect = StopReconnectScheduler
 
 	rpcClient := wshclient.GetBareRpcClient()
 	rpcClient.EventListener.On(wps.Event_RouteUp, handleRouteUpEvent)
@@ -1008,6 +1013,17 @@ func scheduleConnectionReconnect(connName string) {
 			err := conncontroller.AttemptReconnect(ctx, connName)
 			cancelFn()
 			attemptDuration := time.Since(attemptStart)
+
+			// H1: user may Disconnect / Stop auto-retry *during* the attempt.
+			// Close/Pause clear reconnect UI state, but a concurrent failure
+			// must not call updateRetryState and re-arm the countdown while
+			// suppress is set. Check both the flag and the sentinel error.
+			if conncontroller.IsSuppressAutoReconnectByName(connName) || errors.Is(err, conncontroller.ErrAutoReconnectSuppressed) {
+				log.Printf("[conn:%s] auto-reconnect suppressed after attempt (duration=%v, err=%v), stopping scheduler", connName, attemptDuration, err)
+				clearRetryState(connName)
+				return
+			}
+
 			if err != nil {
 				isNetErr := isNetworkUnreachableError(err)
 				log.Printf("[conn:%s] scheduler attempt failed in %v (net-unreachable=%v): %v", connName, attemptDuration, isNetErr, err)
@@ -1030,13 +1046,6 @@ func scheduleConnectionReconnect(connName string) {
 					clearRetryState(connName)
 					return
 				}
-				// Auto-reconnect suppressed (user Disconnect mid-attempt, or
-				// AttemptReconnect returned the suppress error).
-				if strings.Contains(err.Error(), "auto-reconnect suppressed") {
-					log.Printf("[conn:%s] auto-reconnect suppressed during attempt, stopping scheduler", connName)
-					clearRetryState(connName)
-					return
-				}
 				// Early termination: connection-refused means the server is
 				// reachable but the SSH service is not accepting connections
 				// (port closed, daemon stopped, firewall rejecting). Retrying
@@ -1044,6 +1053,14 @@ func scheduleConnectionReconnect(connName string) {
 				// on the next tab switch / app focus when the user returns.
 				if errorCode == remote.ConnErrCode_Dial && errorSubCode == remote.DialSubCode_Refused {
 					log.Printf("[conn:%s] connection refused during reconnect, stopping scheduler (server not accepting connections)", connName)
+					clearRetryState(connName)
+					return
+				}
+
+				// Final suppress re-check before re-arming countdown (race
+				// between classification and updateRetryState).
+				if conncontroller.IsSuppressAutoReconnectByName(connName) {
+					log.Printf("[conn:%s] auto-reconnect suppressed before updateRetryState, stopping scheduler", connName)
 					clearRetryState(connName)
 					return
 				}

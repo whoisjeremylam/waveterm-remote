@@ -83,6 +83,18 @@ var connectInternalTestHook func(conn *SSHConn, ctx context.Context, connFlags *
 // test hook for getConnectionConfig — allows mocking per-connection settings in tests
 var getConnectionConfigTestHook func(conn *SSHConn) (wconfig.ConnKeywords, bool)
 
+// ErrAutoReconnectSuppressed is returned by AttemptReconnect when the sticky
+// SuppressAutoReconnect flag is set (user Disconnect, Stop auto-retry, password
+// Cancel, or permanent failure). Callers must treat this as a clean stop, not a
+// transient dial failure — do not re-arm reconnect countdown UI.
+var ErrAutoReconnectSuppressed = errors.New("auto-reconnect suppressed")
+
+// OnUserSuppressAutoReconnect is invoked after user-initiated suppress is set
+// (Close / Disconnect, PauseAutoReconnect). jobcontroller registers
+// StopReconnectScheduler here to avoid an import cycle (conncontroller must
+// not import jobcontroller). Nil-safe; optional.
+var OnUserSuppressAutoReconnect func(connName string)
+
 type SSHConn struct {
 	lock          *sync.Mutex // this lock protects the fields in the struct from concurrent access
 	lifecycleLock *sync.Mutex // this protects the lifecycle from concurrent calls
@@ -306,6 +318,11 @@ func (conn *SSHConn) closeInternal(clearPassword bool) error {
 	// Fire event BEFORE closeInternal_withlifecyclelock so the UI updates
 	// even if client.Close() blocks on a dead network connection.
 	conn.FireConnChangeEvent()
+	// Stop reconnect scheduler via registered callback (jobcontroller). Covers
+	// Close, DisconnectClient, ConnDisconnectCommand without import cycle.
+	if clearPassword && OnUserSuppressAutoReconnect != nil {
+		OnUserSuppressAutoReconnect(conn.GetName())
+	}
 	conn.closeInternal_withlifecyclelock(nil)
 	return nil
 }
@@ -337,6 +354,9 @@ func (conn *SSHConn) PauseAutoReconnect() {
 		conn.ReconnectError = ""
 	})
 	conn.FireConnChangeEvent()
+	if OnUserSuppressAutoReconnect != nil {
+		OnUserSuppressAutoReconnect(conn.GetName())
+	}
 }
 
 // ClearSuppressAutoReconnect clears the sticky suppress flag. Called at the
@@ -2167,8 +2187,10 @@ func EnsureConnection(ctx context.Context, connName string) error {
 }
 
 // AttemptReconnect tries to reconnect a disconnected or errored connection by name.
-// Returns nil if already connected or local. Returns error if connection does not exist or connect fails.
-// No-ops (returns nil) when SuppressAutoReconnect is set so the scheduler exits cleanly.
+// Returns nil if already connected or local. Returns error if connection does not
+// exist or connect fails. When SuppressAutoReconnect is set, returns
+// ErrAutoReconnectSuppressed (clean stop — do not treat as a transient failure
+// or re-arm countdown UI).
 func AttemptReconnect(ctx context.Context, connName string) error {
 	if IsLocalConnName(connName) {
 		return nil
@@ -2182,8 +2204,8 @@ func AttemptReconnect(ctx context.Context, connName string) error {
 		return fmt.Errorf("connection %q does not exist", connName)
 	}
 	if conn.IsSuppressAutoReconnect() {
-		log.Printf("[conn:%s] AttemptReconnect: auto-reconnect suppressed, no-op", connName)
-		return fmt.Errorf("auto-reconnect suppressed")
+		log.Printf("[conn:%s] AttemptReconnect: auto-reconnect suppressed", connName)
+		return ErrAutoReconnectSuppressed
 	}
 	status := conn.GetStatus()
 	if status == Status_Connected {
@@ -2210,13 +2232,14 @@ func IsSuppressAutoReconnectByName(connName string) bool {
 	return conn.IsSuppressAutoReconnect()
 }
 
+// DisconnectClient performs a user-initiated disconnect (Close). Suppress is
+// set and OnUserSuppressAutoReconnect (scheduler stop) runs from Close.
 func DisconnectClient(opts *remote.SSHOpts) error {
 	conn := getConnInternal(opts, false)
 	if conn == nil {
 		return fmt.Errorf("client %q not found", opts.String())
 	}
-	err := conn.Close()
-	return err
+	return conn.Close()
 }
 
 func resolveSshConfigPatterns(configFiles []string) ([]string, error) {

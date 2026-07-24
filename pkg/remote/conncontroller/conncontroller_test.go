@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1824,7 +1825,8 @@ func TestEnsureConnection_NoopWhenSuppressed(t *testing.T) {
 	}
 }
 
-// TestAttemptReconnect_ErrorsWhenSuppressed.
+// TestAttemptReconnect_ErrorsWhenSuppressed verifies AttemptReconnect returns
+// ErrAutoReconnectSuppressed (sentinel) when suppress is set — H2.
 func TestAttemptReconnect_ErrorsWhenSuppressed(t *testing.T) {
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
@@ -1834,8 +1836,92 @@ func TestAttemptReconnect_ErrorsWhenSuppressed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from suppressed AttemptReconnect")
 	}
-	if err.Error() != "auto-reconnect suppressed" {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrAutoReconnectSuppressed) {
+		t.Fatalf("expected errors.Is(err, ErrAutoReconnectSuppressed), got %v", err)
+	}
+}
+
+// TestPauseAutoReconnect_ClearsReconnectStateAfterSimulatedAttempt (H1/M2):
+// after a failed attempt sets countdown state, Pause must clear it and keep
+// it clear (suppress blocks CanAutoReconnect / further auto attempts).
+func TestPauseAutoReconnect_ClearsReconnectStateAfterSimulatedAttempt(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.cachePassword("still-here")
+
+	// Simulate scheduler mid-failure writing countdown state.
+	conn.SetReconnectState(2, time.Now().Add(5*time.Second).UnixMilli(), "dial timeout")
+	status := conn.DeriveConnStatus()
+	if status.ReconnectAttempt != 2 || status.ReconnectNextAttempt == 0 {
+		t.Fatalf("precondition: expected reconnect countdown state, got attempt=%d next=%d",
+			status.ReconnectAttempt, status.ReconnectNextAttempt)
+	}
+
+	conn.PauseAutoReconnect()
+
+	// After pause: suppress on, countdown cleared, password kept.
+	status = conn.DeriveConnStatus()
+	if !status.SuppressAutoReconnect {
+		t.Fatal("expected suppress after Pause")
+	}
+	if status.ReconnectAttempt != 0 || status.ReconnectNextAttempt != 0 || status.ReconnectError != "" {
+		t.Fatalf("expected reconnect state cleared after Pause, got attempt=%d next=%d err=%q",
+			status.ReconnectAttempt, status.ReconnectNextAttempt, status.ReconnectError)
+	}
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false after Pause")
+	}
+	if pw := conn.getCachedPassword(); pw == nil || *pw != "still-here" {
+		t.Fatal("expected password preserved after Pause")
+	}
+
+	// AttemptReconnect must return the sentinel (scheduler clean-stop path).
+	err := AttemptReconnect(context.Background(), conn.GetName())
+	if !errors.Is(err, ErrAutoReconnectSuppressed) {
+		t.Fatalf("expected ErrAutoReconnectSuppressed after Pause, got %v", err)
+	}
+	// Reconnect state must still be clear after the suppressed attempt.
+	status = conn.DeriveConnStatus()
+	if status.ReconnectAttempt != 0 || status.ReconnectNextAttempt != 0 {
+		t.Fatalf("reconnect state re-armed after suppressed AttemptReconnect: attempt=%d next=%d",
+			status.ReconnectAttempt, status.ReconnectNextAttempt)
+	}
+}
+
+// TestClose_InvokesOnUserSuppressCallback (M1): Close fires the registered
+// callback so jobcontroller can stop the scheduler without an import cycle.
+func TestClose_InvokesOnUserSuppressCallback(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	var calledName string
+	prev := OnUserSuppressAutoReconnect
+	OnUserSuppressAutoReconnect = func(name string) { calledName = name }
+	defer func() { OnUserSuppressAutoReconnect = prev }()
+
+	conn.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if calledName != conn.GetName() {
+		t.Fatalf("expected OnUserSuppressAutoReconnect(%q), got %q", conn.GetName(), calledName)
+	}
+}
+
+// TestCloseInvoluntary_DoesNotInvokeOnUserSuppressCallback.
+func TestCloseInvoluntary_DoesNotInvokeOnUserSuppressCallback(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	called := false
+	prev := OnUserSuppressAutoReconnect
+	OnUserSuppressAutoReconnect = func(name string) { called = true }
+	defer func() { OnUserSuppressAutoReconnect = prev }()
+
+	conn.CloseInvoluntary()
+	time.Sleep(50 * time.Millisecond)
+
+	if called {
+		t.Fatal("CloseInvoluntary must not invoke OnUserSuppressAutoReconnect")
 	}
 }
 
