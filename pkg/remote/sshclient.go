@@ -527,6 +527,11 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 		response, err := userinput.GetUserInput(ctx, request)
 		if err != nil {
 			blocklogger.Infof(connCtx, "[conndebug] ERROR Password Authentication failed: %v\n", SimpleMessageFromPossibleConnectionError(err))
+			// Tag timeouts so Connect can re-prompt (ClassifyConnError would otherwise
+			// treat "timed out waiting for user input" as a dial error).
+			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "timed out") {
+				return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: utilds.MakeCodedError(ConnErrCode_UserTimeout, err)}
+			}
 			return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
 		}
 		blocklogger.Infof(connCtx, "[conndebug] got password from user, sending to ssh\n")

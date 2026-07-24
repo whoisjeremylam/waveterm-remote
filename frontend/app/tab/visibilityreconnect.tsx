@@ -78,10 +78,14 @@ export const VisibilityReconnectHandler = React.memo(
                 if (!connStatus) {
                     continue;
                 }
-                // Only reconnect if disconnected or errored. "connecting" and
-                // "connected" are left alone — EnsureConnection would no-op
-                // anyway, but skipping avoids unnecessary RPC noise.
-                if (connStatus.status !== "disconnected" && connStatus.status !== "error") {
+                // Reconnect when not connected. Include "init" (controller exists
+                // but never connected this process) and the frontend default
+                // "disconnected" for hosts not yet in ConnStatus. Skip only
+                // "connecting" (handshake in flight) and "connected".
+                // Interactive password hosts are deferred from server startup
+                // until this UI path so GetUserInput runs after userinput is
+                // subscribed — avoids the ~60s invisible prompt race.
+                if (connStatus.status === "connected" || connStatus.status === "connecting") {
                     continue;
                 }
                 // UX-0.1 / UX-0.5: sticky suppress after user Disconnect, Stop

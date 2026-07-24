@@ -1042,6 +1042,12 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 			// buffer model means the prompt stays visible until the user acts.
 			go conn.requestPasswordRePrompt()
 		}
+		// User-input timeout (prompt never answered — typically UI not ready at
+		// cold start): re-prompt independently so the user is not stuck waiting
+		// for a tab switch after the 60s GetUserInput deadline.
+		if errorCode == remote.ConnErrCode_UserTimeout {
+			go conn.requestPasswordRePrompt()
+		}
 		conn.closeInternal_withlifecyclelock(nil)
 	} else {
 		conn.Infof(ctx, "successfully connected (wsh:%v)\n\n", conn.WshEnabled.Load())
@@ -1289,6 +1295,25 @@ func (conn *SSHConn) canReconnectWithoutPromptLocked() bool {
 		// settings (batch mode, password secret, preferred auth) are respected.
 		return conn.canReconnectFromKeywordsOrPubkey()
 	}
+}
+
+// ForceAuthPromptNoneForTest marks a connection as last-connected without an
+// interactive prompt. Used by startup reconnect tests so EnsureConnection is
+// not deferred by the interactive-auth cold-start path.
+func ForceAuthPromptNoneForTest(conn *SSHConn) {
+	if conn == nil {
+		return
+	}
+	conn.authPromptState.Store(authPromptNone)
+}
+
+// ForceAuthPromptUsedForTest marks a connection as needing an interactive prompt
+// (password/passphrase). Used by tests of the deferred-startup path.
+func ForceAuthPromptUsedForTest(conn *SSHConn) {
+	if conn == nil {
+		return
+	}
+	conn.authPromptState.Store(authPromptUsed)
 }
 
 // seedAuthPromptStateFromConfig_nolock loads conn:authpromptused from
