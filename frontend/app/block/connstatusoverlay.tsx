@@ -52,6 +52,50 @@ function formatCountdown(nextAttemptMs: number): string {
     return `${remaining}s`;
 }
 
+const PERMANENT_HOSTKEY_CODES = new Set(["hostkey-changed", "hostkey-revoked", "hostkey-verify"]);
+const PERMANENT_KNOWNHOSTS_CODES = new Set(["knownhosts-none", "knownhosts-format"]);
+
+function permanentErrorTitle(errorCode?: string): string | null {
+    if (!errorCode) {
+        return null;
+    }
+    if (PERMANENT_HOSTKEY_CODES.has(errorCode)) {
+        return "Host key verification failed";
+    }
+    if (PERMANENT_KNOWNHOSTS_CODES.has(errorCode)) {
+        return "known_hosts problem";
+    }
+    if (errorCode === "config-parse" || errorCode === "config-default") {
+        return "SSH config error";
+    }
+    return null;
+}
+
+function permanentErrorHint(errorCode?: string): string | null {
+    if (!errorCode) {
+        return null;
+    }
+    if (errorCode === "hostkey-changed") {
+        return "The remote host key has changed. This can mean the server was reinstalled — or a MITM attack. Update your known_hosts only if you trust this change. Auto-retry is stopped.";
+    }
+    if (errorCode === "hostkey-revoked") {
+        return "The remote host key has been revoked. Auto-retry is stopped.";
+    }
+    if (errorCode === "hostkey-verify") {
+        return "Could not verify the remote host key. Auto-retry is stopped.";
+    }
+    if (PERMANENT_KNOWNHOSTS_CODES.has(errorCode)) {
+        return "Check your known_hosts file configuration. Auto-retry is stopped.";
+    }
+    if (errorCode === "config-parse" || errorCode === "config-default") {
+        return "Fix your SSH configuration, then click Reconnect. Auto-retry is stopped.";
+    }
+    return null;
+}
+
+const overlayShellClass =
+    "@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90";
+
 const StalledOverlay = React.memo(
     ({
         connName,
@@ -89,10 +133,7 @@ const StalledOverlay = React.memo(
         }, [connStatus.lastactivitybeforestalledtime]);
 
         return (
-            <div
-                className="@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90"
-                ref={overlayRefCallback}
-            >
+            <div className={overlayShellClass} ref={overlayRefCallback}>
                 <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i
                         className="fa-solid fa-triangle-exclamation text-warning text-base shrink-0"
@@ -118,20 +159,36 @@ const StalledOverlay = React.memo(
 );
 StalledOverlay.displayName = "StalledOverlay";
 
+const StopAutoRetryButton = React.memo(({ onStop, compact }: { onStop: () => void; compact?: boolean }) => (
+    <Button
+        className="outlined grey text-[11px] py-[3px] px-[7px] @max-w350:text-[12px] @max-w350:py-[5px] @max-w350:px-[6px]"
+        onClick={onStop}
+        title="Stop auto-retry"
+    >
+        <span className="@max-w350:hidden!">{compact ? "Stop" : "Stop auto-retry"}</span>
+        <i className="fa-solid fa-hand hidden! @max-w350:inline!"></i>
+    </Button>
+));
+StopAutoRetryButton.displayName = "StopAutoRetryButton";
+
 const DisconnectedOverlay = React.memo(
     ({
         connName,
         connStatus,
         overlayRefCallback,
         onReconnect,
+        onStopAutoRetry,
     }: {
         connName: string;
         connStatus: ConnStatus;
         overlayRefCallback: (el: HTMLDivElement | null) => void;
         onReconnect: () => void;
+        onStopAutoRetry?: () => void;
     }) => {
         const [countdown, setCountdown] = React.useState<string>("");
         const hasCountdown = connStatus.reconnectnextattempt && connStatus.reconnectnextattempt > 0;
+        const permanentTitle = permanentErrorTitle(connStatus.errorcode);
+        const permanentHint = permanentErrorHint(connStatus.errorcode);
 
         React.useEffect(() => {
             if (!hasCountdown) {
@@ -146,32 +203,61 @@ const DisconnectedOverlay = React.memo(
         }, [connStatus.reconnectnextattempt, hasCountdown]);
 
         return (
-            <div
-                className="@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90"
-                ref={overlayRefCallback}
-            >
+            <div className={overlayShellClass} ref={overlayRefCallback}>
                 <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
-                    <i className="fa-solid fa-link-slash text-error text-base shrink-0" title="Disconnected"></i>
-                    <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
-                        <div>Disconnected from "{connName}"</div>
-                        {connStatus.error && (
-                            <div className="text-[10px] text-white/70 mt-0.5 truncate">{connStatus.error}</div>
+                    <i
+                        className={clsx(
+                            "text-base shrink-0",
+                            permanentTitle ? "fa-solid fa-shield-halved text-error" : "fa-solid fa-link-slash text-error"
                         )}
-                        {hasCountdown && countdown !== "now" && (
-                            <div className="text-[10px] text-white/70 mt-0.5">
-                                Auto-retrying in {countdown}
-                            </div>
+                        title={permanentTitle ?? "Disconnected"}
+                    ></i>
+                    <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
+                        {permanentTitle ? (
+                            <>
+                                <div>
+                                    {permanentTitle} — "{connName}"
+                                </div>
+                                {permanentHint && (
+                                    <div className="text-[10px] text-white/70 mt-0.5">{permanentHint}</div>
+                                )}
+                                {connStatus.error && (
+                                    <div className="text-[10px] text-white/50 mt-0.5 truncate">{connStatus.error}</div>
+                                )}
+                            </>
+                        ) : (
+                            <>
+                                <div>Disconnected from "{connName}"</div>
+                                {connStatus.error && (
+                                    <div className="text-[10px] text-white/70 mt-0.5 truncate">{connStatus.error}</div>
+                                )}
+                                {hasCountdown && countdown !== "now" && (
+                                    <div className="text-[10px] text-white/70 mt-0.5">
+                                        Auto-retrying in {countdown}
+                                    </div>
+                                )}
+                                {connStatus.suppressautoreconnect && !hasCountdown && (
+                                    <div className="text-[10px] text-white/70 mt-0.5">
+                                        Auto-retry paused — click Reconnect when ready
+                                    </div>
+                                )}
+                            </>
                         )}
                     </div>
                     <div className="flex-1 hidden @max-xxs:block"></div>
-                    <Button
-                        className="outlined grey text-[11px] py-[3px] px-[7px] @max-w350:text-[12px] @max-w350:py-[5px] @max-w350:px-[6px]"
-                        onClick={onReconnect}
-                        title="Reconnect now"
-                    >
-                        <span className="@max-w350:hidden!">Reconnect</span>
-                        <i className="fa-solid fa-rotate-right hidden! @max-w350:inline!"></i>
-                    </Button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        {onStopAutoRetry && hasCountdown && !permanentTitle && (
+                            <StopAutoRetryButton onStop={onStopAutoRetry} compact />
+                        )}
+                        <Button
+                            className="outlined grey text-[11px] py-[3px] px-[7px] @max-w350:text-[12px] @max-w350:py-[5px] @max-w350:px-[6px]"
+                            onClick={onReconnect}
+                            title="Reconnect now"
+                        >
+                            <span className="@max-w350:hidden!">Reconnect</span>
+                            <i className="fa-solid fa-rotate-right hidden! @max-w350:inline!"></i>
+                        </Button>
+                    </div>
                 </div>
             </div>
         );
@@ -184,22 +270,22 @@ const RetryingOverlay = React.memo(
         connName,
         attempt,
         overlayRefCallback,
+        onStopAutoRetry,
     }: {
         connName: string;
         attempt: number;
         overlayRefCallback: (el: HTMLDivElement | null) => void;
+        onStopAutoRetry?: () => void;
     }) => {
         return (
-            <div
-                className="@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90"
-                ref={overlayRefCallback}
-            >
+            <div className={overlayShellClass} ref={overlayRefCallback}>
                 <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i className="fa-solid fa-spinner fa-spin text-warning text-base shrink-0" title="Connecting"></i>
                     <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
                         Attempt {attempt} — connecting to "{connName}"…
                     </div>
                     <div className="flex-1 hidden @max-xxs:block"></div>
+                    {onStopAutoRetry && <StopAutoRetryButton onStop={onStopAutoRetry} compact />}
                 </div>
             </div>
         );
@@ -213,11 +299,13 @@ const CountdownOverlay = React.memo(
         connStatus,
         overlayRefCallback,
         onReconnectNow,
+        onStopAutoRetry,
     }: {
         connName: string;
         connStatus: ConnStatus;
         overlayRefCallback: (el: HTMLDivElement | null) => void;
         onReconnectNow: () => void;
+        onStopAutoRetry?: () => void;
     }) => {
         const [countdown, setCountdown] = React.useState<string>("");
 
@@ -234,10 +322,7 @@ const CountdownOverlay = React.memo(
         }, [connStatus.reconnectnextattempt]);
 
         return (
-            <div
-                className="@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90"
-                ref={overlayRefCallback}
-            >
+            <div className={overlayShellClass} ref={overlayRefCallback}>
                 <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i className="fa-solid fa-clock text-grey-text text-base shrink-0" title="Waiting to retry"></i>
                     <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
@@ -246,25 +331,93 @@ const CountdownOverlay = React.memo(
                                 Last attempt failed: {connStatus.reconnecterror}
                             </div>
                         )}
-                        <div>
-                            {countdown === "now" ? "Retrying now…" : `Retrying in ${countdown}`}
-                        </div>
+                        <div>{countdown === "now" ? "Retrying now…" : `Retrying in ${countdown}`}</div>
                     </div>
                     <div className="flex-1 hidden @max-xxs:block"></div>
-                    <Button
-                        className="outlined grey text-[11px] py-[3px] px-[7px] @max-w350:text-[12px] @max-w350:py-[5px] @max-w350:px-[6px]"
-                        onClick={onReconnectNow}
-                        title="Reconnect now"
-                    >
-                        <span className="@max-w350:hidden!">Reconnect now</span>
-                        <i className="fa-solid fa-rotate-right hidden! @max-w350:inline!"></i>
-                    </Button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        {onStopAutoRetry && <StopAutoRetryButton onStop={onStopAutoRetry} compact />}
+                        <Button
+                            className="outlined grey text-[11px] py-[3px] px-[7px] @max-w350:text-[12px] @max-w350:py-[5px] @max-w350:px-[6px]"
+                            onClick={onReconnectNow}
+                            title="Reconnect now"
+                        >
+                            <span className="@max-w350:hidden!">Reconnect now</span>
+                            <i className="fa-solid fa-rotate-right hidden! @max-w350:inline!"></i>
+                        </Button>
+                    </div>
                 </div>
             </div>
         );
     }
 );
 CountdownOverlay.displayName = "CountdownOverlay";
+
+/** UX-0.2: conn is up but durable job/session is not healthy. */
+const JobSessionOverlay = React.memo(
+    ({
+        mode,
+        overlayRefCallback,
+        onRetrySession,
+        onStartNewSession,
+    }: {
+        mode: "reconnecting" | "failed" | "gone";
+        overlayRefCallback: (el: HTMLDivElement | null) => void;
+        onRetrySession?: () => void;
+        onStartNewSession?: () => void;
+    }) => {
+        let icon = "fa-solid fa-spinner fa-spin text-warning";
+        let title = "Reconnecting session…";
+        let detail: string | null = "SSH is connected; restoring the durable terminal session.";
+        if (mode === "failed") {
+            icon = "fa-solid fa-triangle-exclamation text-error";
+            title = "Session reconnect failed";
+            detail = "The host is connected, but the durable session could not be restored.";
+        } else if (mode === "gone") {
+            icon = "fa-solid fa-ghost text-error";
+            title = "Remote session ended";
+            detail =
+                "The durable session is no longer running on the remote host (reboot or process exit). Start a new durable session to continue.";
+        }
+
+        return (
+            <div className={overlayShellClass} ref={overlayRefCallback}>
+                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
+                    <i className={clsx(icon, "text-base shrink-0")} title={title}></i>
+                    <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
+                        <div>{title}</div>
+                        {detail && <div className="text-[10px] text-white/70 mt-0.5">{detail}</div>}
+                    </div>
+                    <div className="flex-1 hidden @max-xxs:block"></div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        {mode === "failed" && onRetrySession && (
+                            <Button
+                                className="outlined grey text-[11px] py-[3px] px-[7px]"
+                                onClick={onRetrySession}
+                                title="Retry session reconnect"
+                            >
+                                Retry
+                            </Button>
+                        )}
+                        {mode === "gone" && onStartNewSession && (
+                            <Button
+                                className="outlined grey text-[11px] py-[3px] px-[7px]"
+                                onClick={onStartNewSession}
+                                title="Start new durable session"
+                            >
+                                <span className="@max-w350:hidden!">Start new durable session</span>
+                                <i className="fa-solid fa-shield hidden! @max-w350:inline! text-sky-500"></i>
+                            </Button>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+);
+JobSessionOverlay.displayName = "JobSessionOverlay";
+
+/** How long job may stay "disconnected" after conn is up before showing "failed". */
+const JOB_RECONNECT_GRACE_MS = 20_000;
 
 export const ConnStatusOverlay = React.memo(
     ({
@@ -288,6 +441,12 @@ export const ConnStatusOverlay = React.memo(
             jotai.useAtomValue(waveEnv.getConnConfigKeyAtom(connName, "conn:wshenabled")) ?? true;
         const [showWshError, setShowWshError] = React.useState(false);
 
+        // UX-0.2 job-level status (durable session)
+        const termDurableStatus = util.useAtomValueSafe(viewModel?.termDurableStatus);
+        const termConfigedDurable = util.useAtomValueSafe(viewModel?.termConfigedDurable);
+        const jobDisconnectedSinceRef = React.useRef<number | null>(null);
+        const [jobOverlayMode, setJobOverlayMode] = React.useState<"reconnecting" | "failed" | "gone" | null>(null);
+
         React.useEffect(() => {
             if (width) {
                 const hasError = !util.isBlank(connStatus.error);
@@ -295,6 +454,58 @@ export const ConnStatusOverlay = React.memo(
                 setShowError(showError);
             }
         }, [width, connStatus, setShowError]);
+
+        React.useEffect(() => {
+            const isDurable = termConfigedDurable !== false;
+            const connUp = connStatus?.status === "connected" && connStatus?.connhealthstatus !== "stalled";
+            if (!isDurable || !connUp || !termDurableStatus) {
+                jobDisconnectedSinceRef.current = null;
+                setJobOverlayMode(null);
+                return;
+            }
+            const status = termDurableStatus.status;
+            const doneReason = termDurableStatus.donereason;
+            if (status === "connected") {
+                jobDisconnectedSinceRef.current = null;
+                setJobOverlayMode(null);
+                return;
+            }
+            if (status === "done" && doneReason === "gone") {
+                jobDisconnectedSinceRef.current = null;
+                setJobOverlayMode("gone");
+                return;
+            }
+            if (status === "disconnected" || status === "init") {
+                if (jobDisconnectedSinceRef.current == null) {
+                    jobDisconnectedSinceRef.current = Date.now();
+                }
+                const elapsed = Date.now() - jobDisconnectedSinceRef.current;
+                if (elapsed >= JOB_RECONNECT_GRACE_MS) {
+                    setJobOverlayMode("failed");
+                } else {
+                    setJobOverlayMode("reconnecting");
+                }
+                return;
+            }
+            jobDisconnectedSinceRef.current = null;
+            setJobOverlayMode(null);
+        }, [connStatus?.status, connStatus?.connhealthstatus, termDurableStatus, termConfigedDurable]);
+
+        // Tick job grace period so reconnecting → failed transitions without new events.
+        React.useEffect(() => {
+            if (jobOverlayMode !== "reconnecting") {
+                return;
+            }
+            const t = setInterval(() => {
+                if (jobDisconnectedSinceRef.current == null) {
+                    return;
+                }
+                if (Date.now() - jobDisconnectedSinceRef.current >= JOB_RECONNECT_GRACE_MS) {
+                    setJobOverlayMode("failed");
+                }
+            }, 1000);
+            return () => clearInterval(t);
+        }, [jobOverlayMode]);
 
         const handleTryReconnect = React.useCallback(() => {
             const prtn = waveEnv.rpc.ConnConnectCommand(
@@ -304,6 +515,37 @@ export const ConnStatusOverlay = React.memo(
             );
             prtn.catch((e) => console.log("error reconnecting", connName, e));
         }, [connName, nodeModel.blockId, waveEnv]);
+
+        const handleStopAutoRetry = React.useCallback(() => {
+            const prtn = waveEnv.rpc.ConnStopAutoRetryCommand(TabRpcClient, connName, { timeout: 5000 });
+            prtn.catch((e) => console.log("error stopping auto-retry", connName, e));
+        }, [connName, waveEnv]);
+
+        const handleRetrySession = React.useCallback(() => {
+            const jobId = termDurableStatus?.jobid;
+            if (!jobId) {
+                // Fall back to full controller restart if no job id
+                const vm = viewModel as TermViewModel;
+                if (vm?.forceRestartController) {
+                    util.fireAndForget(() => vm.forceRestartController());
+                }
+                return;
+            }
+            jobDisconnectedSinceRef.current = Date.now();
+            setJobOverlayMode("reconnecting");
+            const prtn = waveEnv.rpc.JobControllerReconnectJobCommand(TabRpcClient, jobId, { timeout: 30000 });
+            prtn.catch((e) => {
+                console.log("error reconnecting job", jobId, e);
+                setJobOverlayMode("failed");
+            });
+        }, [termDurableStatus?.jobid, viewModel, waveEnv]);
+
+        const handleStartNewSession = React.useCallback(() => {
+            const vm = viewModel as TermViewModel;
+            if (vm?.forceRestartController) {
+                util.fireAndForget(() => vm.forceRestartController());
+            }
+        }, [viewModel]);
 
         const handleDisableWsh = React.useCallback(async () => {
             const metamaptype: unknown = {
@@ -375,11 +617,15 @@ export const ConnStatusOverlay = React.memo(
 
         const showStalled = connStatus.status == "connected" && connStatus.connhealthstatus == "stalled";
         // Only show retry/countdown overlays if auto-reconnect is possible
-        // (password cached or no interactive auth required)
-        const canAutoReconnect = connStatus.canautoreconnect;
-        const showRetrying = canAutoReconnect && connStatus.status == "connecting" && (connStatus.reconnectattempt ?? 0) > 0;
-        const showCountdown = canAutoReconnect && connStatus.status == "disconnected" && (connStatus.reconnectnextattempt ?? 0) > 0;
-        const showDisconnected = connStatus.status == "disconnected" && !connStatus.connected;
+        // (password cached or no interactive auth required) and not suppressed
+        const canAutoReconnect = connStatus.canautoreconnect && !connStatus.suppressautoreconnect;
+        const showRetrying =
+            canAutoReconnect && connStatus.status == "connecting" && (connStatus.reconnectattempt ?? 0) > 0;
+        const showCountdown =
+            canAutoReconnect && connStatus.status == "disconnected" && (connStatus.reconnectnextattempt ?? 0) > 0;
+        const showDisconnected =
+            (connStatus.status == "disconnected" && !connStatus.connected) ||
+            (connStatus.status == "error" && !!permanentErrorTitle(connStatus.errorcode));
 
         // Hide status overlay when a password prompt is active for this connection
         // and not dismissed on this tab
@@ -393,7 +639,25 @@ export const ConnStatusOverlay = React.memo(
             return null;
         }
 
-        if (!showWshError && !showStalled && !showRetrying && !showCountdown && (isLayoutMode || connStatus.status == "connected" || connModalOpen)) {
+        // UX-0.2: job-level overlay when conn is healthy but session is not
+        if (jobOverlayMode && !showStalled && !showWshError) {
+            return (
+                <JobSessionOverlay
+                    mode={jobOverlayMode}
+                    overlayRefCallback={overlayRefCallback}
+                    onRetrySession={handleRetrySession}
+                    onStartNewSession={handleStartNewSession}
+                />
+            );
+        }
+
+        if (
+            !showWshError &&
+            !showStalled &&
+            !showRetrying &&
+            !showCountdown &&
+            (isLayoutMode || connStatus.status == "connected" || connModalOpen)
+        ) {
             return null;
         }
 
@@ -409,6 +673,7 @@ export const ConnStatusOverlay = React.memo(
                     connName={connName}
                     attempt={connStatus.reconnectattempt!}
                     overlayRefCallback={overlayRefCallback}
+                    onStopAutoRetry={handleStopAutoRetry}
                 />
             );
         }
@@ -420,6 +685,7 @@ export const ConnStatusOverlay = React.memo(
                     connStatus={connStatus}
                     overlayRefCallback={overlayRefCallback}
                     onReconnectNow={handleTryReconnect}
+                    onStopAutoRetry={handleStopAutoRetry}
                 />
             );
         }
@@ -431,6 +697,7 @@ export const ConnStatusOverlay = React.memo(
                     connStatus={connStatus}
                     overlayRefCallback={overlayRefCallback}
                     onReconnect={handleTryReconnect}
+                    onStopAutoRetry={canAutoReconnect || (connStatus.reconnectnextattempt ?? 0) > 0 ? handleStopAutoRetry : undefined}
                 />
             );
         }
