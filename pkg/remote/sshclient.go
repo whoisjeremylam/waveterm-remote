@@ -212,11 +212,17 @@ func ClassifyConnError(err error) (string, string) {
 		return ConnErrCode_Dial, ClassifyDialErrorSubCode(err)
 	}
 	errStr := err.Error()
+	// True credential rejection: server exhausted auth methods (wrong password/key).
+	// Only this should clear the in-memory password cache and force a re-prompt.
 	if strings.Contains(errStr, "unable to authenticate") {
 		return ConnErrCode_AuthFailed, AuthSubCode_UnableToAuth
 	}
+	// "ssh: handshake failed: …" is almost always transport/IO during banner/kex
+	// (connection reset, EOF, timeout mid-handshake) — NOT "password is wrong".
+	// Misclassifying this as auth-failed was wiping the cached password on network
+	// flaps and forcing a password prompt when connectivity returned.
 	if strings.Contains(errStr, "handshake failed") {
-		return ConnErrCode_AuthFailed, AuthSubCode_HandshakeFailed
+		return ConnErrCode_Dial, AuthSubCode_HandshakeFailed
 	}
 	if strings.Contains(errStr, "connection refused") {
 		return ConnErrCode_Dial, ClassifyDialErrorSubCode(err)
@@ -224,7 +230,18 @@ func ClassifyConnError(err error) (string, string) {
 	if strings.Contains(errStr, "timed out") || strings.Contains(errStr, "timeout") {
 		return ConnErrCode_Dial, ClassifyDialErrorSubCode(err)
 	}
+	// EOF / reset during SSH often surfaces without "handshake failed" prefix.
+	if strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "EOF") {
+		return ConnErrCode_Dial, ClassifyDialErrorSubCode(err)
+	}
 	return ConnErrCode_Unknown, ""
+}
+
+// IsCredentialRejected reports whether the error means the server rejected
+// credentials (wrong password/key/passphrase). Network and transport failures
+// must return false so cached passwords and authPromptState are preserved.
+func IsCredentialRejected(code, subCode string) bool {
+	return code == ConnErrCode_AuthFailed && subCode == AuthSubCode_UnableToAuth
 }
 
 // IsPermanentConnError returns true for handshake/config failures that will not

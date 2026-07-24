@@ -5,6 +5,7 @@ package remote
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -151,4 +152,39 @@ func TestAuthTracker(t *testing.T) {
 			t.Error("expected nil tracker to report no interactive prompt")
 		}
 	})
+}
+
+func TestClassifyConnError_HandshakeFailedIsDialNotAuth(t *testing.T) {
+	t.Parallel()
+	code, sub := ClassifyConnError(fmt.Errorf("ssh: handshake failed: read tcp 1.2.3.4:22: connection reset by peer"))
+	if code != ConnErrCode_Dial {
+		t.Fatalf("expected dial-error for handshake failed IO, got %q/%q", code, sub)
+	}
+	if IsCredentialRejected(code, sub) {
+		t.Fatal("handshake failed must not be credential rejection")
+	}
+}
+
+func TestClassifyConnError_UnableToAuthIsCredentialRejected(t *testing.T) {
+	t.Parallel()
+	code, sub := ClassifyConnError(fmt.Errorf("ssh: unable to authenticate, attempted methods [none password]"))
+	if code != ConnErrCode_AuthFailed || sub != AuthSubCode_UnableToAuth {
+		t.Fatalf("expected auth-failed/unable-to-auth, got %q/%q", code, sub)
+	}
+	if !IsCredentialRejected(code, sub) {
+		t.Fatal("expected IsCredentialRejected")
+	}
+}
+
+func TestIsCredentialRejected(t *testing.T) {
+	t.Parallel()
+	if !IsCredentialRejected(ConnErrCode_AuthFailed, AuthSubCode_UnableToAuth) {
+		t.Fatal("expected true for unable-to-auth")
+	}
+	if IsCredentialRejected(ConnErrCode_AuthFailed, AuthSubCode_HandshakeFailed) {
+		t.Fatal("handshake-failed subcode alone must not reject credentials")
+	}
+	if IsCredentialRejected(ConnErrCode_Dial, AuthSubCode_HandshakeFailed) {
+		t.Fatal("dial+handshake-failed must not reject credentials")
+	}
 }

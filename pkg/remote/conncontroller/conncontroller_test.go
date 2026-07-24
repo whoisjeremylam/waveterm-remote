@@ -1005,23 +1005,52 @@ func TestCachedPasswordClearedOnDisconnect(t *testing.T) {
 	}
 }
 
-func TestCachedPasswordClearedOnAuthFailure(t *testing.T) {
+
+func TestCachedPasswordPreservedOnHandshakeFailed(t *testing.T) {
 	t.Parallel()
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
+	conn.cachePassword("good-password")
+	conn.authPromptState.Store(authPromptUsed)
+
+	// Network flap mid-handshake (was misclassified as auth-failed)
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		return fmt.Errorf("ssh: handshake failed: read tcp 10.0.0.1:22: connection reset by peer")
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	_ = conn.Connect(context.Background(), &wconfig.ConnKeywords{})
+
+	if pw := conn.getCachedPassword(); pw == nil || *pw != "good-password" {
+		t.Fatal("expected cached password preserved after handshake/IO failure")
+	}
+	if conn.authPromptState.Load() != authPromptUsed {
+		t.Fatalf("expected authPromptUsed preserved, got %d", conn.authPromptState.Load())
+	}
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("network handshake failure must not sticky-suppress")
+	}
+}
+
+func TestCachedPasswordClearedOnAuthFailure(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2403", Status_Disconnected)
+	defer cleanupTestConn(conn)
+
 	conn.cachePassword("wrong-password")
 
-	// Mock connectInternal to return auth failure
+	// Mock connectInternal to return true credential rejection
 	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
-		return fmt.Errorf("unable to authenticate")
+		return fmt.Errorf("ssh: unable to authenticate, attempted methods [none password]")
 	}
 	defer func() { connectInternalTestHook = nil }()
 
 	ctx := context.Background()
 	conn.Connect(ctx, &wconfig.ConnKeywords{})
 
-	// After auth failure, cached password should be cleared
+	// After real auth failure, cached password should be cleared
 	if pw := conn.getCachedPassword(); pw != nil {
 		t.Fatalf("expected nil after auth failure, got %q", *pw)
 	}

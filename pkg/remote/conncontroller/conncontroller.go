@@ -1107,7 +1107,7 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 	err := conn.connectInternal(connectCtx, connFlags)
 
 	if err != nil {
-		errorCode, _ := remote.ClassifyConnError(err)
+		errorCode, errorSubCode := remote.ClassifyConnError(err)
 		conn.lock.Lock()
 		userAbort := conn.userAbortConnect
 		conn.userAbortConnect = false
@@ -1124,7 +1124,7 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 				errorCode = remote.ConnErrCode_UserCancelled
 			}
 		}
-		conn.Infof(ctx, "ERROR [%s] %v\n\n", errorCode, err)
+		conn.Infof(ctx, "ERROR [%s/%s] %v\n\n", errorCode, errorSubCode, err)
 		conn.WithLock(func() {
 			// If PauseAutoReconnect already moved us to Disconnected, keep it.
 			if conn.Status == Status_Connecting {
@@ -1140,27 +1140,20 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 				conn.SuppressAutoReconnect = true
 			}
 		})
-		// Clear cached password on auth failure so user is re-prompted
-		if errorCode == "auth-failed" {
+		// Clear cached password / authPromptState ONLY when the server rejected
+		// credentials (wrong password/key). Network flaps ("handshake failed",
+		// EOF, reset) must keep the cache so reconnect is silent when the path returns.
+		if remote.IsCredentialRejected(errorCode, errorSubCode) {
 			conn.clearCachedPassword()
-			// Reset the auth-prompt flag: the credential was rejected, so the prior
-			// "no prompt needed" assumption is invalid. CanReconnectWithoutPrompt
-			// falls back to the config-based check (or skips the scheduler) until a
-			// successful reconnect re-establishes the flag.
 			conn.authPromptState.Store(authPromptUnknown)
-			// Launch a background goroutine to re-prompt the user for a new password.
-			// This is independent of the current Connect() lifecycle — the password
-			// buffer model means the prompt stays visible until the user acts.
-			// Never re-prompt after user Cancel (A3).
+			// Re-prompt for a new password (not after user Cancel/Stop suppress).
 			if !conn.IsSuppressAutoReconnect() {
 				go conn.requestPasswordRePrompt()
 			}
 		}
-		// User-input timeout (prompt never answered — typically UI not ready at
-		// cold start): re-prompt independently so the user is not stuck waiting
-		// for a tab switch after the 60s GetUserInput deadline.
-		// Never re-prompt after Cancel/Stop suppress.
-		if errorCode == remote.ConnErrCode_UserTimeout && !conn.IsSuppressAutoReconnect() {
+		// User-input timeout with no cached password (cold start UI race): re-prompt.
+		// Do not clear cache here — timeout is not credential rejection.
+		if errorCode == remote.ConnErrCode_UserTimeout && !conn.IsSuppressAutoReconnect() && conn.getCachedPassword() == nil {
 			go conn.requestPasswordRePrompt()
 		}
 		conn.closeInternal_withlifecyclelock(nil)
