@@ -19,7 +19,10 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/wstore"
 )
 
-var MainUserInputHandler = UserInputHandler{Channels: make(map[string](chan *UserInputResponse), 1)}
+var MainUserInputHandler = UserInputHandler{
+	Channels:         make(map[string](chan *UserInputResponse), 1),
+	AuthRequestConns: make(map[string]string),
+}
 
 var defaultProvider UserInputProvider = &FrontendProvider{}
 
@@ -55,6 +58,10 @@ type UserInputResponse struct {
 type UserInputHandler struct {
 	Lock     sync.Mutex
 	Channels map[string](chan *UserInputResponse)
+	// AuthRequestConns maps requestId → connName for SSH auth prompts so we can
+	// cancel every pending password/passphrase/kbd prompt for one connection
+	// (A3: one Cancel dismisses all prompts for that conn).
+	AuthRequestConns map[string]string
 }
 
 // OrphanedPasswords stores user-submitted passwords that arrived after the
@@ -96,7 +103,7 @@ func isSSHAuthPrompt(promptType string) bool {
 
 type FrontendProvider struct{}
 
-func (ui *UserInputHandler) registerChannel() (string, chan *UserInputResponse) {
+func (ui *UserInputHandler) registerChannel(connName string, isAuthPrompt bool) (string, chan *UserInputResponse) {
 	ui.Lock.Lock()
 	defer ui.Lock.Unlock()
 
@@ -104,6 +111,12 @@ func (ui *UserInputHandler) registerChannel() (string, chan *UserInputResponse) 
 	uich := make(chan *UserInputResponse, 1)
 
 	ui.Channels[id] = uich
+	if isAuthPrompt && connName != "" {
+		if ui.AuthRequestConns == nil {
+			ui.AuthRequestConns = make(map[string]string)
+		}
+		ui.AuthRequestConns[id] = connName
+	}
 	return id, uich
 }
 
@@ -112,6 +125,49 @@ func (ui *UserInputHandler) unregisterChannel(id string) {
 	defer ui.Lock.Unlock()
 
 	delete(ui.Channels, id)
+	delete(ui.AuthRequestConns, id)
+}
+
+// CancelAllAuthPromptsForConn fails every pending SSH auth prompt (password,
+// passphrase, keyboard-interactive) for connName with a cancel error so all
+// GetUserInput waiters return. Used when the user Cancels one password dialog
+// for a connection shared by multiple tabs/blocks.
+func CancelAllAuthPromptsForConn(connName string) int {
+	if connName == "" {
+		return 0
+	}
+	ui := &MainUserInputHandler
+	ui.Lock.Lock()
+	var ids []string
+	for id, cn := range ui.AuthRequestConns {
+		if cn == connName {
+			ids = append(ids, id)
+		}
+	}
+	ui.Lock.Unlock()
+
+	canceled := 0
+	for _, id := range ids {
+		ui.Lock.Lock()
+		ch := ui.Channels[id]
+		ui.Lock.Unlock()
+		if ch == nil {
+			continue
+		}
+		resp := &UserInputResponse{
+			Type:      "userinputresp",
+			RequestId: id,
+			ErrorMsg:  "Canceled by the user",
+			ConnName:  connName,
+		}
+		select {
+		case ch <- resp:
+			canceled++
+		default:
+			// already answered or buffer full
+		}
+	}
+	return canceled
 }
 
 func (ui *UserInputHandler) sendRequestToFrontend(request *UserInputRequest, scopes []string) {
@@ -177,17 +233,18 @@ func findWindowsForConnection(ctx context.Context, connName string) []string {
 }
 
 func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputRequest) (*UserInputResponse, error) {
-	id, uiCh := MainUserInputHandler.registerChannel()
-	defer MainUserInputHandler.unregisterChannel(id)
-	request.RequestId = id
-	request.TimeoutMs = int(utilfn.TimeoutFromContext(ctx, 30*time.Second).Milliseconds())
-
 	connData := genconn.GetConnData(ctx)
 	if connData != nil && request.ConnName == "" {
 		request.ConnName = connData.GetConnName()
 	}
 
-	log.Printf("[PW-PROMPT] GetUserInput: connName=%q requestId=%q", request.ConnName, request.RequestId)
+	isAuth := isSSHAuthPrompt(request.PromptType)
+	id, uiCh := MainUserInputHandler.registerChannel(request.ConnName, isAuth)
+	defer MainUserInputHandler.unregisterChannel(id)
+	request.RequestId = id
+	request.TimeoutMs = int(utilfn.TimeoutFromContext(ctx, 30*time.Second).Milliseconds())
+
+	log.Printf("[PW-PROMPT] GetUserInput: connName=%q requestId=%q promptType=%q", request.ConnName, request.RequestId, request.PromptType)
 
 	scopes, scopesErr := determineScopes(ctx)
 	if scopesErr != nil {

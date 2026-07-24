@@ -508,10 +508,11 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 			}
 			return *cachedPw, nil
 		}
-		ctx, cancelFn := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancelFn()
+		// Bound by connCtx so AbortConnect / CancelAuth hard-abort the wait (A2/A3).
+		promptCtx, promptCancel := context.WithTimeout(connCtx, 60*time.Second)
+		defer promptCancel()
 		queryText := fmt.Sprintf(
-			"Password Authentication requested from connection  \n"+
+			"Password for connection  \n"+
 				"%s\n\n"+
 				"Password:", remoteDisplayName)
 		request := &userinput.UserInputRequest{
@@ -524,12 +525,16 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 		if connData := genconn.GetConnData(connCtx); connData != nil {
 			request.ConnName = connData.GetConnName()
 		}
-		response, err := userinput.GetUserInput(ctx, request)
+		response, err := userinput.GetUserInput(promptCtx, request)
 		if err != nil {
 			blocklogger.Infof(connCtx, "[conndebug] ERROR Password Authentication failed: %v\n", SimpleMessageFromPossibleConnectionError(err))
+			errStr := err.Error()
+			if strings.Contains(errStr, "Canceled") || strings.Contains(errStr, "cancel") || errors.Is(err, context.Canceled) {
+				return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: utilds.MakeCodedError(ConnErrCode_UserCancelled, err)}
+			}
 			// Tag timeouts so Connect can re-prompt (ClassifyConnError would otherwise
 			// treat "timed out waiting for user input" as a dial error).
-			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "timed out") {
+			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errStr, "timed out") {
 				return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: utilds.MakeCodedError(ConnErrCode_UserTimeout, err)}
 			}
 			return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
