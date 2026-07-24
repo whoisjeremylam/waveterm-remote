@@ -91,22 +91,24 @@ The `+` button `onClick` toggles the same atom. Selecting an item / closing the 
 ## [S4] Frecency data flow
 
 ```
-conncontroller.go (on successful connect)
+CreateTab(connName)  →  RecordConnectionUsage(connName)
+    conn.ConnectCount++                      // intentional new-tab opens only
     conn.LastConnectTime = now
-    conn.ConnectCount++                      // new in-memory field
-    wconfig.SetConnectionsConfigValue(name, {
-        "conn:connectcount":  conn.ConnectCount,
-        "conn:lastconnecttime": conn.LastConnectTime,
-    })                                        // persist to connections.json
+    persist conn:connectcount
+
+Connect() success (SSH handshake, including durable re-auth)
+    conn.LastConnectTime = now               // recency only — does NOT bump count
+    persist conn:authpromptused
 
 ConnStatus (RPC) exposes ConnectCount + LastConnectTime
-    ↓ frontend connStatusMap (existing)
-sortConnSuggestionItems reads connStatusMap.get(connName) → score
+    ↓ frontend connStatusMap
+sortConnSuggestionItems → score = connectCount × exp(-ageDays/14)
+                          or connectCount when lastConnectTime==0 (after restart)
 ```
 
-`ConnectCount` is loaded from `connections.json` into `ConnController` at startup (in the existing connection-init path that reads `ConnKeywords`), so it survives restarts. `LastConnectTime` remains in-memory (it's a runtime timestamp; persisting it would conflict with the in-memory `Status` lifecycle and isn't needed for frecency across restarts — `ConnectCount` carries the long-term signal, and `LastConnectTime` re-populates within seconds of reconnect).
+**Why not count every SSH Connect?** Durable reconnect and password re-auth on app restart would inflate password hosts every test restart, while opening a new tab to an already-connected key host would not bump the count at all (EnsureConnection is a no-op). Ranking must track **user intent to open a tab**, not transport reconnects.
 
-**Rationale for splitting persistence:** `LastConnectTime` is already overwritten on every connect and is meaningless before the first post-restart connect. Persisting only `ConnectCount` keeps the schema minimal and avoids a stale-timestamp edge case where a freshly-restarted app shows a host as "last used 3 days ago" until you reconnect. `ConnectCount` is the durable frequency signal; `LastConnectTime` is the session-scoped recency signal. Both feed the score, and the math degrades gracefully: after restart, a host with `ConnectCount=20` but `LastConnectTime=0` scores `20 × 0 = 0` until first reconnect — acceptable, because on a fresh session the user hasn't demonstrated recency for *any* host yet, so `display:order` → name takes over as tie-break (deterministic, predictable cold start).
+`ConnectCount` is loaded from `connections.json` at startup. `LastConnectTime` remains session-scoped (in-memory). After restart, score falls back to bare `connectCount` until the first connect this session sets recency.
 
 ## [S5] Files changed
 

@@ -53,8 +53,9 @@ export function clampNewTabRowIndex(
     if (selectableCount === 0) {
         return -1;
     }
+    // No default selection — user must ↓ or click (matches empty-filter open).
     if (prevIndex < 0) {
-        return 0;
+        return -1;
     }
     return Math.min(prevIndex, selectableCount - 1);
 }
@@ -67,8 +68,8 @@ export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
     const [rpcConnList, setRpcConnList] = useState<string[]>([]);
     const [wslList, setWslList] = useState<string[]>([]);
     const [filterText, setFilterText] = useState("");
-    // -1 = no highlight (used when only New Connection is shown, so Enter is safe)
-    const [rowIndex, setRowIndex] = useState(0);
+    // -1 = no highlight (default, and when only New Connection is shown so Enter is safe)
+    const [rowIndex, setRowIndex] = useState(-1);
     const [loading, setLoading] = useState(true);
     const [posStyle, setPosStyle] = useState<React.CSSProperties>({});
     const dropdownRef = useRef<HTMLDivElement>(null);
@@ -228,22 +229,20 @@ export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
             }
             if (keyutil.checkKeyPressed(e.nativeEvent as unknown as WaveKeyboardEvent, "ArrowUp")) {
                 e.preventDefault();
-                setRowIndex((idx) => {
-                    const min = selectableCount === 0 ? -1 : 0;
-                    return Math.max(idx - 1, min);
-                });
+                setRowIndex((idx) => Math.max(idx - 1, -1));
                 return;
             }
             if (keyutil.checkKeyPressed(e.nativeEvent as unknown as WaveKeyboardEvent, "ArrowDown")) {
                 e.preventDefault();
                 setRowIndex((idx) => {
-                    // From no-highlight (-1) with only New Connection: first ↓ selects it
+                    // From no-highlight (-1): first ↓ selects first real item, or New Connection
+                    // if that is the only entry.
                     if (idx < 0) {
+                        if (selectableCount > 0) {
+                            return 0;
+                        }
                         if (newConnectionIndex !== null) {
                             return newConnectionIndex;
-                        }
-                        if (selectionList.length > 0) {
-                            return 0;
                         }
                         return -1;
                     }
@@ -281,7 +280,7 @@ export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
                 </InputLeftElement>
                 <Input
                     ref={inputRef}
-                    placeholder="Connect to (username@host)..."
+                    placeholder="Type to filter connections..."
                     value={filterText}
                     onChange={(value: string) => setFilterText(value)}
                     onKeyDown={handleKeyDown}

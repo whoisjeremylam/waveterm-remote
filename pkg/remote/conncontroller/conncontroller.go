@@ -1051,14 +1051,14 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 		conn.closeInternal_withlifecyclelock(nil)
 	} else {
 		conn.Infof(ctx, "successfully connected (wsh:%v)\n\n", conn.WshEnabled.Load())
-		var connectCount int64
 		var connName string
 		var interactivePromptUsed bool
 		conn.WithLock(func() {
 			conn.Status = Status_Connected
+			// Recency for frecency (session-scoped). ConnectCount is NOT bumped
+			// here — durable reconnects / password re-auth would inflate the
+			// ranking. Count is recorded via RecordConnectionUsage on CreateTab.
 			conn.LastConnectTime = time.Now().UnixMilli()
-			conn.ConnectCount++
-			connectCount = conn.ConnectCount
 			connName = conn.GetName()
 			conn.LastErrorCode = "" // clear error code on success
 			// authPromptState is set in connectInternal before we get here.
@@ -1067,13 +1067,9 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 				conn.ActiveConnNum = int(activeConnCounter.Add(1))
 			}
 		})
-		// persist connectcount + authpromptused outside the lock to avoid holding it
-		// during disk IO. authpromptused lets cold-start reconnect know this host
-		// needs a password/passphrase prompt (avoids publickey false-positive).
-		// A persistence failure is not a connect failure — the SSH connection succeeded;
-		// we log the warning and continue (same pattern as conn:wshenabled below).
+		// Persist authpromptused (cold-start password classification). ConnectCount
+		// is persisted from RecordConnectionUsage when the user opens a new tab.
 		persistErr := wconfig.SetConnectionsConfigValue(connName, waveobj.MetaMapType{
-			"conn:connectcount":   connectCount,
 			"conn:authpromptused": interactivePromptUsed,
 		})
 		if persistErr != nil {
@@ -2153,6 +2149,38 @@ func getConnInternal(opts *remote.SSHOpts, createIfNotExists bool) *SSHConn {
 func GetConn(opts *remote.SSHOpts) *SSHConn {
 	conn := getConnInternal(opts, true)
 	return conn
+}
+
+// RecordConnectionUsage bumps ConnectCount + LastConnectTime for a remote
+// connection when the user intentionally opens it (e.g. + New Tab / CreateTab).
+// Durable-session auto-reconnect does NOT call this — only user-driven tab
+// creation — so password re-auth on restart does not dominate the new-tab list.
+func RecordConnectionUsage(connName string) {
+	if connName == "" || IsLocalConnName(connName) {
+		return
+	}
+	// WSL names are not SSHOpts — skip structured SSH map (no ConnectCount path today).
+	if IsWslConnName(connName) {
+		return
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := GetConn(connOpts)
+	var connectCount int64
+	conn.WithLock(func() {
+		conn.ConnectCount++
+		conn.LastConnectTime = time.Now().UnixMilli()
+		connectCount = conn.ConnectCount
+	})
+	persistErr := wconfig.SetConnectionsConfigValue(connName, waveobj.MetaMapType{
+		"conn:connectcount": connectCount,
+	})
+	if persistErr != nil {
+		log.Printf("warning: error writing conn:connectcount for %q: %v\n", connName, persistErr)
+	}
+	conn.FireConnChangeEvent()
 }
 
 // does NOT connect, can return nil

@@ -2129,3 +2129,32 @@ func TestConnectCount_ZeroByDefault(t *testing.T) {
 		t.Fatalf("expected ConnectCount=0 for new connection, got %d", conn.ConnectCount)
 	}
 }
+
+// TestRecordConnectionUsage_IncrementsCount verifies that intentional usage
+// (CreateTab path) bumps ConnectCount without going through Connect().
+func TestRecordConnectionUsage_IncrementsCount(t *testing.T) {
+	testOpts := &remote.SSHOpts{SSHHost: "usage-count-test-host", SSHUser: "u", SSHPort: "2222"}
+	conn := GetConn(testOpts)
+	if conn.ConnectCount != 0 {
+		t.Fatalf("expected ConnectCount=0 initially, got %d", conn.ConnectCount)
+	}
+	RecordConnectionUsage(conn.GetName())
+	if conn.ConnectCount != 1 {
+		t.Fatalf("expected ConnectCount=1 after RecordConnectionUsage, got %d", conn.ConnectCount)
+	}
+	if conn.LastConnectTime == 0 {
+		t.Fatal("expected LastConnectTime set after RecordConnectionUsage")
+	}
+	RecordConnectionUsage(conn.GetName())
+	if conn.ConnectCount != 2 {
+		t.Fatalf("expected ConnectCount=2 after second usage, got %d", conn.ConnectCount)
+	}
+}
+
+// TestRecordConnectionUsage_SkipsLocal verifies local connections are not tracked.
+func TestRecordConnectionUsage_SkipsLocal(t *testing.T) {
+	RecordConnectionUsage("")
+	RecordConnectionUsage("local")
+	RecordConnectionUsage("local:default")
+	// no panic / no controller created for empty name
+}

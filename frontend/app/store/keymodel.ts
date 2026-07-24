@@ -450,7 +450,9 @@ function registerGlobalKeys() {
         return true;
     });
     globalKeyMap.set("Cmd:t", () => {
-        globalStore.set(atoms.newTabDropdownOpen, true);
+        // Toggle + New Tab connection dropdown (open ↔ close)
+        const isOpen = globalStore.get(atoms.newTabDropdownOpen);
+        globalStore.set(atoms.newTabDropdownOpen, !isOpen);
         return true;
     });
     globalKeyMap.set("Cmd:w", () => {

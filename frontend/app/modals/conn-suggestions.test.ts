@@ -60,8 +60,9 @@ describe("frecencyScore", () => {
         expect(frecencyScore(0, NOW)).toBe(0);
     });
 
-    it("returns 0 when lastConnectTime is 0 (never connected)", () => {
-        expect(frecencyScore(5, 0)).toBe(0);
+    it("returns connectCount when lastConnectTime is 0 (frequency after restart)", () => {
+        // lastConnectTime is session-scoped; after restart it is 0 but connectCount persists
+        expect(frecencyScore(5, 0)).toBe(5);
     });
 
     it("returns connectCount when age is 0 (just connected)", () => {

@@ -40,7 +40,8 @@ describe("clampNewTabRowIndex", () => {
         expect(clampNewTabRowIndex(1, 3, null)).toBe(1);
     });
 
-    it("moves from no-highlight onto first real item when matches reappear", () => {
-        expect(clampNewTabRowIndex(-1, 3, null)).toBe(0);
+    it("keeps no selection by default when real items exist", () => {
+        // Opening the dropdown with matches must not highlight localhost/first item
+        expect(clampNewTabRowIndex(-1, 3, null)).toBe(-1);
     });
 });
