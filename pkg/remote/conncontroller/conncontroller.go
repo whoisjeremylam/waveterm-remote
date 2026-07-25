@@ -73,6 +73,12 @@ const (
 	authPromptUsed    = 2 // last successful connect used an interactive prompt (password/passphrase/kbd)
 )
 
+// ReconnectHysteresisDuration is the delay before propagating a disconnect event
+// when auto-reconnect is possible. Sub-second Wi-Fi flaps are suppressed: if the
+// connection comes back within this window, waitForDisconnect silently returns
+// and no overlay flash occurs. (UX-2.1)
+const ReconnectHysteresisDuration = 1500 * time.Millisecond
+
 var globalLock = &sync.Mutex{}
 var clientControllerMap = make(map[remote.SSHOpts]*SSHConn)
 var activeConnCounter = &atomic.Int32{}
@@ -2220,7 +2226,6 @@ func (conn *SSHConn) waitForDisconnect() {
 		log.Printf("[conn:%s] client.Wait() completed (clean disconnect)", conn.GetName())
 	}
 	conn.lifecycleLock.Lock()
-	defer conn.lifecycleLock.Unlock()
 
 	// Guard: if a new SSH client has been established since we started waiting
 	// on this old client, do not disrupt the new connection. This happens when
@@ -2234,9 +2239,34 @@ func (conn *SSHConn) waitForDisconnect() {
 		// A new SSH connection is active; this is a stale Wait() on an old
 		// client. The new connection's own waitForDisconnect goroutine will
 		// handle the new client when it eventually disconnects.
+		conn.lifecycleLock.Unlock()
 		log.Printf("[conn:%s] stale waitForDisconnect detected, new connection is active; skipping disconnect", conn.GetName())
 		return
 	}
+
+	// UX-2.1: Overlay hysteresis for brief blips.
+	// When auto-reconnect is possible (cached password or replayable key),
+	// delay setting Status=Disconnected by ReconnectHysteresisDuration.
+	// If a new connection establishes within the window, suppress the
+	// disconnect event — no red overlay flash for sub-second Wi-Fi flaps.
+	conn.lock.Lock()
+	canAuto := conn.canAutoReconnectLocked()
+	conn.lock.Unlock()
+	if canAuto {
+		conn.lifecycleLock.Unlock()
+		time.Sleep(ReconnectHysteresisDuration)
+		conn.lifecycleLock.Lock()
+		// Re-check: did a new connection start during the hysteresis window?
+		currentClient = conn.GetClient()
+		if currentClient != nil && currentClient != client {
+			conn.lifecycleLock.Unlock()
+			log.Printf("[conn:%s] disconnect suppressed by hysteresis: new connection active within %v window",
+				conn.GetName(), ReconnectHysteresisDuration)
+			return
+		}
+	}
+
+	defer conn.lifecycleLock.Unlock()
 
 	statusChanged := false
 	conn.WithLock(func() {

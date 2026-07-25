@@ -169,6 +169,12 @@ const ConnReconnectMaxDurationSilent     = 15 * time.Minute // cap for silently-
 const ConnReconnectAggressiveInterval    = 3 * time.Second
 const ConnReconnectAggressiveDuration    = 2 * time.Minute
 
+// ReconnectHysteresisDuration is the delay before propagating a disconnect event
+// when CanAutoReconnect is true. Sub-second Wi-Fi flaps are suppressed: if the
+// connection comes back within this window, onConnectionDown silently returns
+// and no overlay flash occurs. (UX-2.1)
+const ReconnectHysteresisDuration = 1500 * time.Millisecond
+
 func InitJobController() {
 	go connReconcileWorker()
 	go jobPruningWorker()
