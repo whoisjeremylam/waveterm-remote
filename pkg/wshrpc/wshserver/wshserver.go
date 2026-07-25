@@ -612,7 +612,34 @@ func (ws *WshServer) ConnDisconnectCommand(ctx context.Context, connName string)
 	if conn == nil {
 		return fmt.Errorf("connection not found: %s", connName)
 	}
-	return conn.Close()
+	// Close sets SuppressAutoReconnect + clears password. Also stop any
+	// in-flight scheduler so countdown UI clears immediately (UX-0.1).
+	err = conn.Close()
+	jobcontroller.StopReconnectScheduler(connName)
+	return err
+}
+
+// ConnStopAutoRetryCommand stops the reconnect scheduler and sets sticky
+// suppress without clearing the password cache (UX-0.5). Distinct from
+// ConnDisconnectCommand which clears the cache.
+func (ws *WshServer) ConnStopAutoRetryCommand(ctx context.Context, connName string) error {
+	if conncontroller.IsLocalConnName(connName) {
+		return nil
+	}
+	if strings.HasPrefix(connName, "wsl://") {
+		return nil
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return fmt.Errorf("error parsing connection name: %w", err)
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn == nil {
+		return fmt.Errorf("connection not found: %s", connName)
+	}
+	conn.PauseAutoReconnect()
+	jobcontroller.StopReconnectScheduler(connName)
+	return nil
 }
 
 func (ws *WshServer) ConnConnectCommand(ctx context.Context, connRequest wshrpc.ConnRequest) error {

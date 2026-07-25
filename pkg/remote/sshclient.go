@@ -212,11 +212,17 @@ func ClassifyConnError(err error) (string, string) {
 		return ConnErrCode_Dial, ClassifyDialErrorSubCode(err)
 	}
 	errStr := err.Error()
+	// True credential rejection: server exhausted auth methods (wrong password/key).
+	// Only this should clear the in-memory password cache and force a re-prompt.
 	if strings.Contains(errStr, "unable to authenticate") {
 		return ConnErrCode_AuthFailed, AuthSubCode_UnableToAuth
 	}
+	// "ssh: handshake failed: …" is almost always transport/IO during banner/kex
+	// (connection reset, EOF, timeout mid-handshake) — NOT "password is wrong".
+	// Misclassifying this as auth-failed was wiping the cached password on network
+	// flaps and forcing a password prompt when connectivity returned.
 	if strings.Contains(errStr, "handshake failed") {
-		return ConnErrCode_AuthFailed, AuthSubCode_HandshakeFailed
+		return ConnErrCode_Dial, AuthSubCode_HandshakeFailed
 	}
 	if strings.Contains(errStr, "connection refused") {
 		return ConnErrCode_Dial, ClassifyDialErrorSubCode(err)
@@ -224,7 +230,51 @@ func ClassifyConnError(err error) (string, string) {
 	if strings.Contains(errStr, "timed out") || strings.Contains(errStr, "timeout") {
 		return ConnErrCode_Dial, ClassifyDialErrorSubCode(err)
 	}
+	// EOF / reset during SSH often surfaces without "handshake failed" prefix.
+	if strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "EOF") {
+		return ConnErrCode_Dial, ClassifyDialErrorSubCode(err)
+	}
 	return ConnErrCode_Unknown, ""
+}
+
+// IsCredentialRejected reports whether the error means the server rejected
+// credentials (wrong password/key/passphrase). Network and transport failures
+// must return false so cached passwords and authPromptState are preserved.
+func IsCredentialRejected(code, subCode string) bool {
+	return code == ConnErrCode_AuthFailed && subCode == AuthSubCode_UnableToAuth
+}
+
+// IsPermanentConnError returns true for handshake/config failures that will not
+// succeed on retry without user action (host-key change, known_hosts problems,
+// unrecoverable config). Scheduler and attention-bound retry must stop on these;
+// never auto-accept host key changes (UX-0.4).
+func IsPermanentConnError(code string) bool {
+	switch code {
+	case ConnErrCode_HostKeyChanged,
+		ConnErrCode_HostKeyRevoked,
+		ConnErrCode_HostKeyVerify,
+		ConnErrCode_KnownHostsNone,
+		ConnErrCode_KnownHostsFmt,
+		ConnErrCode_ConfigParse,
+		ConnErrCode_ConfigDefault,
+		ConnErrCode_ProxyDepth,
+		ConnErrCode_ProxyParse:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsNetworkUnreachableErrorCode is true when a dial subcode indicates local
+// network unavailability (useful for attention-heartbeat interval tuning).
+func IsNetworkUnreachableDialSubCode(subCode string) bool {
+	switch subCode {
+	case DialSubCode_NoRoute, DialSubCode_HostUnreach, DialSubCode_NetUnreach,
+		DialSubCode_Timeout, DialSubCode_DNS:
+		return true
+	default:
+		return false
+	}
 }
 
 // ClassifyDialErrorSubCode provides more granular classification of dial errors
@@ -475,10 +525,11 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 			}
 			return *cachedPw, nil
 		}
-		ctx, cancelFn := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancelFn()
+		// Bound by connCtx so AbortConnect / CancelAuth hard-abort the wait (A2/A3).
+		promptCtx, promptCancel := context.WithTimeout(connCtx, 60*time.Second)
+		defer promptCancel()
 		queryText := fmt.Sprintf(
-			"Password Authentication requested from connection  \n"+
+			"Password for connection  \n"+
 				"%s\n\n"+
 				"Password:", remoteDisplayName)
 		request := &userinput.UserInputRequest{
@@ -491,9 +542,21 @@ func createPasswordCallbackPrompt(connCtx context.Context, remoteDisplayName str
 		if connData := genconn.GetConnData(connCtx); connData != nil {
 			request.ConnName = connData.GetConnName()
 		}
-		response, err := userinput.GetUserInput(ctx, request)
+		response, err := userinput.GetUserInput(promptCtx, request)
 		if err != nil {
 			blocklogger.Infof(connCtx, "[conndebug] ERROR Password Authentication failed: %v\n", SimpleMessageFromPossibleConnectionError(err))
+			errStr := err.Error()
+			// Explicit UI Cancel only (CancelAllAuthPrompts / userinput response).
+			if strings.Contains(errStr, "Canceled by the user") {
+				return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: utilds.MakeCodedError(ConnErrCode_UserCancelled, err)}
+			}
+			// Tag timeouts so Connect can re-prompt (ClassifyConnError would otherwise
+			// treat "timed out waiting for user input" as a dial error).
+			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errStr, "timed out") {
+				return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: utilds.MakeCodedError(ConnErrCode_UserTimeout, err)}
+			}
+			// Parent/AbortConnect cancel — plain error; Connect uses userAbortConnect
+			// flag to decide sticky suppress (not this string).
 			return "", ConnectionError{ConnectionDebugInfo: debugInfo, Err: err}
 		}
 		blocklogger.Infof(connCtx, "[conndebug] got password from user, sending to ssh\n")

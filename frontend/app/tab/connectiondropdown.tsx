@@ -16,7 +16,7 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import * as keyutil from "@/util/keyutil";
 import clsx from "clsx";
 import { useAtom } from "jotai";
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./connectiondropdown.scss";
 
@@ -26,15 +26,53 @@ type NewTabConnTypeaheadProps = {
     onClose: () => void;
 };
 
+/** Collect connection names from connections.json (excludes wsl/local). */
+export function connectionNamesFromConfig(fullConfig: FullConfigType | null | undefined): string[] {
+    if (!fullConfig?.connections) {
+        return [];
+    }
+    return Object.keys(fullConfig.connections).filter(
+        (name) => name !== "" && !name.startsWith("wsl://") && name !== "local" && !name.startsWith("local:")
+    );
+}
+
+/**
+ * Decide the next rowIndex after filter/list changes.
+ *
+ * - Open / short filter (< 2 chars): no highlight (-1). User must ↓ or click.
+ * - Filter length >= 2 with real matches: auto-select first item so Enter works.
+ * - No real matches (only New Connection fallback): always -1 so Enter cannot
+ *   create a connection until the user presses ↓ or clicks (spec S6).
+ */
+export function clampNewTabRowIndex(
+    prevIndex: number,
+    selectableCount: number,
+    _newConnectionIndex: number | null,
+    filterTextLength: number = 0
+): number {
+    if (selectableCount === 0) {
+        return -1;
+    }
+    if (prevIndex < 0) {
+        // Enough typed text to filter: select the top frecency match for Enter.
+        if (filterTextLength >= 2) {
+            return 0;
+        }
+        return -1;
+    }
+    return Math.min(prevIndex, selectableCount - 1);
+}
+
 export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
     anchorRef,
     onSelect,
     onClose,
 }: NewTabConnTypeaheadProps) {
-    const [connList, setConnList] = useState<string[]>([]);
+    const [rpcConnList, setRpcConnList] = useState<string[]>([]);
     const [wslList, setWslList] = useState<string[]>([]);
     const [filterText, setFilterText] = useState("");
-    const [rowIndex, setRowIndex] = useState(0);
+    // -1 = no highlight (default, and when only New Connection is shown so Enter is safe)
+    const [rowIndex, setRowIndex] = useState(-1);
     const [loading, setLoading] = useState(true);
     const [posStyle, setPosStyle] = useState<React.CSSProperties>({});
     const dropdownRef = useRef<HTMLDivElement>(null);
@@ -45,10 +83,20 @@ export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
     const localName = useAtom(getLocalHostDisplayNameAtom())[0];
 
     // Build connStatusMap from allConnStatus
-    const connStatusMap = new Map<string, ConnStatus>();
-    for (const conn of allConnStatus) {
-        connStatusMap.set(conn.connection, conn);
-    }
+    const connStatusMap = useMemo(() => {
+        const map = new Map<string, ConnStatus>();
+        for (const conn of allConnStatus) {
+            map.set(conn.connection, conn);
+        }
+        return map;
+    }, [allConnStatus]);
+
+    // Merge RPC list with connections.json so the Remote section is not empty when
+    // ConnListCommand fails, returns late, or omits hosts that only live in config.
+    const connList = useMemo(() => {
+        const fromConfig = connectionNamesFromConfig(fullConfig);
+        return Array.from(new Set([...rpcConnList, ...fromConfig]));
+    }, [rpcConnList, fullConfig]);
 
     // Positioning
     const updatePosition = useCallback(() => {
@@ -59,6 +107,7 @@ export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
             position: "fixed",
             top: rect.bottom,
             left: rect.left,
+            minWidth: Math.max(rect.width, 280),
         });
     }, [anchorRef]);
 
@@ -70,29 +119,46 @@ export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
         };
     }, [updatePosition]);
 
-    // Fetch connection lists
+    // Fetch connection lists independently — WSL failure must not block remotes.
     useEffect(() => {
+        let cancelled = false;
         async function loadConnections() {
-            try {
-                const connResult = await RpcApi.ConnListCommand(TabRpcClient, { timeout: 2000 });
-                setConnList(connResult || []);
-            } catch (e) {
-                console.error("Failed to load connections:", e);
+            const connPromise = RpcApi.ConnListCommand(TabRpcClient, { timeout: 5000 })
+                .then((result) => {
+                    if (!cancelled) {
+                        setRpcConnList(result || []);
+                    }
+                })
+                .catch((e) => {
+                    console.error("Failed to load connections:", e);
+                });
+            const wslPromise = RpcApi.WslListCommand(TabRpcClient, { timeout: 2000 })
+                .then((result) => {
+                    if (!cancelled) {
+                        setWslList(result || []);
+                    }
+                })
+                .catch((_e) => {
+                    // WSL not available on non-Windows — fail silently
+                });
+            await Promise.allSettled([connPromise, wslPromise]);
+            if (!cancelled) {
+                setLoading(false);
             }
-            try {
-                const wslResult = await RpcApi.WslListCommand(TabRpcClient, { timeout: 2000 });
-                setWslList(wslResult || []);
-            } catch (_e) {
-                // WSL not available on non-Windows — fail silently
-            }
-            setLoading(false);
         }
         loadConnections();
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
     // Autofocus input on mount
     useEffect(() => {
-        inputRef.current?.focus();
+        // Defer one frame so the portal is in the DOM
+        const id = requestAnimationFrame(() => {
+            inputRef.current?.focus();
+        });
+        return () => cancelAnimationFrame(id);
     }, []);
 
     // Click outside to close
@@ -123,32 +189,31 @@ export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
     );
 
     const { suggestions, selectionList, newConnectionIndex }: NewTabSuggestionsResult =
-        buildNewTabSuggestions(connList, wslList, filterText, fullConfig, connStatusMap, {
-            localName,
+        buildNewTabSuggestions(connList, wslList, filterText, fullConfig ?? ({} as FullConfigType), connStatusMap, {
+            localName: localName ?? "local",
             onCreate,
             onEditConnections,
         });
 
-    // Compute selectable items (all items except New Connection)
-    const selectableCount = newConnectionIndex !== null
-        ? selectionList.length - 1
-        : selectionList.length;
+    // Real connections / Edit Connections — not the guarded New Connection item
+    const selectableCount =
+        newConnectionIndex !== null ? selectionList.length - 1 : selectionList.length;
 
-    // Clamp rowIndex when suggestions change
+    // Clamp / auto-select rowIndex when suggestions or filter change
     useEffect(() => {
-        setRowIndex((idx) => {
-            if (selectableCount === 0) return 0;
-            return Math.min(idx, selectableCount - 1);
-        });
-    }, [filterText, selectableCount]);
+        setRowIndex((idx) =>
+            clampNewTabRowIndex(idx, selectableCount, newConnectionIndex, filterText.length)
+        );
+    }, [filterText, selectableCount, newConnectionIndex]);
 
     // Keyboard handler
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent<HTMLInputElement>) => {
             if (keyutil.checkKeyPressed(e.nativeEvent as unknown as WaveKeyboardEvent, "Enter")) {
                 e.preventDefault();
-                if (selectionList.length === 0) {
-                    // No items — do nothing (preserve typed text per spec S6)
+                // No highlight (e.g. only New Connection shown, user has not ↓) — do nothing.
+                // Prevents fast type + Enter from creating a new connection (spec S6).
+                if (rowIndex < 0 || selectionList.length === 0) {
                     return;
                 }
                 const item = selectionList[rowIndex];
@@ -169,14 +234,24 @@ export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
             }
             if (keyutil.checkKeyPressed(e.nativeEvent as unknown as WaveKeyboardEvent, "ArrowUp")) {
                 e.preventDefault();
-                setRowIndex((idx) => Math.max(idx - 1, 0));
+                setRowIndex((idx) => Math.max(idx - 1, -1));
                 return;
             }
             if (keyutil.checkKeyPressed(e.nativeEvent as unknown as WaveKeyboardEvent, "ArrowDown")) {
                 e.preventDefault();
                 setRowIndex((idx) => {
-                    // If we're at the last selectable item and New Connection exists,
-                    // allow moving to it. Otherwise clamp to selectable range.
+                    // From no-highlight (-1): first ↓ selects first real item, or New Connection
+                    // if that is the only entry.
+                    if (idx < 0) {
+                        if (selectableCount > 0) {
+                            return 0;
+                        }
+                        if (newConnectionIndex !== null) {
+                            return newConnectionIndex;
+                        }
+                        return -1;
+                    }
+                    // At last real item → allow one more ↓ onto New Connection
                     const maxSelectable = selectableCount - 1;
                     if (idx >= maxSelectable && newConnectionIndex !== null) {
                         return newConnectionIndex;
@@ -204,20 +279,20 @@ export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
 
     return createPortal(
         <div ref={dropdownRef} className="connection-dropdown" style={posStyle}>
-            <InputGroup className="mb-1">
+            <InputGroup className="connection-dropdown-filter mb-1">
                 <InputLeftElement>
                     <i className="fa fa-solid fa-magnifying-glass" style={{ color: "var(--grey-text-color)" }} />
                 </InputLeftElement>
                 <Input
                     ref={inputRef}
-                    placeholder="Connect to (username@host)..."
+                    placeholder="Type to filter connections..."
                     value={filterText}
                     onChange={(value: string) => setFilterText(value)}
                     onKeyDown={handleKeyDown}
                     autoFocus
                 />
             </InputGroup>
-            {loading ? (
+            {loading && connList.length === 0 ? (
                 <div className="connection-dropdown-item">
                     <span className="typeahead-item-name">Loading...</span>
                 </div>

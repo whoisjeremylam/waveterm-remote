@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wavetermdev/waveterm/pkg/eventbus"
+	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
 	"github.com/wavetermdev/waveterm/pkg/util/utilfn"
 	"github.com/wavetermdev/waveterm/pkg/waveobj"
 	"github.com/wavetermdev/waveterm/pkg/wconfig"
@@ -335,6 +336,10 @@ func CreateTab(ctx context.Context, workspaceId string, tabName string, activate
 			tabORef := waveobj.ORefFromWaveObj(tab)
 			wstore.UpdateObjectMeta(ctx, *tabORef, waveobj.MetaMapType{waveobj.MetaKey_TabBackground: tabBg}, false)
 		}
+	}
+	// Frecency for + New Tab: count intentional tab opens, not SSH reconnects.
+	if connName != "" {
+		conncontroller.RecordConnectionUsage(connName)
 	}
 	return tab.OID, nil
 }

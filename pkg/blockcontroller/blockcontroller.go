@@ -190,27 +190,33 @@ func StartupReconnectDurableShells(ctx context.Context) {
 
 	log.Printf("[startup] found %d durable shell blocks, establishing connections", len(durableBlocks))
 
-	// Collect unique connections and establish them
+	// Collect unique connections and establish them.
+	//
+	// NeedsInteractiveAuth hosts (password / passphrase / cold-start unknown) are
+	// NOT connected here. EnsureConnection would open an SSH handshake and call
+	// GetUserInput before the Electron frontend has subscribed to "userinput"
+	// events. The prompt is then invisible until the 60s GetUserInput timeout —
+	// the user sees only a reconnecting overlay; tab switch re-fires ConnEnsure
+	// and the prompt appears immediately. Defer those hosts to UI-driven
+	// ConnEnsure (VisibilityReconnectHandler + ControllerResync) once the UI is up.
+	//
+	// Silent reconnects (authPromptNone / cached password) still ensure here.
 	establishedConns := make(map[string]bool)
 	for _, db := range durableBlocks {
 		if establishedConns[db.ConnName] {
 			continue
 		}
 		establishedConns[db.ConnName] = true
+		if conncontroller.NeedsInteractiveAuth(db.ConnName) {
+			log.Printf("[startup] deferring interactive connection %q until UI-driven ensure (password/passphrase prompt)", db.ConnName)
+			continue
+		}
 		go func(connName string) {
 			defer func() {
 				panichandler.PanicHandler("jobcontroller:StartupReconnectDurableShells-conn", recover())
 			}()
-			// Connections that need interactive auth (password prompt) must NOT
-			// use a timeout context — the password prompt needs to stay up until
-			// the user responds. Only use a timeout for key-based connections.
-			var connCtx context.Context
-			var cancel context.CancelFunc
-			if conncontroller.NeedsInteractiveAuth(connName) {
-				connCtx, cancel = context.WithCancel(context.Background())
-			} else {
-				connCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-			}
+			// Key-based / cached-password / secret-store: silent reconnect with a bound.
+			connCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			err := conncontroller.EnsureConnection(connCtx, connName)
 			if err != nil {
@@ -227,11 +233,14 @@ func StartupReconnectDurableShells(ctx context.Context) {
 		}(db.ConnName)
 	}
 
-	// Wait for connections to be established, then reconnect jobs
-	// Use a polling approach with a timeout to wait for connections
+	// Wait for silent reconnects, then reconnect jobs for whatever is up.
+	// Interactive hosts connect later via the UI; their jobs attach on Resync/Ensure.
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer waitCancel()
 	for connName := range establishedConns {
+		if conncontroller.NeedsInteractiveAuth(connName) {
+			continue
+		}
 		waitForConn(waitCtx, connName)
 	}
 

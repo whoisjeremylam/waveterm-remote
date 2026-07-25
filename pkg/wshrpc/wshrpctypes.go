@@ -98,6 +98,10 @@ type WshRpcInterface interface {
 	ConnReinstallWshCommand(ctx context.Context, data ConnExtData) error
 	ConnConnectCommand(ctx context.Context, connRequest ConnRequest) error
 	ConnDisconnectCommand(ctx context.Context, connName string) error
+	// ConnStopAutoRetryCommand stops the reconnect scheduler and attention
+	// heartbeat for a connection without disconnecting or clearing the password
+	// cache (UX-0.5). Sets SuppressAutoReconnect until explicit Reconnect.
+	ConnStopAutoRetryCommand(ctx context.Context, connName string) error
 	ConnListCommand(ctx context.Context) ([]string, error)
 	WslListCommand(ctx context.Context) ([]string, error)
 	WslDefaultDistroCommand(ctx context.Context) (string, error)
@@ -436,6 +440,10 @@ type ConnStatus struct {
 	ReconnectError                string   `json:"reconnecterror,omitempty"`
 	ForwardingRules               []string `json:"forwardingrules,omitempty"`
 	CanAutoReconnect              bool     `json:"canautoreconnect"` // true if scheduler can auto-reconnect without user input
+	// SuppressAutoReconnect is true after user Disconnect, Stop auto-retry,
+	// password Cancel, or permanent handshake failure. Auto paths no-op until
+	// explicit Reconnect (UX-0.1, UX-0.4, UX-0.5).
+	SuppressAutoReconnect bool `json:"suppressautoreconnect,omitempty"`
 }
 
 type WebSelectorOpts struct {

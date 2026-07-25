@@ -83,6 +83,18 @@ var connectInternalTestHook func(conn *SSHConn, ctx context.Context, connFlags *
 // test hook for getConnectionConfig — allows mocking per-connection settings in tests
 var getConnectionConfigTestHook func(conn *SSHConn) (wconfig.ConnKeywords, bool)
 
+// ErrAutoReconnectSuppressed is returned by AttemptReconnect when the sticky
+// SuppressAutoReconnect flag is set (user Disconnect, Stop auto-retry, password
+// Cancel, or permanent failure). Callers must treat this as a clean stop, not a
+// transient dial failure — do not re-arm reconnect countdown UI.
+var ErrAutoReconnectSuppressed = errors.New("auto-reconnect suppressed")
+
+// OnUserSuppressAutoReconnect is invoked after user-initiated suppress is set
+// (Close / Disconnect, PauseAutoReconnect). jobcontroller registers
+// StopReconnectScheduler here to avoid an import cycle (conncontroller must
+// not import jobcontroller). Nil-safe; optional.
+var OnUserSuppressAutoReconnect func(connName string)
+
 type SSHConn struct {
 	lock          *sync.Mutex // this lock protects the fields in the struct from concurrent access
 	lifecycleLock *sync.Mutex // this protects the lifecycle from concurrent calls
@@ -116,11 +128,27 @@ type SSHConn struct {
 	LastConnectTryAt int64         // UnixMilli of last Connect() attempt (cooldown guard)
 	LastErrorCode    string        // error code from last failed Connect() (e.g., "auth-failed")
 
+	// SuppressAutoReconnect is a sticky "do not auto-reconnect" flag. Set by
+	// user-initiated Disconnect (Close), Stop auto-retry (PauseAutoReconnect),
+	// password Cancel (user-cancelled), and permanent handshake failures
+	// (host-key, etc.). Cleared only by an explicit Connect() (Reconnect button,
+	// ConnConnectCommand, typeahead connect). Scheduler, HandleSystemResume,
+	// and visibility ConnEnsure must no-op while this is set.
+	SuppressAutoReconnect bool
+
 	// authPromptState records whether the last successful SSH handshake required
 	// an interactive user prompt (password typed, key passphrase, or
 	// keyboard-interactive). Used by CanReconnectWithoutPrompt to decide whether
 	// auto-reconnect can run without user involvement. See authPrompt* constants.
 	authPromptState atomic.Int32
+
+	// connectCancel cancels the in-flight Connect() context (A2 hard-abort Stop).
+	// Set while Connect runs under lifecycleLock; cleared when Connect returns.
+	connectCancel context.CancelFunc
+	// userAbortConnect is set only by AbortConnect (Stop / password Cancel).
+	// Distinguishes user hard-abort from parent-context deadline (scheduler /
+	// EnsureConnection timeout) — the latter must NOT set sticky suppress.
+	userAbortConnect bool
 }
 
 type ForwardingRule struct {
@@ -202,12 +230,15 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 	// Determine if auto-reconnect is possible without user input:
 	// - Password is cached from a previous session, OR
 	// - Connection doesn't require interactive auth (key-based only)
+	// - And SuppressAutoReconnect is not set (user Disconnect / Stop retry / cancel)
 	canAutoReconnect := conn.canAutoReconnectLocked()
 	return wshrpc.ConnStatus{
 		Status:                        conn.Status,
 		Connected:                     conn.Status == Status_Connected,
 		Connection:                    conn.Opts.String(),
-		HasConnected:                  (conn.LastConnectTime > 0),
+		// ConnectCount is persisted across restarts; LastConnectTime is session-scoped.
+		// Either signal means this host has been used and belongs in ConnList.
+		HasConnected:                  (conn.LastConnectTime > 0 || conn.ConnectCount > 0),
 		ActiveConnNum:                 conn.ActiveConnNum,
 		ConnectCount:                  conn.ConnectCount,
 		LastConnectTime:               conn.LastConnectTime,
@@ -225,6 +256,7 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 		ReconnectError:                conn.ReconnectError,
 		ForwardingRules:               forwardingRules,
 		CanAutoReconnect:              canAutoReconnect,
+		SuppressAutoReconnect:         conn.SuppressAutoReconnect,
 	}
 }
 
@@ -265,9 +297,11 @@ func (conn *SSHConn) CloseInvoluntary() error {
 }
 
 // closeInternal is the shared disconnect path. When clearPassword is true,
-// the cached password is wiped (explicit user disconnect). When false, it is
-// preserved (involuntary disconnect — stall, sleep/wake) so reconnect can
-// reuse it.
+// the cached password is wiped (explicit user disconnect) and
+// SuppressAutoReconnect is set so scheduler/resume/visibility do not
+// reconnect until the user clicks Reconnect. When clearPassword is false
+// (involuntary disconnect — stall, sleep/wake), password is preserved and
+// suppress is NOT set so auto-heal continues.
 func (conn *SSHConn) closeInternal(clearPassword bool) error {
 	conn.lifecycleLock.Lock()
 	defer conn.lifecycleLock.Unlock()
@@ -278,6 +312,14 @@ func (conn *SSHConn) closeInternal(clearPassword bool) error {
 			conn.Status = Status_Disconnected
 		}
 		conn.ConnHealthStatus = ConnHealthStatus_Good
+		if clearPassword {
+			// Sticky suppress after user Disconnect (UX-0.1).
+			conn.SuppressAutoReconnect = true
+			// Clear reconnect countdown UI state.
+			conn.ReconnectAttempt = 0
+			conn.ReconnectNextAttempt = 0
+			conn.ReconnectError = ""
+		}
 	})
 	if clearPassword {
 		// Clear cached password on explicit disconnect
@@ -286,8 +328,162 @@ func (conn *SSHConn) closeInternal(clearPassword bool) error {
 	// Fire event BEFORE closeInternal_withlifecyclelock so the UI updates
 	// even if client.Close() blocks on a dead network connection.
 	conn.FireConnChangeEvent()
+	// Stop reconnect scheduler via registered callback (jobcontroller). Covers
+	// Close, DisconnectClient, ConnDisconnectCommand without import cycle.
+	if clearPassword && OnUserSuppressAutoReconnect != nil {
+		OnUserSuppressAutoReconnect(conn.GetName())
+	}
 	conn.closeInternal_withlifecyclelock(nil)
 	return nil
+}
+
+// IsSuppressAutoReconnect reports whether auto-reconnect paths must no-op.
+func (conn *SSHConn) IsSuppressAutoReconnect() bool {
+	conn.lock.Lock()
+	defer conn.lock.Unlock()
+	return conn.SuppressAutoReconnect
+}
+
+// SetSuppressAutoReconnect sets the sticky do-not-auto-reconnect flag.
+// Used by PauseAutoReconnect and permanent-failure / password-cancel paths.
+func (conn *SSHConn) SetSuppressAutoReconnect(v bool) {
+	conn.WithLock(func() {
+		conn.SuppressAutoReconnect = v
+	})
+}
+
+// PauseAutoReconnect stops scheduler/visibility reconnect-retry without
+// clearing the cached password (UX-0.5 Stop auto-retry). Distinct from Close(),
+// which clears the password. Sets SuppressAutoReconnect, hard-aborts any
+// in-flight Connect (A2), cancels pending auth prompts for this conn, and
+// clears reconnect countdown so the overlay shows static disconnected + Reconnect.
+//
+// Note: this is auto-reconnect / dial-retry only — not SSH keepalive heartbeats.
+func (conn *SSHConn) PauseAutoReconnect() {
+	conn.WithLock(func() {
+		conn.SuppressAutoReconnect = true
+		conn.ReconnectAttempt = 0
+		conn.ReconnectNextAttempt = 0
+		conn.ReconnectError = ""
+		// Immediately leave "connecting" so the overlay does not wait for dial timeout.
+		if conn.Status == Status_Connecting {
+			conn.Status = Status_Disconnected
+			conn.Error = ""
+			conn.LastErrorCode = remote.ConnErrCode_UserCancelled
+		}
+	})
+	conn.AbortConnect()
+	userinput.CancelAllAuthPromptsForConn(conn.GetName())
+	conn.FireConnChangeEvent()
+	if OnUserSuppressAutoReconnect != nil {
+		OnUserSuppressAutoReconnect(conn.GetName())
+	}
+}
+
+// AbortConnect cancels the in-flight Connect() context, if any (A2).
+// Marks userAbortConnect so Connect's error path applies sticky suppress only
+// for real user Stop/Cancel — not for scheduler/Ensure timeouts on the parent ctx.
+func (conn *SSHConn) AbortConnect() {
+	conn.lock.Lock()
+	conn.userAbortConnect = true
+	cancel := conn.connectCancel
+	conn.connectCancel = nil
+	conn.lock.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// staleConnectingThreshold: if a Connect has been "connecting" longer than this
+// with no active password prompt, EnsureConnection may soft-cancel and retry.
+// Covers hung dials while a packet filter (e.g. Little Snitch on unsigned builds)
+// blocks the binary — after the user allows network, focus/Ensure can abandon
+// the dead dial instead of waiting up to DefaultConnectionTimeout (60s).
+const staleConnectingThreshold = 8 * time.Second
+
+// softCancelInFlightConnect abandons a hung dial/handshake without sticky
+// suppress. Distinct from AbortConnect (user Stop), which sets userAbortConnect
+// and causes SuppressAutoReconnect. Context cancel alone is classified as a
+// transient dial/network failure so visibility and scheduler can retry.
+func (conn *SSHConn) softCancelInFlightConnect() {
+	conn.lock.Lock()
+	cancel := conn.connectCancel
+	// Do NOT set userAbortConnect — this is not a user Stop/Cancel.
+	conn.lock.Unlock()
+	if cancel != nil {
+		log.Printf("[conn:%s] softCancelInFlightConnect: canceling stale in-flight connect", conn.GetName())
+		cancel()
+	}
+}
+
+// isStaleConnecting reports whether Connect has been in-flight long enough to
+// treat as a hung dial (network blocked at launch, etc.). Never true while a
+// password/passphrase prompt is waiting — the user may be typing.
+func (conn *SSHConn) isStaleConnecting() bool {
+	conn.lock.Lock()
+	status := conn.Status
+	started := conn.LastConnectTryAt
+	conn.lock.Unlock()
+	if status != Status_Connecting || started == 0 {
+		return false
+	}
+	if time.Now().UnixMilli()-started < staleConnectingThreshold.Milliseconds() {
+		return false
+	}
+	// Active auth UI: do not kill the attempt the user is answering.
+	if userinput.HasActiveAuthPromptForConn(conn.GetName()) {
+		return false
+	}
+	return true
+}
+
+// CancelAuthForConnection handles password/passphrase Cancel for a shared
+// connection (A3): suppress auto-reconnect, abort in-flight Connect, fail all
+// pending auth prompts for this connName, stop scheduler. Password cache is
+// left alone (user may Reconnect and type again). Does not clear suppress on
+// the next EnsureConnection — only explicit Connect() clears suppress.
+func CancelAuthForConnection(connName string) {
+	if connName == "" || IsLocalConnName(connName) {
+		return
+	}
+	// Cancel every pending password/passphrase UI waiter first so a second
+	// tab does not show another dialog after the first Cancel.
+	n := userinput.CancelAllAuthPromptsForConn(connName)
+	if n > 0 {
+		log.Printf("[conn:%s] CancelAuthForConnection: canceled %d pending auth prompt(s)", connName, n)
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := MaybeGetConn(connOpts)
+	if conn == nil {
+		return
+	}
+	conn.WithLock(func() {
+		conn.SuppressAutoReconnect = true
+		conn.ReconnectAttempt = 0
+		conn.ReconnectNextAttempt = 0
+		conn.ReconnectError = ""
+		conn.LastErrorCode = remote.ConnErrCode_UserCancelled
+		if conn.Status == Status_Connecting {
+			conn.Status = Status_Disconnected
+			conn.Error = "Canceled by the user"
+		}
+	})
+	conn.AbortConnect()
+	conn.FireConnChangeEvent()
+	if OnUserSuppressAutoReconnect != nil {
+		OnUserSuppressAutoReconnect(conn.GetName())
+	}
+}
+
+// ClearSuppressAutoReconnect clears the sticky suppress flag. Called at the
+// start of an explicit Connect() so future involuntary drops auto-heal again.
+func (conn *SSHConn) ClearSuppressAutoReconnect() {
+	conn.WithLock(func() {
+		conn.SuppressAutoReconnect = false
+	})
 }
 
 func (conn *SSHConn) closeInternal_withlifecyclelock(expectedClient *ssh.Client) {
@@ -905,6 +1101,10 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 		} else {
 			conn.Status = Status_Connecting
 			conn.Error = ""
+			// Explicit Connect clears sticky suppress (UX-0.1 / UX-0.5).
+			// Auto paths (EnsureConnection, AttemptReconnect) must check
+			// SuppressAutoReconnect before calling Connect so they no-op.
+			conn.SuppressAutoReconnect = false
 			connectAllowed = true
 		}
 	})
@@ -930,51 +1130,101 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 	conn.setPendingAuth()
 	defer conn.clearPendingAuth()
 
-	err := conn.connectInternal(ctx, connFlags)
+	// Child context so PauseAutoReconnect / CancelAuth can hard-abort the dial
+	// and password wait (A2 / A3) without waiting for network timeouts.
+	// IMPORTANT: parent ctx deadline (scheduler / EnsureConnection) must NOT be
+	// treated as user Cancel — that was setting sticky suppress on every timed-out
+	// reconnect and freezing auto-retry for all hosts that hit a timeout.
+	connectCtx, connectCancel := context.WithCancel(ctx)
+	conn.lock.Lock()
+	conn.userAbortConnect = false
+	conn.connectCancel = connectCancel
+	conn.lock.Unlock()
+	defer func() {
+		connectCancel()
+		conn.lock.Lock()
+		conn.connectCancel = nil
+		conn.lock.Unlock()
+	}()
+
+	err := conn.connectInternal(connectCtx, connFlags)
 
 	if err != nil {
-		errorCode, _ := remote.ClassifyConnError(err)
-		conn.Infof(ctx, "ERROR [%s] %v\n\n", errorCode, err)
+		errorCode, errorSubCode := remote.ClassifyConnError(err)
+		conn.lock.Lock()
+		userAbort := conn.userAbortConnect
+		conn.userAbortConnect = false
+		conn.lock.Unlock()
+
+		// Sticky suppress only for:
+		//  - userAbort (Stop / AbortConnect), or
+		//  - coded user-cancelled from password UI Cancel ("Canceled by the user").
+		// Parent scheduler/Ensure timeouts must NOT suppress.
+		if userAbort {
+			errorCode = remote.ConnErrCode_UserCancelled
+		} else if errorCode != remote.ConnErrCode_UserCancelled {
+			if strings.Contains(err.Error(), "Canceled by the user") {
+				errorCode = remote.ConnErrCode_UserCancelled
+			}
+		}
+		conn.Infof(ctx, "ERROR [%s/%s] %v\n\n", errorCode, errorSubCode, err)
 		conn.WithLock(func() {
-			conn.Status = Status_Error
-			conn.Error = err.Error()
+			// If PauseAutoReconnect already moved us to Disconnected, keep it.
+			if conn.Status == Status_Connecting {
+				conn.Status = Status_Error
+			}
+			if conn.Error == "" {
+				conn.Error = err.Error()
+			}
 			conn.LastErrorCode = errorCode
+			// Sticky suppress ONLY for real user Stop/Cancel or permanent failures.
+			// Never for dial timeouts / network errors (those must keep auto-retrying).
+			if remote.IsPermanentConnError(errorCode) || errorCode == remote.ConnErrCode_UserCancelled {
+				conn.SuppressAutoReconnect = true
+			}
 		})
-		// Clear cached password on auth failure so user is re-prompted
-		if errorCode == "auth-failed" {
+		// Clear cached password / authPromptState ONLY when the server rejected
+		// credentials (wrong password/key). Network flaps ("handshake failed",
+		// EOF, reset) must keep the cache so reconnect is silent when the path returns.
+		if remote.IsCredentialRejected(errorCode, errorSubCode) {
 			conn.clearCachedPassword()
-			// Reset the auth-prompt flag: the credential was rejected, so the prior
-			// "no prompt needed" assumption is invalid. CanReconnectWithoutPrompt
-			// falls back to the config-based check (or skips the scheduler) until a
-			// successful reconnect re-establishes the flag.
 			conn.authPromptState.Store(authPromptUnknown)
-			// Launch a background goroutine to re-prompt the user for a new password.
-			// This is independent of the current Connect() lifecycle — the password
-			// buffer model means the prompt stays visible until the user acts.
+			// Re-prompt for a new password (not after user Cancel/Stop suppress).
+			if !conn.IsSuppressAutoReconnect() {
+				go conn.requestPasswordRePrompt()
+			}
+		}
+		// User-input timeout with no cached password (cold start UI race): re-prompt.
+		// Do not clear cache here — timeout is not credential rejection.
+		if errorCode == remote.ConnErrCode_UserTimeout && !conn.IsSuppressAutoReconnect() && conn.getCachedPassword() == nil {
 			go conn.requestPasswordRePrompt()
 		}
 		conn.closeInternal_withlifecyclelock(nil)
 	} else {
 		conn.Infof(ctx, "successfully connected (wsh:%v)\n\n", conn.WshEnabled.Load())
-		var connectCount int64
 		var connName string
+		var interactivePromptUsed bool
 		conn.WithLock(func() {
 			conn.Status = Status_Connected
+			// Recency for frecency (session-scoped). ConnectCount is NOT bumped
+			// here — durable reconnects / password re-auth would inflate the
+			// ranking. Count is recorded via RecordConnectionUsage on CreateTab.
 			conn.LastConnectTime = time.Now().UnixMilli()
-			conn.ConnectCount++
-			connectCount = conn.ConnectCount
 			connName = conn.GetName()
 			conn.LastErrorCode = "" // clear error code on success
+			// authPromptState is set in connectInternal before we get here.
+			interactivePromptUsed = conn.authPromptState.Load() == authPromptUsed
 			if conn.ActiveConnNum == 0 {
 				conn.ActiveConnNum = int(activeConnCounter.Add(1))
 			}
 		})
-		// persist connectcount outside the lock to avoid holding it during disk IO.
-		// A persistence failure is not a connect failure — the SSH connection succeeded;
-		// we log the warning and continue (same pattern as conn:wshenabled below).
-		persistErr := wconfig.SetConnectionsConfigValue(connName, waveobj.MetaMapType{"conn:connectcount": connectCount})
+		// Persist authpromptused (cold-start password classification). ConnectCount
+		// is persisted from RecordConnectionUsage when the user opens a new tab.
+		persistErr := wconfig.SetConnectionsConfigValue(connName, waveobj.MetaMapType{
+			"conn:authpromptused": interactivePromptUsed,
+		})
 		if persistErr != nil {
-			log.Printf("warning: error writing conn:connectcount to connections file: %v\n", persistErr)
+			log.Printf("warning: error writing connection persistence fields to connections file: %v\n", persistErr)
 		}
 	}
 	conn.FireConnChangeEvent()
@@ -1095,15 +1345,21 @@ func (conn *SSHConn) requestPasswordRePrompt() {
 		defer func() {
 			panichandler.PanicHandler("conncontroller:requestPasswordRePrompt", recover())
 		}()
+		// Do not re-prompt after user Cancel / Stop (A3).
+		if conn.IsSuppressAutoReconnect() {
+			log.Printf("[conn:%s] requestPasswordRePrompt: suppressed, skip", conn.GetName())
+			return
+		}
 		ctx, cancelFn := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancelFn()
 		request := &userinput.UserInputRequest{
 			ResponseType: "text",
-			QueryText:    fmt.Sprintf("Password for connection  \n%s\n\nPassword:", conn.GetName()),
-			Markdown:     true,
-			Title:        "Password Authentication",
-			PromptType:   "password",
-			ConnName:     conn.GetName(),
+			// Same copy as handshake password prompt (unified wording).
+			QueryText:   fmt.Sprintf("Password for connection  \n%s\n\nPassword:", conn.GetName()),
+			Markdown:    true,
+			Title:       "Password Authentication",
+			PromptType:  "password",
+			ConnName:    conn.GetName(),
 		}
 		response, err := userinput.GetUserInput(ctx, request)
 		if err != nil {
@@ -1111,6 +1367,10 @@ func (conn *SSHConn) requestPasswordRePrompt() {
 			return
 		}
 		if response.Text == "" {
+			return
+		}
+		if conn.IsSuppressAutoReconnect() {
+			log.Printf("[conn:%s] requestPasswordRePrompt: suppressed after prompt, skip connect", conn.GetName())
 			return
 		}
 		conn.cachePassword(response.Text)
@@ -1139,7 +1399,8 @@ func (conn *SSHConn) canAutoReconnectLocked() bool {
 //  1. Cached password (in-memory, from a prior successful prompt) — replayable.
 //  2. Last error was auth-failed — credential is wrong; retry won't help, so
 //     skip the scheduler and wait for the user to re-auth.
-//  3. Runtime auth-prompt flag (set after a successful handshake):
+//  3. Runtime auth-prompt flag (set after a successful handshake, or seeded
+//     from connections.json conn:authpromptused on cold start):
 //     - authPromptNone: no prompt was needed (unencrypted key, agent key, or
 //     replayable secret) — auto-reconnect is safe.
 //     - authPromptUsed: a prompt was needed and no password was cached (cached
@@ -1149,6 +1410,15 @@ func (conn *SSHConn) canAutoReconnectLocked() bool {
 //     ~/.ssh/config for a publickey (covers key-based connections that only set
 //     conn:wshenabled in connections.json).
 func (conn *SSHConn) canReconnectWithoutPromptLocked() bool {
+	// User Disconnect / Stop auto-retry / password Cancel / permanent failure
+	// — no auto-reconnect until explicit Reconnect (UX-0.1, UX-0.4, UX-0.5).
+	if conn.SuppressAutoReconnect {
+		return false
+	}
+	// Permanent handshake failures (host-key, known_hosts, config) never auto-retry.
+	if remote.IsPermanentConnError(conn.LastErrorCode) {
+		return false
+	}
 	// A cached password can be replayed without prompting.
 	if conn.CachedPassword != nil {
 		return true
@@ -1159,6 +1429,14 @@ func (conn *SSHConn) canReconnectWithoutPromptLocked() bool {
 	if conn.LastErrorCode == "auth-failed" {
 		return false
 	}
+	// Password Cancel: sticky until manual Reconnect (also sets suppress above,
+	// but keep the code check for safety if suppress was cleared incorrectly).
+	if conn.LastErrorCode == remote.ConnErrCode_UserCancelled {
+		return false
+	}
+	// Re-seed from connections.json if still unknown (covers test conns created
+	// without going through getConnInternal, and late-written config values).
+	conn.seedAuthPromptStateFromConfig_nolock()
 	switch conn.authPromptState.Load() {
 	case authPromptNone:
 		// Last successful connect used no prompt (replayable key/secret).
@@ -1173,6 +1451,43 @@ func (conn *SSHConn) canReconnectWithoutPromptLocked() bool {
 		// for a publickey. Uses conn.getConnectionConfig() so the connections.json
 		// settings (batch mode, password secret, preferred auth) are respected.
 		return conn.canReconnectFromKeywordsOrPubkey()
+	}
+}
+
+// ForceAuthPromptNoneForTest marks a connection as last-connected without an
+// interactive prompt. Used by startup reconnect tests so EnsureConnection is
+// not deferred by the interactive-auth cold-start path.
+func ForceAuthPromptNoneForTest(conn *SSHConn) {
+	if conn == nil {
+		return
+	}
+	conn.authPromptState.Store(authPromptNone)
+}
+
+// ForceAuthPromptUsedForTest marks a connection as needing an interactive prompt
+// (password/passphrase). Used by tests of the deferred-startup path.
+func ForceAuthPromptUsedForTest(conn *SSHConn) {
+	if conn == nil {
+		return
+	}
+	conn.authPromptState.Store(authPromptUsed)
+}
+
+// seedAuthPromptStateFromConfig_nolock loads conn:authpromptused from
+// connections.json into authPromptState when the runtime flag is still unknown.
+// Must be called with conn.lock held (or before the conn is shared).
+func (conn *SSHConn) seedAuthPromptStateFromConfig_nolock() {
+	if conn.authPromptState.Load() != authPromptUnknown {
+		return
+	}
+	connConfig, ok := conn.getConnectionConfig()
+	if !ok || connConfig.ConnAuthPromptUsed == nil {
+		return
+	}
+	if *connConfig.ConnAuthPromptUsed {
+		conn.authPromptState.Store(authPromptUsed)
+	} else {
+		conn.authPromptState.Store(authPromptNone)
 	}
 }
 
@@ -1262,14 +1577,27 @@ func hasPublicKeyAuthForConn(connName string) bool {
 }
 
 // canReconnectFromConfigByName is the config-based fallback for a connection
-// that does NOT exist in the controller map (e.g., cold start). It reads
-// connections.json directly (not via the conn's getConnectionConfig, since
-// there is no conn) and checks ~/.ssh/config for a publickey.
+// that does NOT exist in the controller map (e.g., cold start before GetConn).
+// It reads connections.json directly and checks ~/.ssh/config for a publickey.
+//
+// Order:
+//  1. conn:authpromptused=true → cannot silent-reconnect (needs a prompt)
+//  2. conn:authpromptused=false → can silent-reconnect (prior key/secret auth)
+//  3. connections.json keywords (batch mode, password secret, preferred auth)
+//  4. ~/.ssh/config publickey (IdentityFile present)
 func canReconnectFromConfigByName(connName string) bool {
 	config := wconfig.GetWatcher().GetFullConfig()
 	connConfig, ok := config.Connections[connName]
-	if ok && connKeywordsAllowReconnect(&connConfig) {
-		return true
+	if ok {
+		if connConfig.ConnAuthPromptUsed != nil {
+			// Persisted from a prior successful handshake — trust it over the
+			// publickey false-positive (local IdentityFiles that this host
+			// does not accept).
+			return !*connConfig.ConnAuthPromptUsed
+		}
+		if connKeywordsAllowReconnect(&connConfig) {
+			return true
+		}
 	}
 	return hasPublicKeyAuthForConn(connName)
 }
@@ -1739,6 +2067,33 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 	if cachedPw != nil {
 		ctx = remote.ContextWithCachedPassword(ctx, cachedPw)
 	}
+	// When a previous successful handshake needed an interactive prompt and we
+	// have no cached password, try password/kbd-interactive before publickey.
+	// Otherwise cold-start reconnect burns MaxAuthTries on local IdentityFiles
+	// that this host does not accept, fails once, and only then shows the
+	// password prompt (feels like "wait one retry").
+	// Also prefer interactive when state is unknown and no publickey is configured
+	// (password-only hosts on first cold start after a network block).
+	conn.WithLock(func() {
+		conn.seedAuthPromptStateFromConfig_nolock()
+	})
+	if cachedPw == nil {
+		state := conn.authPromptState.Load()
+		preferInteractive := state == authPromptUsed
+		if state == authPromptUnknown {
+			// No prior session flag: only skip publickey-first when we have no
+			// key path (password-only). Key hosts keep default order.
+			preferInteractive = !hasPublicKeyAuthForConn(conn.GetName())
+		}
+		if preferInteractive {
+			flagsCopy := *connFlags
+			// Override PreferredAuthentications so password methods run first.
+			// mergeKeywords in ConnectToClient applies connFlags after ssh config.
+			flagsCopy.SshPreferredAuthentications = []string{"password", "keyboard-interactive", "publickey"}
+			connFlags = &flagsCopy
+			conn.Infof(ctx, "preferring interactive auth methods (state=%d)\n", state)
+		}
+	}
 	connectStart := time.Now()
 	client, _, sshKeywords, authTracker, err := remote.ConnectToClient(ctx, conn.Opts, nil, 0, connFlags)
 	connectDuration := time.Since(connectStart)
@@ -1927,11 +2282,25 @@ func getConnInternal(opts *remote.SSHOpts, createIfNotExists bool) *SSHConn {
 	defer globalLock.Unlock()
 	rtn := clientControllerMap[*opts]
 	if rtn == nil && createIfNotExists {
-		// Load persisted ConnectCount from connections.json
+		// Load persisted ConnectCount and auth-prompt flag from connections.json
 		var connectCount int64
+		var authPromptSeed int32 = authPromptUnknown
 		config := wconfig.GetWatcher().GetFullConfig()
-		if connSettings, ok := config.Connections[opts.String()]; ok && connSettings.ConnConnectCount != nil {
-			connectCount = *connSettings.ConnConnectCount
+		if connSettings, ok := config.Connections[opts.String()]; ok {
+			if connSettings.ConnConnectCount != nil {
+				connectCount = *connSettings.ConnConnectCount
+			}
+			// Seed authPromptState so cold-start reconnect knows whether the last
+			// successful handshake needed a password/passphrase prompt. Without
+			// this, password-auth hosts that also have local IdentityFiles are
+			// misclassified as silent-reconnectable via the publickey fallback.
+			if connSettings.ConnAuthPromptUsed != nil {
+				if *connSettings.ConnAuthPromptUsed {
+					authPromptSeed = authPromptUsed
+				} else {
+					authPromptSeed = authPromptNone
+				}
+			}
 		}
 		rtn = &SSHConn{
 			lock:             &sync.Mutex{},
@@ -1942,6 +2311,7 @@ func getConnInternal(opts *remote.SSHOpts, createIfNotExists bool) *SSHConn {
 			Opts:             opts,
 			ConnectCount:     connectCount,
 		}
+		rtn.authPromptState.Store(authPromptSeed)
 		clientControllerMap[*opts] = rtn
 	}
 	return rtn
@@ -1951,6 +2321,38 @@ func getConnInternal(opts *remote.SSHOpts, createIfNotExists bool) *SSHConn {
 func GetConn(opts *remote.SSHOpts) *SSHConn {
 	conn := getConnInternal(opts, true)
 	return conn
+}
+
+// RecordConnectionUsage bumps ConnectCount + LastConnectTime for a remote
+// connection when the user intentionally opens it (e.g. + New Tab / CreateTab).
+// Durable-session auto-reconnect does NOT call this — only user-driven tab
+// creation — so password re-auth on restart does not dominate the new-tab list.
+func RecordConnectionUsage(connName string) {
+	if connName == "" || IsLocalConnName(connName) {
+		return
+	}
+	// WSL names are not SSHOpts — skip structured SSH map (no ConnectCount path today).
+	if IsWslConnName(connName) {
+		return
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := GetConn(connOpts)
+	var connectCount int64
+	conn.WithLock(func() {
+		conn.ConnectCount++
+		conn.LastConnectTime = time.Now().UnixMilli()
+		connectCount = conn.ConnectCount
+	})
+	persistErr := wconfig.SetConnectionsConfigValue(connName, waveobj.MetaMapType{
+		"conn:connectcount": connectCount,
+	})
+	if persistErr != nil {
+		log.Printf("warning: error writing conn:connectcount for %q: %v\n", connName, persistErr)
+	}
+	conn.FireConnChangeEvent()
 }
 
 // does NOT connect, can return nil
@@ -2023,9 +2425,12 @@ func sureNoPromptNeeded(connName string) bool {
 	if err != nil {
 		return false
 	}
-	conn := MaybeGetConn(connOpts)
+	// Prefer GetConn so cold-start seeds authPromptState from connections.json
+	// before we decide on a startup timeout.
+	conn := GetConn(connOpts)
 	if conn != nil {
 		conn.lock.Lock()
+		conn.seedAuthPromptStateFromConfig_nolock()
 		state := conn.authPromptState.Load()
 		conn.lock.Unlock()
 		if state == authPromptNone {
@@ -2050,11 +2455,47 @@ func EnsureConnection(ctx context.Context, connName string) error {
 	if conn == nil {
 		return fmt.Errorf("connection not found: %s", connName)
 	}
+	// UX-0.1 / UX-0.5: visibility and other auto Ensure paths must not
+	// reconnect after user Disconnect, Stop auto-retry, password Cancel, or
+	// permanent failures. Explicit ConnConnectCommand calls Connect() directly.
+	if conn.IsSuppressAutoReconnect() {
+		log.Printf("[conn:%s] EnsureConnection: auto-reconnect suppressed, no-op", connName)
+		return nil
+	}
 	connStatus := conn.DeriveConnStatus()
 	switch connStatus.Status {
 	case Status_Connected:
 		return nil
 	case Status_Connecting:
+		// Hung dial (e.g. Little Snitch blocked unsigned binary at launch): after
+		// the user allows network, focus/visibility fires Ensure again. Soft-cancel
+		// the stale attempt and retry so the password prompt is not deferred until
+		// the original 60s dial timeout. Fresh connects and active password prompts
+		// are never treated as stale (isStaleConnecting).
+		if conn.isStaleConnecting() {
+			log.Printf("[conn:%s] EnsureConnection: stale connecting attempt (>%v), soft-cancel and retry", connName, staleConnectingThreshold)
+			conn.softCancelInFlightConnect()
+			// Wait for the in-flight Connect to exit and release lifecycleLock.
+			waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
+			waitErr := conn.WaitForConnect(waitCtx)
+			waitCancel()
+			if waitErr == nil {
+				return nil // connected during wait
+			}
+			if conn.IsSuppressAutoReconnect() {
+				return nil
+			}
+			// Fall through to a fresh Connect from Error/Disconnected.
+			status := conn.GetStatus()
+			if status == Status_Connected {
+				return nil
+			}
+			if status == Status_Connecting {
+				// Another Connect started; wait for it.
+				return conn.WaitForConnect(ctx)
+			}
+			return conn.Connect(ctx, &wconfig.ConnKeywords{})
+		}
 		return conn.WaitForConnect(ctx)
 	case Status_Init, Status_Disconnected:
 		// Cooldown guard: don't re-enter Connect() within 5 seconds of last attempt
@@ -2071,6 +2512,7 @@ func EnsureConnection(ctx context.Context, connName string) error {
 	case Status_Error:
 		// Always retry connecting from error state. If no cached password,
 		// the decoupled password callback will prompt the user independently.
+		// Permanent / cancel paths already set SuppressAutoReconnect above.
 		return conn.Connect(ctx, &wconfig.ConnKeywords{})
 	default:
 		return fmt.Errorf("unknown connection status %q", connStatus.Status)
@@ -2078,7 +2520,10 @@ func EnsureConnection(ctx context.Context, connName string) error {
 }
 
 // AttemptReconnect tries to reconnect a disconnected or errored connection by name.
-// Returns nil if already connected or local. Returns error if connection does not exist or connect fails.
+// Returns nil if already connected or local. Returns error if connection does not
+// exist or connect fails. When SuppressAutoReconnect is set, returns
+// ErrAutoReconnectSuppressed (clean stop — do not treat as a transient failure
+// or re-arm countdown UI).
 func AttemptReconnect(ctx context.Context, connName string) error {
 	if IsLocalConnName(connName) {
 		return nil
@@ -2091,6 +2536,10 @@ func AttemptReconnect(ctx context.Context, connName string) error {
 	if conn == nil {
 		return fmt.Errorf("connection %q does not exist", connName)
 	}
+	if conn.IsSuppressAutoReconnect() {
+		log.Printf("[conn:%s] AttemptReconnect: auto-reconnect suppressed", connName)
+		return ErrAutoReconnectSuppressed
+	}
 	status := conn.GetStatus()
 	if status == Status_Connected {
 		return nil
@@ -2098,13 +2547,32 @@ func AttemptReconnect(ctx context.Context, connName string) error {
 	return conn.Connect(ctx, &wconfig.ConnKeywords{})
 }
 
+// IsSuppressAutoReconnectByName returns true if the named connection has the
+// sticky do-not-auto-reconnect flag set. Used by the jobcontroller scheduler
+// and HandleSystemResume.
+func IsSuppressAutoReconnectByName(connName string) bool {
+	if IsLocalConnName(connName) {
+		return false
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return false
+	}
+	conn := MaybeGetConn(connOpts)
+	if conn == nil {
+		return false
+	}
+	return conn.IsSuppressAutoReconnect()
+}
+
+// DisconnectClient performs a user-initiated disconnect (Close). Suppress is
+// set and OnUserSuppressAutoReconnect (scheduler stop) runs from Close.
 func DisconnectClient(opts *remote.SSHOpts) error {
 	conn := getConnInternal(opts, false)
 	if conn == nil {
 		return fmt.Errorf("client %q not found", opts.String())
 	}
-	err := conn.Close()
-	return err
+	return conn.Close()
 }
 
 func resolveSshConfigPatterns(configFiles []string) ([]string, error) {

@@ -8,6 +8,27 @@ import (
 	"testing"
 )
 
+func TestHasActiveAuthPromptForConn(t *testing.T) {
+	id, ch := MainUserInputHandler.registerChannel("user@stalehost:22", true)
+	defer MainUserInputHandler.unregisterChannel(id)
+	_ = ch
+
+	if !HasActiveAuthPromptForConn("user@stalehost:22") {
+		t.Fatal("expected active auth prompt for registered conn")
+	}
+	if HasActiveAuthPromptForConn("user@other:22") {
+		t.Fatal("expected no active auth prompt for other conn")
+	}
+	if HasActiveAuthPromptForConn("") {
+		t.Fatal("empty connName must be false")
+	}
+
+	MainUserInputHandler.unregisterChannel(id)
+	if HasActiveAuthPromptForConn("user@stalehost:22") {
+		t.Fatal("expected false after unregister")
+	}
+}
+
 func TestUserInputRequestPromptType(t *testing.T) {
 	t.Parallel()
 
@@ -130,4 +151,45 @@ func TestUserInputRequestConnName(t *testing.T) {
 			t.Errorf("expected 'user@host:22', got %v", cn)
 		}
 	})
+}
+
+func TestCancelAllAuthPromptsForConn(t *testing.T) {
+	// Clean handler maps for isolation
+	MainUserInputHandler.Lock.Lock()
+	MainUserInputHandler.Channels = make(map[string]chan *UserInputResponse)
+	MainUserInputHandler.AuthRequestConns = make(map[string]string)
+	MainUserInputHandler.Lock.Unlock()
+
+	id1, ch1 := MainUserInputHandler.registerChannel("user@host", true)
+	id2, ch2 := MainUserInputHandler.registerChannel("user@host", true)
+	id3, ch3 := MainUserInputHandler.registerChannel("other@host", true)
+	defer MainUserInputHandler.unregisterChannel(id1)
+	defer MainUserInputHandler.unregisterChannel(id2)
+	defer MainUserInputHandler.unregisterChannel(id3)
+
+	n := CancelAllAuthPromptsForConn("user@host")
+	if n != 2 {
+		t.Fatalf("expected 2 canceled prompts, got %d", n)
+	}
+
+	// Both channels for user@host should have cancel responses
+	for i, ch := range []chan *UserInputResponse{ch1, ch2} {
+		select {
+		case resp := <-ch:
+			if resp.ErrorMsg == "" {
+				t.Fatalf("channel %d: expected ErrorMsg on cancel", i)
+			}
+			if resp.ConnName != "user@host" {
+				t.Fatalf("channel %d: expected ConnName user@host, got %q", i, resp.ConnName)
+			}
+		default:
+			t.Fatalf("channel %d: expected cancel response", i)
+		}
+	}
+	// other@host should still be waiting
+	select {
+	case <-ch3:
+		t.Fatal("expected other@host prompt to remain open")
+	default:
+	}
 }

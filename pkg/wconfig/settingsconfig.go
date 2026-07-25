@@ -235,6 +235,11 @@ type ConnKeywords struct {
 	ConnStallDisconnectThreshold *int  `json:"conn:stalldisconnectthreshold,omitempty"`
 	ConnConnectCount        *int64 `json:"conn:connectcount,omitempty"`
 	ConnLastConnectTime     *int64 `json:"conn:lastconnecttime,omitempty"`
+	// ConnAuthPromptUsed records whether the last successful SSH handshake required
+	// an interactive prompt (password typed, key passphrase, or keyboard-interactive).
+	// Persisted so cold-start reconnect can skip the publickey false-positive path
+	// and prompt immediately for password-auth connections.
+	ConnAuthPromptUsed *bool `json:"conn:authpromptused,omitempty"`
 
 	DisplayHidden *bool   `json:"display:hidden,omitempty"`
 	DisplayOrder  float32 `json:"display:order,omitempty"`

@@ -27,8 +27,14 @@ export function frecencyScore(
     connectCount: number,
     lastConnectTime: number
 ): number {
-    if (connectCount === 0 || lastConnectTime === 0) {
+    if (connectCount <= 0) {
         return 0;
+    }
+    // lastConnectTime is session-scoped (not persisted). After restart it is 0
+    // until the first successful SSH connect this session — still rank by
+    // persisted connectCount so frequency survives restarts.
+    if (lastConnectTime <= 0) {
+        return connectCount;
     }
     const ageDays = Math.max(0, (Date.now() - lastConnectTime) / 86400000);
     return connectCount * Math.exp(-ageDays / 14);

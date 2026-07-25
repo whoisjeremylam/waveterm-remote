@@ -99,6 +99,12 @@ func ConnDisconnectCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts)
 	return err
 }
 
+// command "connstopautoretry", wshserver.ConnStopAutoRetryCommand
+func ConnStopAutoRetryCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "connstopautoretry", data, opts)
+	return err
+}
+
 // command "connensure", wshserver.ConnEnsureCommand
 func ConnEnsureCommand(w *wshutil.WshRpc, data wshrpc.ConnExtData, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "connensure", data, opts)

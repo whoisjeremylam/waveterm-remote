@@ -31,15 +31,18 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
     }, [connName]);
 
     const handleSendErrResponse = useCallback(() => {
+        // Include connname so the backend can cancel ALL auth prompts for this
+        // connection (A3: two tabs sharing one password host).
         fireAndForget(() =>
             UserInputService.SendUserInputResponse({
                 type: "userinputresp",
                 requestid: userInputRequest.requestid,
                 errormsg: "Canceled by the user",
+                connname: connName,
             })
         );
         handleDismiss();
-    }, [userInputRequest, handleDismiss]);
+    }, [userInputRequest, handleDismiss, connName]);
 
     const handleSendText = useCallback(() => {
         console.log(`[PW-RESP] handleSendText: connName=${connName} requestId=${userInputRequest.requestid}`);
@@ -49,10 +52,11 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
                 requestid: userInputRequest.requestid,
                 text: responseText,
                 checkboxstat: checkboxRef?.current?.checked ?? false,
+                connname: connName,
             })
         );
         handleDismiss();
-    }, [responseText, userInputRequest, handleDismiss]);
+    }, [responseText, userInputRequest, handleDismiss, connName]);
 
     const handleSendConfirm = useCallback(
         (response: boolean) => {

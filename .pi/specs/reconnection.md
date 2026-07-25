@@ -234,7 +234,7 @@ All three auto-reconnect gates (`onConnectionDown` scheduler, `HandleSystemResum
 | 2 | `conn.LastErrorCode == "auth-failed"` | ❌ false | Credential rejected; retry won't help. Wait for user re-auth (`requestPasswordRePrompt`) or key fix. Prevents retry storm. |
 | 3 | `conn.authPromptState == authPromptNone` | ✅ true | Last successful connect used no prompt (unencrypted key, agent key, replayable secret) |
 | 4 | `conn.authPromptState == authPromptUsed` | ❌ false | Last successful connect needed a prompt (password typed, key passphrase, keyboard-interactive) and no password was cached (step 1) |
-| 5 | `conn.authPromptState == authPromptUnknown` (never connected or cleared after auth-failed) | config fallback | `canReconnectFromKeywordsOrPubkey`: checks `connections.json` (batch mode, password secret, preferred auth, disabled password/kbd) then `~/.ssh/config` (`HasPublicKeyAuth`: IdentityFile exists + PubkeyAuthentication enabled) |
+| 5 | `conn.authPromptState == authPromptUnknown` (never connected or cleared after auth-failed) | config fallback | First checks persisted `conn:authpromptused` in connections.json; else `canReconnectFromKeywordsOrPubkey` (batch mode / password secret / preferred auth / `HasPublicKeyAuth`) |
 
 `NeedsInteractiveAuth` (startup reconnect) is intentionally conservative — it only trusts the runtime flag and cached password, NOT the publickey fallback, because a configured key may be passphrase-encrypted (requiring a prompt). This gives the startup connect a generous no-deadline context.
 
@@ -249,6 +249,8 @@ Stored on `SSHConn.authPromptState` (atomic.Int32). Set after a successful `Conn
 | 2 | `authPromptUsed` | Successful connect with `InteractivePromptUsed() == true` |
 
 Cleared to `authPromptUnknown` in `Connect` when `errorCode == "auth-failed"` (alongside `clearCachedPassword`).
+
+**Persistence (`conn:authpromptused`):** After each successful connect, the flag is written to `connections.json`. On cold start, `getConnInternal` seeds `authPromptState` from this value so password-auth hosts are not misclassified as silent-reconnectable just because a local IdentityFile exists. When `authPromptUsed` and no cached password, `connectInternal` also reorders PreferredAuthentications to try password/kbd before publickey — so the user is prompted immediately instead of waiting through a failed publickey cycle.
 
 ### `AuthTracker` (replaces `PasswordUsedTracker`)
 
@@ -867,3 +869,58 @@ All three paths are idempotent: `ClientDisconnected` checks `if !sm.connected { 
 
 - The reconnect triggers (scheduler, `HandleSystemResume`, visibility-driven) are unchanged — they still call `Connect()` / `EnsureConnection` as before. The disk-backed fix is transparent to them.
 - `CloseInvoluntary` (Phase 2K) and the scheduler tuning (Phase 2L) are independent of the disk-backed fix. They compose correctly: `CloseInvoluntary` preserves the cached password so the reconnect can be silent; the scheduler tuning gives the network more time to recover; the disk-backed fix ensures no PTY output is lost during the outage.
+
+---
+
+## Phase 2N — Reconnection UX P0 + password/suppress hardening (2026-07-24)
+
+**Branch:** `feat/reconnect-ux-p0` (not yet merged to main at time of writing).
+
+### Product (UX-0.1 … UX-0.5)
+
+Implemented sticky `SuppressAutoReconnect`, `ConnStopAutoRetryCommand`, job-level session overlay, attention heartbeat (30s/10s), permanent host-key/known_hosts stop, Stop auto-retry UI. Decisions D1–D6 in [[decisions.md]].
+
+### Hardening from user testing
+
+| Issue | Fix |
+|-------|-----|
+| ~60s password prompt on cold start | Defer `NeedsInteractiveAuth` hosts at startup; UI-driven `ConnEnsure` after frontend ready (`50f3e3e8`) |
+| Stop does not abort in-flight dial | `AbortConnect` + cancel connect ctx; leave connecting immediately (`73349acd`) |
+| Password Cancel → second prompt (two tabs, same conn) | `CancelAllAuthPromptsForConn` + `CancelAuthForConnection` (`73349acd`) |
+| Sticky "paused" on many hosts after timeouts | Only `userAbortConnect` / UI "Canceled by the user" set suppress — not parent ctx deadline (`c6540dbb`) |
+| Overlay said "paused" | Copy → **"stopped"** |
+| Password re-prompt after network flap | Clear cache/`authPromptState` only on **credential rejection** (`unable to authenticate`); handshake failed/EOF/reset = dial (`f86644ed`) |
+| Little Snitch / unsigned binary blocks dial at launch; password prompt waits until hung dial dies (up to 60s) | Soft-cancel stale `connecting` (>8s, no active auth prompt) on `EnsureConnection` **without** sticky suppress; visibility fires Ensure while connecting + 5s heartbeat; prefer password/kbd before publickey when `authPromptUsed` or unknown-without-pubkey |
+
+### Flags (scope)
+
+| Flag | Scope | Meaning |
+|------|--------|---------|
+| `userAbortConnect` | **Per connection** | User Stop/Cancel aborted *this* connect |
+| `SuppressAutoReconnect` | **Per connection** | No auto Ensure/scheduler until explicit Reconnect |
+| `CachedPassword` | **Per connection** (memory) | Survives involuntary disconnect + network flaps |
+| `authPromptState` / `conn:authpromptused` | **Per connection** | Interactive vs silent; persist for cold start |
+
+### Stale connecting / packet-filter race (detail)
+
+**Symptom:** New unsigned build → Little Snitch “binary changed” modal blocks app network. UI starts `ConnEnsure` for password hosts (deferred from silent startup). Dial hangs in `Status_Connecting`. Visibility previously **skipped** connecting, so after the user allowed the binary, nothing retried until the dial timed out (~60s). Password prompt only appeared on the *next* attempt. Key hosts felt less broken because silent retries eventually won.
+
+**Fix:**
+
+1. `softCancelInFlightConnect()` — cancel in-flight connect ctx **without** `userAbortConnect` / suppress.
+2. `EnsureConnection` on `Status_Connecting`: if `isStaleConnecting()` (age ≥ 8s and no `HasActiveAuthPromptForConn`), soft-cancel, wait for lifecycle exit, fresh `Connect`.
+3. `VisibilityReconnectHandler` Ensures connecting hosts too; heartbeat **5s** while any eligible conn is connecting.
+4. Prefer interactive auth methods when prior session needed a prompt, or cold-start unknown with no publickey path.
+
+**Retest:** allow LS → password dialog within ~8–15s of focus; typing password must not be killed by soft-cancel.
+
+### User retest (2026-07-25)
+
+P0 retest matrix in [[todos.md]] marked complete (Stop hard-abort, password flap cache, Cancel, sticky suppress, new-tab, Little Snitch soft-cancel).
+
+### Not done (P1 / optional)
+
+- Drain/catch-up indicator (UX-1.7)
+- Friendlier permanent-failure copy (raw known_hosts path OK for now)
+- Pause reconnect on app blur (not required; keepalive unchanged)
+- **Soft network readiness gates before automatic TCP dial (later, UX-2.8)** — see [[reconnection-ux-backlog.md#ux-28--soft-network-readiness-gates-before-automatic-tcp-dial-later]]: local interface/route check; DNS with short timeout when host is not a literal IP (stall/timeout ⇒ treat network as flaky, backoff); optional short TCP probe (timeout TBD). Soft only — not a permanent lockout; skip DNS for IP literals; does not replace dial retries or fix Little Snitch by itself. **Do not implement in current P0 land.**

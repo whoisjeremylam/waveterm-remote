@@ -85,6 +85,8 @@ interface TypeAheadModalProps {
     giveFocusRef?: React.RefObject<() => boolean>;
     autoFocus?: boolean;
     selectIndex?: number;
+    /** When false, hide the filter input (connection switcher list only). Default true. */
+    showFilter?: boolean;
 }
 
 const TypeAheadModal = ({
@@ -101,6 +103,7 @@ const TypeAheadModal = ({
     giveFocusRef,
     autoFocus,
     selectIndex,
+    showFilter = true,
 }: TypeAheadModalProps) => {
     const domRect = useDimensionsWithExistingRef(blockRef, 30);
     const width = domRect?.width ?? 0;
@@ -111,8 +114,20 @@ const TypeAheadModal = ({
     const suggestionsWrapperRef = useRef<HTMLDivElement>(null);
     const suggestionsRef = useRef<HTMLDivElement>(null);
 
+    const focusModal = () => {
+        if (showFilter) {
+            inputRef.current?.focus();
+        } else {
+            modalRef.current?.focus();
+        }
+        return true;
+    };
+
     useEffect(() => {
-        if (!modalRef.current || !inputGroupRef.current || !suggestionsRef.current || !suggestionsWrapperRef.current) {
+        if (!modalRef.current || !suggestionsRef.current || !suggestionsWrapperRef.current) {
+            return;
+        }
+        if (showFilter && !inputGroupRef.current) {
             return;
         }
 
@@ -127,7 +142,7 @@ const TypeAheadModal = ({
         const suggestionsWrapperStyles = window.getComputedStyle(suggestionsWrapperRef.current);
         const suggestionsWrapperMarginTop = parseFloat(suggestionsWrapperStyles.marginTop) || 0;
 
-        const inputHeight = inputGroupRef.current.getBoundingClientRect().height;
+        const inputHeight = showFilter ? (inputGroupRef.current?.getBoundingClientRect().height ?? 0) : 0;
         let suggestionsTotalHeight = 0;
 
         const suggestionItems = suggestionsRef.current.children;
@@ -143,7 +158,7 @@ const TypeAheadModal = ({
         modalRef.current.style.height = `${computedHeight}px`;
 
         suggestionsWrapperRef.current.style.height = `${computedHeight - inputHeight - modalPadding - modalBorder - suggestionsWrapperMarginTop}px`;
-    }, [height, suggestions]);
+    }, [height, suggestions, showFilter]);
 
     useEffect(() => {
         if (!blockRef.current || !modalRef.current) return;
@@ -179,17 +194,14 @@ const TypeAheadModal = ({
 
     useLayoutEffect(() => {
         if (giveFocusRef) {
-            giveFocusRef.current = () => {
-                inputRef.current?.focus();
-                return true;
-            };
+            giveFocusRef.current = focusModal;
         }
         return () => {
             if (giveFocusRef) {
                 giveFocusRef.current = null;
             }
         };
-    }, []);
+    }, [showFilter]);
 
     useLayoutEffect(() => {
         if (anchorRef.current && modalRef.current) {
@@ -197,6 +209,13 @@ const TypeAheadModal = ({
             modalRef.current.style.top = `${parentElement?.getBoundingClientRect().height}px`;
         }
     }, []);
+
+    // List-only mode: focus the modal so ↑/↓/Enter/Esc work without an input.
+    useLayoutEffect(() => {
+        if (autoFocus && !showFilter) {
+            modalRef.current?.focus();
+        }
+    }, [autoFocus, showFilter]);
 
     const renderBackdrop = (onClick) => <div className="type-ahead-modal-backdrop" onClick={onClick}></div>;
 
@@ -217,25 +236,31 @@ const TypeAheadModal = ({
             {renderBackdrop(onClickBackdrop)}
             <div
                 ref={modalRef}
-                className={clsx("type-ahead-modal", className, { "has-suggestions": suggestions?.length > 0 })}
+                className={clsx("type-ahead-modal", className, {
+                    "has-suggestions": suggestions?.length > 0,
+                    "no-filter": !showFilter,
+                })}
+                tabIndex={showFilter ? undefined : -1}
             >
-                <InputGroup ref={inputGroupRef}>
-                    <Input
-                        ref={inputRef}
-                        onChange={handleChange}
-                        value={value}
-                        autoFocus={autoFocus}
-                        placeholder={label}
-                    />
-                    <InputRightElement>
-                        <i className="fa-regular fa-magnifying-glass"></i>
-                    </InputRightElement>
-                </InputGroup>
+                {showFilter && (
+                    <InputGroup ref={inputGroupRef}>
+                        <Input
+                            ref={inputRef}
+                            onChange={handleChange}
+                            value={value}
+                            autoFocus={autoFocus}
+                            placeholder={label}
+                        />
+                        <InputRightElement>
+                            <i className="fa-regular fa-magnifying-glass"></i>
+                        </InputRightElement>
+                    </InputGroup>
+                )}
                 <div
                     ref={suggestionsWrapperRef}
                     className="suggestions-wrapper"
                     style={{
-                        marginTop: suggestions?.length > 0 ? "8px" : "0",
+                        marginTop: showFilter && suggestions?.length > 0 ? "8px" : "0",
                         overflowY: "auto",
                     }}
                 >

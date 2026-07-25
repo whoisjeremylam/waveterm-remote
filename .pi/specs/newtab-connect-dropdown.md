@@ -1,8 +1,9 @@
 # New-Tab Connection Dropdown: Typeahead + Frecency Sort
 
-**Date:** 2026-07-21
-**Status:** Ready
-**Related:** `.pi/specs/tab-name-from-connection.md` (tab naming, already shipped)
+**Date:** 2026-07-21  
+**Status:** **Implemented on `feat/reconnect-ux-p0`** (pending final user retest + merge)  
+**Related:** `.pi/specs/tab-name-from-connection.md` (tab naming, already shipped)  
+**Branch tip notes:** Cmd-T toggles open/close; no default selection on open; ≥2 filter chars auto-select first match; no-match New Connection still requires ↓/click; `ConnectCount` via `RecordConnectionUsage` on `CreateTab` only; block-header dropdown is a filter-free connection switcher (same frecency order).
 
 ## [S1] Problem
 
@@ -62,7 +63,8 @@ Replace `frontend/app/tab/connectiondropdown.tsx` with a typeahead renderer. It 
 - Autofocuses its `<input>` on mount (unconditional — no block focus gating).
 - Reuses the shared `buildNewTabSuggestions` + `filterConnections` + `sortConnSuggestionItems`.
 - Renders `SuggestionsType[]` (sections + items) the same way `Suggestions` in `typeaheadmodal.tsx` does.
-- Keyboard: ↑/↓ moves `rowIndex` across the flattened `selectionList`; Enter selects `selectionList[rowIndex]` **if `rowIndex` points at a selectable item** (see [S6] for the New Connection guard); Escape closes.
+- Keyboard: ↑/↓ moves `rowIndex` across the flattened `selectionList`; Enter selects `selectionList[rowIndex]` **if `rowIndex` points at a selectable item** (see [S6] for highlight rules and the New Connection guard); Escape closes.
+- **Highlight on filter:** open / filter length &lt; 2 → `rowIndex = -1` (no selection). Filter length ≥ 2 with real matches → auto-select first frecency item (`rowIndex = 0`) so Enter works. No matches → stay at `-1` (S6).
 - Click backdrop closes.
 
 Both `tabbar.tsx` and `vtabbar.tsx` render `<NewTabConnTypeahead>` when the dropdown atom is open, anchored to their respective `+` button refs.
@@ -91,22 +93,24 @@ The `+` button `onClick` toggles the same atom. Selecting an item / closing the 
 ## [S4] Frecency data flow
 
 ```
-conncontroller.go (on successful connect)
+CreateTab(connName)  →  RecordConnectionUsage(connName)
+    conn.ConnectCount++                      // intentional new-tab opens only
     conn.LastConnectTime = now
-    conn.ConnectCount++                      // new in-memory field
-    wconfig.SetConnectionsConfigValue(name, {
-        "conn:connectcount":  conn.ConnectCount,
-        "conn:lastconnecttime": conn.LastConnectTime,
-    })                                        // persist to connections.json
+    persist conn:connectcount
+
+Connect() success (SSH handshake, including durable re-auth)
+    conn.LastConnectTime = now               // recency only — does NOT bump count
+    persist conn:authpromptused
 
 ConnStatus (RPC) exposes ConnectCount + LastConnectTime
-    ↓ frontend connStatusMap (existing)
-sortConnSuggestionItems reads connStatusMap.get(connName) → score
+    ↓ frontend connStatusMap
+sortConnSuggestionItems → score = connectCount × exp(-ageDays/14)
+                          or connectCount when lastConnectTime==0 (after restart)
 ```
 
-`ConnectCount` is loaded from `connections.json` into `ConnController` at startup (in the existing connection-init path that reads `ConnKeywords`), so it survives restarts. `LastConnectTime` remains in-memory (it's a runtime timestamp; persisting it would conflict with the in-memory `Status` lifecycle and isn't needed for frecency across restarts — `ConnectCount` carries the long-term signal, and `LastConnectTime` re-populates within seconds of reconnect).
+**Why not count every SSH Connect?** Durable reconnect and password re-auth on app restart would inflate password hosts every test restart, while opening a new tab to an already-connected key host would not bump the count at all (EnsureConnection is a no-op). Ranking must track **user intent to open a tab**, not transport reconnects.
 
-**Rationale for splitting persistence:** `LastConnectTime` is already overwritten on every connect and is meaningless before the first post-restart connect. Persisting only `ConnectCount` keeps the schema minimal and avoids a stale-timestamp edge case where a freshly-restarted app shows a host as "last used 3 days ago" until you reconnect. `ConnectCount` is the durable frequency signal; `LastConnectTime` is the session-scoped recency signal. Both feed the score, and the math degrades gracefully: after restart, a host with `ConnectCount=20` but `LastConnectTime=0` scores `20 × 0 = 0` until first reconnect — acceptable, because on a fresh session the user hasn't demonstrated recency for *any* host yet, so `display:order` → name takes over as tie-break (deterministic, predictable cold start).
+`ConnectCount` is loaded from `connections.json` at startup. `LastConnectTime` remains session-scoped (in-memory). After restart, score falls back to bare `connectCount` until the first connect this session sets recency.
 
 ## [S5] Files changed
 
@@ -143,13 +147,14 @@ icon: plus
 ```
 **`onSelect`** (click or Enter): `env.electron.createTab(connName)` where `connName` is the typed text (empty string → local; non-empty → treated as an SSH host string by `CreateTab`).
 
-**Highlight guard:** the flattened `selectionList` for keyboard navigation excludes the New Connection item from the default `rowIndex` range. Specifically:
+**Highlight rules:** the flattened `selectionList` for keyboard navigation excludes the New Connection item from the default `rowIndex` range. Specifically:
 - Compute `selectableItems` = all items **except** the New Connection item.
-- `rowIndex` clamps to `[0, selectableItems.length - 1]` (so ↑ at top stays at 0, ↓ at bottom wraps or stops — match `conntypeahead`'s `Math.min(idx + 1, len - 1)` behavior).
-- Enter when the New Connection item is *not* explicitly focused selects `selectableItems[rowIndex]`.
-- The New Connection item is only actionable via an **explicit arrow-down past the last selectable item** (one more ↓ moves `rowIndex` to point at the New Connection item, visually highlighted distinctly) **or a mouse click**. This is the subtlety: fast typing + Enter never creates a new connection; the user must deliberately navigate to it.
+- On open or filter length &lt; 2: `rowIndex = -1` (no highlight) even when matches exist.
+- When filter length ≥ 2 and `selectableItems.length > 0`: auto-select the first item (`rowIndex = 0`) so Enter picks the top frecency match.
+- When `selectableItems.length === 0` (only New Connection shown), `rowIndex = -1` (no highlight). Enter does nothing — regardless of filter length.
+- The New Connection item is only actionable via an **explicit arrow-down** (first ↓ from `-1` highlights it) **or a mouse click**. Fast typing + Enter never creates a new connection when nothing matches.
 
-This requires the renderer to track two index spaces: `selectableIndex` (for the frecency-sorted real connections) and a sentinel position for New Connection. Implementation detail left to the typeahead component, but the contract is: **Enter on the default-highlighted item never creates a new connection.**
+Contract: **Enter never creates a new connection unless New Connection is explicitly highlighted (`rowIndex === newConnectionIndex`).**
 
 ## [S7] Keyboard map
 
@@ -171,7 +176,8 @@ Manual test matrix (no existing automated tests for these dropdowns — first co
 2. **Persistence**: connect to `db` 3×, restart the app, reconnect once → `ConnectCount` should still be ≥3 (loaded from `connections.json`). Frecency ranking should reflect accumulated count.
 3. **Cold start**: brand-new install, no connections ever used → all `ConnectCount=0`, `LastConnectTime=0` → sort falls back to `display:order` → name. Deterministic, not random.
 4. **`display:order` tie-break**: two connections with equal frecency score (both never used) → the one with lower `display:order` sorts first; equal order → alphabetical.
-5. **Typing + Enter**: type `db` → only `db`-matching items shown → Enter → new tab connects to top match. **No accidental New Connection.**
+5. **Typing + Enter**: type `db` (≥ 2 chars) → matching items shown, **first item auto-highlighted** → Enter → new tab connects to top match. **No accidental New Connection.**
+5b. **Short filter**: type one character → matches may show but **nothing highlighted** until a second character or ↓.
 6. **No-match + Enter**: type `xyznotreal` → only `New Connection` shown, **not highlighted** → Enter does nothing (or closes, per design — see [S6]); must ↓ to highlight New Connection, then Enter → creates tab with `xyznotreal`.
 7. **No-match + ↓ + Enter**: type `xyznotreal` → ↓ → New Connection highlighted → Enter → new tab, terminal connects to `xyznotreal`.
 8. **`Cmd-t`**: opens dropdown with input focused (no local tab created). Type, Enter → tab created with selected connection.
@@ -205,3 +211,16 @@ Unit tests (Go, `conncontroller_test.go`):
 | `Cmd-t` | Opens dropdown (global atom) | Keyboard parity with `+` click |
 | Both tab bars | Identical behavior via shared `NewTabConnTypeahead` | Parity requirement |
 | No version bump | Additive `ConnStatus` fields, no new RPC | No breaking protocol change |
+
+## Block-header connection switcher (related)
+
+The terminal block-header connection control (`frontend/app/modals/conntypeahead.tsx`) is a **filter-free switcher**, not a typeahead:
+
+- No search input; full Local + Remote list always shown
+- Same frecency ordering via `sortConnSuggestionItems`
+- ↑/↓/Enter/Esc + click; printable keys swallowed so they do not reach the terminal
+- **New Connection** is not offered here — use the new-tab dropdown (Cmd-T / `+`) to create hosts
+- Reconnect item still appears when the block's remote connection is disconnected/error
+
+`TypeAheadModal` supports `showFilter={false}` for this mode.
+

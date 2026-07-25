@@ -121,21 +121,11 @@
 
 **Decision:** Keep the underlying OSC 16162 shell integration infrastructure intact for now. Only the visual indicator (sparkle/Claude icon) and Wave-AI-specific tooltips were removed. If we want pi agent integration later, we can add `piActiveAtom` and a pi icon with minimal changes.
 
-## 2026-05-20: MOSH Research — Not a Priority
+## 2026-05-20: MOSH Research — Out of Scope
 
-**Finding:** MOSH (Mobile Shell) provides seamless reconnection (roaming, sleep/wake) and client-side local echo via UDP-based State Synchronization Protocol. However, it's not a priority for this fork.
+**Decision:** MOSH is not applicable to this fork and is not planned.
 
-**Why not:**
-- **No port forwarding** — open issue since 2014, no movement. Port forwarding is a core requirement.
-- **No OSC52 clipboard** — remote programs can't put text in local clipboard.
-- **No scrollback** — only syncs visible terminal state.
-- **No file transfer** (scp/sftp).
-- **C++ only** — no Go or JS library implementations of the core protocol.
-- **Slow development** — last release 1.4.0 (October 2022).
-
-**Alternative: tsshd (trzsz-ssh)** — Go-based, supports full SSH features (port forwarding, agent forwarding, X11, scrollback, OSC52) + UDP roaming via QUIC/KCP. More architecturally relevant but would require significant integration effort.
-
-**Local echo with wsh** — Technically possible (Wave Terminal already knows screen state and intercepts keystrokes), but non-trivial (must detect line-editing vs application mode, validate predictions against round-trip timing). Low value for typical homelab latency (<50ms).
+**Finding (historical):** MOSH provides seamless reconnection and client-side local echo via UDP, but lacks port forwarding, OSC52 clipboard, scrollback, and file transfer; it is C++-only with slow upstream development. tsshd was noted as a more relevant alternative if roaming ever mattered; durable-session reconnect work supersedes the need for either.
 
 ## 2026-05-23: Auto-Reconnect P0 Fixed; Server Reboot → Manual Reconnect
 
@@ -185,7 +175,6 @@
 1. Fix auto-reconnect bugs in durable sessions (#4) — DONE 2026-05-23
 2. SSH port forwarding (spec ready)
 3. Remote file paste (image paste + drag-drop for SSH sessions) — primary use case: pi / Claude Code TUI
-4. MOSH/tsshd support (backlog, if roaming becomes a real pain point)
 
 
 ---
@@ -537,3 +526,65 @@ See [[specs/newtab-connect-dropdown.md]] for full spec.
 **Decision:** (1) Added `ConnReconnectMaxDurationSilent` (15min) for silently-reconnectable connections (key-based / cached password) — silent retries are cheap. Interactive-attempt connections keep the 5min cap. (2) Early-terminate the scheduler on `auth-failed` (server rejecting credentials — retrying won't help, `requestPasswordRePrompt` handles re-prompting) and `connection-refused` (server not accepting SSH — visibility-driven reconnect will retry on next tab switch). Network-unreachable errors continue to retry with aggressive mode unchanged.
 
 **Files changed:** `pkg/jobcontroller/jobcontroller.go` (constants, scheduleConnectionReconnect). Commit: `fd78d03a`. See [[reconnection.md]] Phase 2L, [[visibility-driven-reconnect.md]] Change 5.
+
+## 2026-07-24: Reconnection UX P0 product decisions (D1–D6)
+
+**Context:** Production-ready reconnection UX for remote-first workflows. Spec: [[specs/reconnection-ux-backlog.md]] (UX-0.1 … UX-0.5).
+
+| ID | Decision |
+|----|----------|
+| **D1** | After user Disconnect, visibility reconnect must **not** auto-connect — require explicit Reconnect. Implemented via sticky `SSHConn.SuppressAutoReconnect` set only by `Close()` / `ConnDisconnectCommand`. |
+| **D2** | Stop auto-retry **keeps** password cache; Disconnect **clears** it. `PauseAutoReconnect()` vs `Close()`. |
+| **D3** | Password Cancel is sticky until **manual Reconnect** (not timed cool-down). Connect failure with `user-cancelled` sets `SuppressAutoReconnect`. |
+| **D4** | Attention heartbeat default **30s**; **10s** when last error was network/dial-unreachable. Frontend hybrid in `VisibilityReconnectHandler`. |
+| **D5** | Heartbeat may call `EnsureConnection` for interactive (no cache) when tab **visible** (prompt OK if user present). |
+| **D6** | `JobManagerGone`: **no** auto-start new shell; one-click **Start new durable session** CTA only (`forceRestartController`). |
+
+**Also:**
+- Permanent handshake failures (`remote.IsPermanentConnError`: host-key, known_hosts, config) stop scheduler + set suppress; overlay shows dedicated copy (UX-0.4).
+- New RPC `ConnStopAutoRetryCommand` for Stop auto-retry UI control (UX-0.5).
+- Job-level overlay when `conn.status === connected` but durable job is reconnecting / failed / gone (UX-0.2).
+
+**Key files:** `pkg/remote/conncontroller/conncontroller.go`, `pkg/jobcontroller/jobcontroller.go`, `pkg/remote/sshclient.go`, `pkg/wshrpc/wshserver/wshserver.go`, `frontend/app/tab/visibilityreconnect.tsx`, `frontend/app/block/connstatusoverlay.tsx`.
+
+## 2026-07-24: Password cache and suppress classification
+
+**Decision:**
+
+1. **`userAbortConnect` is per-connection** — Stop/Cancel on host A must not abort host B.
+2. **Sticky suppress** only for real user Stop/Cancel (or permanent host-key errors), **never** for scheduler/`EnsureConnection` parent-context timeouts.
+3. **Cached password + `authPromptState`** cleared only on **true credential rejection** (`ssh: unable to authenticate`). Transport failures (`handshake failed`, EOF, reset, dial timeout) preserve cache so reconnect is silent when the network returns.
+4. **Involuntary disconnect** still uses `CloseInvoluntary` (preserve cache); user Disconnect uses `Close` (clear cache + suppress).
+5. **Frecency `ConnectCount`** increments on `CreateTab` (`RecordConnectionUsage`), not on every SSH `Connect` (avoids password re-auth and durable reconnect inflating rank).
+
+**Commits:** `c6540dbb`, `f86644ed`, `c9f2e782`, `73349acd`, `50f3e3e8`. Branch: `feat/reconnect-ux-p0`.
+
+## 2026-07-25: Soft network readiness gates (backlog, not implementing now)
+
+**Decision:** Capture soft gates before automatic TCP dial as **later work** (UX-2.8 in [[specs/reconnection-ux-backlog.md]]), not part of the current P0 land.
+
+**Intent:** Do not assume the network is ready at connect time. Optional Wave-side checks before an automatic dial:
+
+1. Local interface/route (and similar) — no outbound traffic.  
+2. DNS with an explicit short timeout when the connection host is **not** a literal IP — stall/timeout usually means the network is flaky or not ready; backoff. Skip DNS for IP literals.  
+3. Optional TCP probe with a short timeout (value TBD).
+
+Gates are soft (delay/retry, user Connect can bypass). They do not prove the SSH host is up, do not replace path-failure retries, and do not alone solve Little Snitch (outbound checks from Wave stall while LS is pending).
+
+**Related open discussion:** draft soft-cancel of long `connecting` attempts vs gates + dial retry policy — not settled for ship.
+
+## 2026-07-24: Soft-cancel stale connecting (Little Snitch / firewall race)
+
+**Context:** Opening a new unsigned build triggers Little Snitch “binary changed.” While that modal is up, app network is blocked. UI-driven `ConnEnsure` starts dials that hang in `Status_Connecting` (up to `DefaultConnectionTimeout` = 60s). Visibility reconnect **skipped** connecting hosts, so after the user allowed the binary the hung dial kept running and password prompts only appeared after it failed — felt like “connection is trying, no password until it fails.” Key-based hosts auto-retried more quietly so the race was less noticeable.
+
+**Decision:**
+
+1. **Soft-cancel ≠ user Stop.** `softCancelInFlightConnect` cancels the in-flight connect context **without** setting `userAbortConnect` or `SuppressAutoReconnect`. Distinct from `AbortConnect` / `PauseAutoReconnect`.
+2. **Stale threshold = 8s** of `Status_Connecting` with no active password/passphrase/kbd prompt (`userinput.HasActiveAuthPromptForConn`). Never kill an on-screen auth dialog.
+3. **`EnsureConnection` owns the retry:** on stale connecting → soft-cancel → wait for lifecycle unlock → fresh `Connect`. Fresh connecting still uses `WaitForConnect`.
+4. **Visibility Ensures while connecting** (no longer skip); heartbeat **5s** while any eligible conn is connecting so focus after LS can hit the soft-cancel path within one interval after the 8s threshold.
+5. **Auth method order:** prefer `password`/`keyboard-interactive` before `publickey` when `authPromptUsed`, or when state is unknown and no publickey is configured (password-only cold start).
+
+**Files:** `pkg/remote/conncontroller/conncontroller.go`, `pkg/userinput/userinput.go`, `frontend/app/tab/visibilityreconnect.tsx`, unit tests in `conncontroller_test.go` / `userinput_test.go`.
+
+**Not changed:** global dial timeout stays 60s for slow networks; soft-cancel is attention-driven (Ensure on focus/heartbeat), not a shorter hard dial timeout.

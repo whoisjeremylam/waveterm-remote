@@ -7,10 +7,25 @@
     border-radius: 6px;
     box-shadow: 0px 13px 16px 0px rgba(0, 0, 0, 0.4);
     z-index: var(--zindex-modal-wrapper);
-    min-width: 200px;
+    min-width: 280px;
+    max-width: 420px;
     max-height: 400px;
     overflow-y: auto;
     padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+
+    // Filter input — keep visible and usable (portaled outside TypeAheadModal styles)
+    .connection-dropdown-filter {
+        flex-shrink: 0;
+        width: 100%;
+
+        .input {
+            font-size: 12px;
+            min-height: 28px;
+        }
+    }
 }
 
 .connection-dropdown-header {

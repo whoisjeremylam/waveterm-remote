@@ -806,6 +806,9 @@ func TestStartupReconnectDurableShellsStartsSchedulerOnFailure(t *testing.T) {
 	conn.Status = conncontroller.Status_Init
 	conn.ConnHealthStatus = conncontroller.ConnHealthStatus_Good
 	conn.WshEnabled.Store(true)
+	// Silent-reconnectable so startup actually calls EnsureConnection (interactive
+	// hosts are deferred to UI-driven ConnEnsure).
+	conncontroller.ForceAuthPromptNoneForTest(conn)
 
 	// Override the block-reading hook to return our synthetic durable block.
 	GetAllBlocksForReconnectTestHook = func() []ReconnectDurableBlock {
@@ -846,38 +849,18 @@ func TestStartupReconnectDurableShellsStartsSchedulerOnFailure(t *testing.T) {
 }
 
 // TestStartupReconnectDurableShellsSkipsSchedulerForInteractiveAuth verifies
-// that when needsInteractiveAuth returns true, the scheduler is NOT started
-// even after EnsureConnection fails at startup. This catches regressions where
-// the interactive-auth guard inside startReconnectScheduler is removed.
+// that interactive-auth hosts (password/passphrase) are deferred at startup —
+// EnsureConnection is not called, so the reconnect scheduler is not started.
+// UI-driven ConnEnsure (visibility reconnect) owns those hosts instead.
 func TestStartupReconnectDurableShellsSkipsSchedulerForInteractiveAuth(t *testing.T) {
-
-	// Use a mutex to protect the hook from races between the test goroutine
-	// and the StartupReconnectDurableShells goroutine.
-	var authMu sync.Mutex
-	var needsAuthFn func(string) bool
-	needsAuthFn = func(string) bool { return true }
-	jobcontroller.NeedsInteractiveAuthTestHook = func(connName string) bool {
-		authMu.Lock()
-		fn := needsAuthFn
-		authMu.Unlock()
-		if fn != nil {
-			return fn(connName)
-		}
-		return false // fallback when cleared
-	}
-	defer func() {
-		authMu.Lock()
-		needsAuthFn = nil
-		authMu.Unlock()
-		jobcontroller.NeedsInteractiveAuthTestHook = nil
-	}()
-
 	// Set up a real SSHConn (unique host to avoid collisions).
 	testOpts := &remote.SSHOpts{SSHHost: "startup-auth-skip-test-host", SSHUser: "testuser", SSHPort: "2222"}
 	conn := conncontroller.GetConn(testOpts)
 	conn.Status = conncontroller.Status_Init
 	conn.ConnHealthStatus = conncontroller.ConnHealthStatus_Good
 	conn.WshEnabled.Store(true)
+	// Force interactive so CanReconnectWithoutPrompt is false → deferred.
+	conncontroller.ForceAuthPromptUsedForTest(conn)
 
 	// Override the block-reading hook.
 	GetAllBlocksForReconnectTestHook = func() []ReconnectDurableBlock {
@@ -894,14 +877,18 @@ func TestStartupReconnectDurableShellsSkipsSchedulerForInteractiveAuth(t *testin
 		StartupReconnectDurableShells(context.Background())
 	}()
 
-	// Poll for 2s — the scheduler entry should NEVER appear because
-	// needsInteractiveAuth returns true (via test hook) → startReconnectScheduler skips.
+	// Poll for 2s — the scheduler entry should NEVER appear because interactive
+	// hosts are deferred (no EnsureConnection, no failure → no scheduler).
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if jobcontroller.ConnectionReconnectSchedulerExists(conn.GetName()) {
 			t.Fatalf("expected NO scheduler entry when interactive auth is required")
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	// Status should still be Init — EnsureConnection was not called.
+	if conn.GetStatus() != conncontroller.Status_Init {
+		t.Fatalf("expected Status_Init for deferred interactive conn, got %s", conn.GetStatus())
 	}
 
 	// Note: StartupReconnectDurableShells goroutine continues in background.

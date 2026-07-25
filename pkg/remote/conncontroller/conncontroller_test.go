@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/wavetermdev/waveterm/pkg/remote"
+	"github.com/wavetermdev/waveterm/pkg/userinput"
 	"github.com/wavetermdev/waveterm/pkg/wconfig"
 	"golang.org/x/crypto/ssh"
 )
@@ -1004,23 +1006,52 @@ func TestCachedPasswordClearedOnDisconnect(t *testing.T) {
 	}
 }
 
-func TestCachedPasswordClearedOnAuthFailure(t *testing.T) {
+
+func TestCachedPasswordPreservedOnHandshakeFailed(t *testing.T) {
 	t.Parallel()
 	conn := makeTestConn(Status_Disconnected)
 	defer cleanupTestConn(conn)
 
+	conn.cachePassword("good-password")
+	conn.authPromptState.Store(authPromptUsed)
+
+	// Network flap mid-handshake (was misclassified as auth-failed)
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		return fmt.Errorf("ssh: handshake failed: read tcp 10.0.0.1:22: connection reset by peer")
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	_ = conn.Connect(context.Background(), &wconfig.ConnKeywords{})
+
+	if pw := conn.getCachedPassword(); pw == nil || *pw != "good-password" {
+		t.Fatal("expected cached password preserved after handshake/IO failure")
+	}
+	if conn.authPromptState.Load() != authPromptUsed {
+		t.Fatalf("expected authPromptUsed preserved, got %d", conn.authPromptState.Load())
+	}
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("network handshake failure must not sticky-suppress")
+	}
+}
+
+func TestCachedPasswordClearedOnAuthFailure(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2403", Status_Disconnected)
+	defer cleanupTestConn(conn)
+
 	conn.cachePassword("wrong-password")
 
-	// Mock connectInternal to return auth failure
+	// Mock connectInternal to return true credential rejection
 	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
-		return fmt.Errorf("unable to authenticate")
+		return fmt.Errorf("ssh: unable to authenticate, attempted methods [none password]")
 	}
 	defer func() { connectInternalTestHook = nil }()
 
 	ctx := context.Background()
 	conn.Connect(ctx, &wconfig.ConnKeywords{})
 
-	// After auth failure, cached password should be cleared
+	// After real auth failure, cached password should be cleared
 	if pw := conn.getCachedPassword(); pw != nil {
 		t.Fatalf("expected nil after auth failure, got %q", *pw)
 	}
@@ -1225,6 +1256,138 @@ func TestEnsureConnection_Connecting(t *testing.T) {
 	err := EnsureConnection(ctx, conn.GetName())
 	if err != nil {
 		t.Fatalf("expected nil after connecting, got %v", err)
+	}
+}
+
+// TestIsStaleConnecting_FreshVsOld covers the Little Snitch hung-dial threshold.
+func TestIsStaleConnecting_FreshVsOld(t *testing.T) {
+	conn := makeTestConn(Status_Connecting)
+	defer cleanupTestConn(conn)
+
+	conn.WithLock(func() {
+		conn.LastConnectTryAt = time.Now().UnixMilli()
+	})
+	if conn.isStaleConnecting() {
+		t.Fatal("fresh connecting attempt must not be stale")
+	}
+
+	conn.WithLock(func() {
+		conn.LastConnectTryAt = time.Now().Add(-staleConnectingThreshold - time.Second).UnixMilli()
+	})
+	if !conn.isStaleConnecting() {
+		t.Fatal("connecting longer than threshold with no auth prompt must be stale")
+	}
+
+	conn.WithLock(func() {
+		conn.Status = Status_Connected
+	})
+	if conn.isStaleConnecting() {
+		t.Fatal("non-connecting status must not be stale")
+	}
+}
+
+// TestIsStaleConnecting_ActiveAuthPrompt: never soft-cancel while user is typing password.
+func TestIsStaleConnecting_ActiveAuthPrompt(t *testing.T) {
+	conn := makeTestConn(Status_Connecting)
+	defer cleanupTestConn(conn)
+	conn.WithLock(func() {
+		conn.LastConnectTryAt = time.Now().Add(-time.Minute).UnixMilli()
+	})
+
+	// Simulate an in-flight password prompt registration (same maps GetUserInput uses).
+	userinput.MainUserInputHandler.Lock.Lock()
+	if userinput.MainUserInputHandler.AuthRequestConns == nil {
+		userinput.MainUserInputHandler.AuthRequestConns = make(map[string]string)
+	}
+	fakeID := "test-stale-auth-prompt"
+	userinput.MainUserInputHandler.AuthRequestConns[fakeID] = conn.GetName()
+	userinput.MainUserInputHandler.Lock.Unlock()
+	defer func() {
+		userinput.MainUserInputHandler.Lock.Lock()
+		delete(userinput.MainUserInputHandler.AuthRequestConns, fakeID)
+		userinput.MainUserInputHandler.Lock.Unlock()
+	}()
+
+	if conn.isStaleConnecting() {
+		t.Fatal("must not treat connecting as stale while auth prompt is active")
+	}
+}
+
+// TestEnsureConnection_SoftCancelsStaleConnecting: hung dial (LS block) is
+// abandoned without sticky suppress; a fresh Connect runs and can reach auth.
+func TestEnsureConnection_SoftCancelsStaleConnecting(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	var attempts atomic.Int32
+	prev := connectInternalTestHook
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		n := attempts.Add(1)
+		if n == 1 {
+			// Hung dial — wait until soft-cancel.
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	defer func() { connectInternalTestHook = prev }()
+
+	go func() {
+		_ = conn.Connect(context.Background(), &wconfig.ConnKeywords{})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for conn.GetStatus() != Status_Connecting {
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for Status_Connecting")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	conn.WithLock(func() {
+		conn.LastConnectTryAt = time.Now().Add(-staleConnectingThreshold - time.Second).UnixMilli()
+	})
+
+	err := EnsureConnection(context.Background(), conn.GetName())
+	if err != nil {
+		t.Fatalf("expected success after soft-cancel retry, got %v", err)
+	}
+	if conn.GetStatus() != Status_Connected {
+		t.Fatalf("expected Status_Connected, got %s err=%q", conn.GetStatus(), conn.Error)
+	}
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("soft-cancel must not set SuppressAutoReconnect")
+	}
+	if attempts.Load() < 2 {
+		t.Fatalf("expected >=2 connectInternal attempts, got %d", attempts.Load())
+	}
+}
+
+// TestSoftCancelInFlightConnect_NoUserAbort verifies soft cancel does not set
+// userAbortConnect (unlike AbortConnect / Stop).
+func TestSoftCancelInFlightConnect_NoUserAbort(t *testing.T) {
+	conn := makeTestConn(Status_Connecting)
+	defer cleanupTestConn(conn)
+
+	canceled := make(chan struct{})
+	conn.lock.Lock()
+	conn.connectCancel = func() { close(canceled) }
+	conn.userAbortConnect = false
+	conn.lock.Unlock()
+
+	conn.softCancelInFlightConnect()
+
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("expected softCancel to invoke connectCancel")
+	}
+
+	conn.lock.Lock()
+	userAbort := conn.userAbortConnect
+	conn.lock.Unlock()
+	if userAbort {
+		t.Fatal("softCancel must not set userAbortConnect")
 	}
 }
 
@@ -1630,6 +1793,61 @@ func TestCanReconnectWithoutPrompt_PubkeyFallbackNoKey(t *testing.T) {
 	}
 }
 
+// TestCanReconnectWithoutPrompt_PersistedAuthPromptUsed verifies that a cold-start
+// connection seeded from connections.json conn:authpromptused=true does NOT
+// auto-reconnect even when a publickey IdentityFile exists. This is the fix for
+// password-auth hosts that wait one failed publickey retry before prompting.
+func TestCanReconnectWithoutPrompt_PersistedAuthPromptUsed(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2310", Status_Init)
+	defer cleanupTestConn(conn)
+	// Simulate cold start: runtime flag unknown, but connections.json says the
+	// last successful handshake needed an interactive prompt.
+	used := true
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{ConnAuthPromptUsed: &used}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+	// Local IdentityFiles would make HasPublicKeyAuth true — the false positive.
+	hasPublicKeyAuthForTest = func(string) bool { return true }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
+	if conn.canReconnectWithoutPromptLocked() {
+		t.Fatal("expected canReconnectWithoutPromptLocked=false when conn:authpromptused=true is persisted")
+	}
+	if conn.authPromptState.Load() != authPromptUsed {
+		t.Fatalf("expected authPromptState seeded to authPromptUsed, got %d", conn.authPromptState.Load())
+	}
+	if CanReconnectWithoutPrompt(conn.GetName()) {
+		t.Fatal("expected CanReconnectWithoutPrompt=false for persisted authpromptused")
+	}
+}
+
+// TestCanReconnectWithoutPrompt_PersistedAuthPromptNone verifies that a cold-start
+// connection seeded from conn:authpromptused=false can auto-reconnect without a
+// prompt (key-based hosts after upgrade).
+func TestCanReconnectWithoutPrompt_PersistedAuthPromptNone(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2311", Status_Disconnected)
+	defer cleanupTestConn(conn)
+	used := false
+	getConnectionConfigTestHook = func(c *SSHConn) (wconfig.ConnKeywords, bool) {
+		return wconfig.ConnKeywords{ConnAuthPromptUsed: &used}, true
+	}
+	defer func() { getConnectionConfigTestHook = nil }()
+	hasPublicKeyAuthForTest = func(string) bool { return false }
+	defer func() { hasPublicKeyAuthForTest = nil }()
+
+	if !conn.canReconnectWithoutPromptLocked() {
+		t.Fatal("expected canReconnectWithoutPromptLocked=true when conn:authpromptused=false is persisted")
+	}
+	if conn.authPromptState.Load() != authPromptNone {
+		t.Fatalf("expected authPromptState seeded to authPromptNone, got %d", conn.authPromptState.Load())
+	}
+}
+
 // TestNeedsInteractiveAuth_FlagNone verifies that NeedsInteractiveAuth (used by
 // startup reconnect to pick a timeout) returns false (no timeout needed) when
 // the flag says no prompt was needed.
@@ -1759,6 +1977,255 @@ func TestClose_ClearsCachedPassword(t *testing.T) {
 	}
 }
 
+// --- UX-0.1 SuppressAutoReconnect tests ---
+
+// TestClose_SetsSuppressAutoReconnect (0.1.1): user Disconnect sets sticky suppress.
+func TestClose_SetsSuppressAutoReconnect(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected suppress=false initially")
+	}
+	conn.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if !conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected SuppressAutoReconnect=true after user Close")
+	}
+	status := conn.DeriveConnStatus()
+	if !status.SuppressAutoReconnect {
+		t.Fatal("expected DeriveConnStatus.SuppressAutoReconnect=true")
+	}
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false when suppress is set")
+	}
+}
+
+// TestCloseInvoluntary_DoesNotSetSuppress (0.1.3): stall path must not suppress.
+func TestCloseInvoluntary_DoesNotSetSuppress(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("keep-me")
+	conn.CloseInvoluntary()
+	time.Sleep(50 * time.Millisecond)
+
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected SuppressAutoReconnect=false after CloseInvoluntary")
+	}
+	if pw := conn.getCachedPassword(); pw == nil {
+		t.Fatal("expected password preserved after CloseInvoluntary")
+	}
+}
+
+// TestEnsureConnection_NoopWhenSuppressed (0.1.1 visibility gate).
+func TestEnsureConnection_NoopWhenSuppressed(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.SetSuppressAutoReconnect(true)
+
+	called := false
+	prev := connectInternalTestHook
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		called = true
+		return nil
+	}
+	defer func() { connectInternalTestHook = prev }()
+
+	err := EnsureConnection(context.Background(), conn.GetName())
+	if err != nil {
+		t.Fatalf("expected nil from suppressed EnsureConnection, got %v", err)
+	}
+	if called {
+		t.Fatal("EnsureConnection must not call Connect when suppress is set")
+	}
+}
+
+// TestAttemptReconnect_ErrorsWhenSuppressed verifies AttemptReconnect returns
+// ErrAutoReconnectSuppressed (sentinel) when suppress is set — H2.
+func TestAttemptReconnect_ErrorsWhenSuppressed(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.SetSuppressAutoReconnect(true)
+
+	err := AttemptReconnect(context.Background(), conn.GetName())
+	if err == nil {
+		t.Fatal("expected error from suppressed AttemptReconnect")
+	}
+	if !errors.Is(err, ErrAutoReconnectSuppressed) {
+		t.Fatalf("expected errors.Is(err, ErrAutoReconnectSuppressed), got %v", err)
+	}
+}
+
+// TestPauseAutoReconnect_ClearsReconnectStateAfterSimulatedAttempt (H1/M2):
+// after a failed attempt sets countdown state, Pause must clear it and keep
+// it clear (suppress blocks CanAutoReconnect / further auto attempts).
+func TestPauseAutoReconnect_ClearsReconnectStateAfterSimulatedAttempt(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.cachePassword("still-here")
+
+	// Simulate scheduler mid-failure writing countdown state.
+	conn.SetReconnectState(2, time.Now().Add(5*time.Second).UnixMilli(), "dial timeout")
+	status := conn.DeriveConnStatus()
+	if status.ReconnectAttempt != 2 || status.ReconnectNextAttempt == 0 {
+		t.Fatalf("precondition: expected reconnect countdown state, got attempt=%d next=%d",
+			status.ReconnectAttempt, status.ReconnectNextAttempt)
+	}
+
+	conn.PauseAutoReconnect()
+
+	// After pause: suppress on, countdown cleared, password kept.
+	status = conn.DeriveConnStatus()
+	if !status.SuppressAutoReconnect {
+		t.Fatal("expected suppress after Pause")
+	}
+	if status.ReconnectAttempt != 0 || status.ReconnectNextAttempt != 0 || status.ReconnectError != "" {
+		t.Fatalf("expected reconnect state cleared after Pause, got attempt=%d next=%d err=%q",
+			status.ReconnectAttempt, status.ReconnectNextAttempt, status.ReconnectError)
+	}
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false after Pause")
+	}
+	if pw := conn.getCachedPassword(); pw == nil || *pw != "still-here" {
+		t.Fatal("expected password preserved after Pause")
+	}
+
+	// AttemptReconnect must return the sentinel (scheduler clean-stop path).
+	err := AttemptReconnect(context.Background(), conn.GetName())
+	if !errors.Is(err, ErrAutoReconnectSuppressed) {
+		t.Fatalf("expected ErrAutoReconnectSuppressed after Pause, got %v", err)
+	}
+	// Reconnect state must still be clear after the suppressed attempt.
+	status = conn.DeriveConnStatus()
+	if status.ReconnectAttempt != 0 || status.ReconnectNextAttempt != 0 {
+		t.Fatalf("reconnect state re-armed after suppressed AttemptReconnect: attempt=%d next=%d",
+			status.ReconnectAttempt, status.ReconnectNextAttempt)
+	}
+}
+
+// TestClose_InvokesOnUserSuppressCallback (M1): Close fires the registered
+// callback so jobcontroller can stop the scheduler without an import cycle.
+func TestClose_InvokesOnUserSuppressCallback(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	var calledName string
+	prev := OnUserSuppressAutoReconnect
+	OnUserSuppressAutoReconnect = func(name string) { calledName = name }
+	defer func() { OnUserSuppressAutoReconnect = prev }()
+
+	conn.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if calledName != conn.GetName() {
+		t.Fatalf("expected OnUserSuppressAutoReconnect(%q), got %q", conn.GetName(), calledName)
+	}
+}
+
+// TestCloseInvoluntary_DoesNotInvokeOnUserSuppressCallback.
+func TestCloseInvoluntary_DoesNotInvokeOnUserSuppressCallback(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	called := false
+	prev := OnUserSuppressAutoReconnect
+	OnUserSuppressAutoReconnect = func(name string) { called = true }
+	defer func() { OnUserSuppressAutoReconnect = prev }()
+
+	conn.CloseInvoluntary()
+	time.Sleep(50 * time.Millisecond)
+
+	if called {
+		t.Fatal("CloseInvoluntary must not invoke OnUserSuppressAutoReconnect")
+	}
+}
+
+// TestConnect_ClearsSuppress (0.1.2): explicit Connect clears the flag.
+func TestConnect_ClearsSuppress(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+	conn.SetSuppressAutoReconnect(true)
+
+	prev := connectInternalTestHook
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		return nil
+	}
+	defer func() { connectInternalTestHook = prev }()
+
+	err := conn.Connect(context.Background(), &wconfig.ConnKeywords{})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected suppress cleared after explicit Connect")
+	}
+}
+
+// TestPauseAutoReconnect_KeepsPassword (0.5.4): Stop auto-retry keeps cache.
+func TestPauseAutoReconnect_KeepsPassword(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	conn.cachePassword("cached-secret")
+	conn.WithLock(func() {
+		conn.ReconnectAttempt = 3
+		conn.ReconnectNextAttempt = time.Now().Add(5 * time.Second).UnixMilli()
+		conn.ReconnectError = "dial timeout"
+	})
+
+	conn.PauseAutoReconnect()
+
+	if !conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected suppress set after PauseAutoReconnect")
+	}
+	if pw := conn.getCachedPassword(); pw == nil || *pw != "cached-secret" {
+		t.Fatal("expected password preserved after PauseAutoReconnect")
+	}
+	status := conn.DeriveConnStatus()
+	if status.ReconnectAttempt != 0 || status.ReconnectNextAttempt != 0 {
+		t.Fatalf("expected reconnect state cleared, got attempt=%d next=%d",
+			status.ReconnectAttempt, status.ReconnectNextAttempt)
+	}
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false after PauseAutoReconnect")
+	}
+}
+
+// TestCanAutoReconnect_FalseForPermanentError (UX-0.4).
+func TestCanAutoReconnect_FalseForPermanentError(t *testing.T) {
+	conn := makeTestConn(Status_Error)
+	defer cleanupTestConn(conn)
+
+	// Cached password would normally allow reconnect; permanent error blocks it.
+	conn.cachePassword("x")
+	conn.WithLock(func() {
+		conn.LastErrorCode = remote.ConnErrCode_HostKeyChanged
+	})
+	status := conn.DeriveConnStatus()
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false for hostkey-changed")
+	}
+}
+
+// TestCanAutoReconnect_FalseForUserCancelled (UX-0.5 password Cancel sticky).
+func TestCanAutoReconnect_FalseForUserCancelled(t *testing.T) {
+	conn := makeTestConn(Status_Error)
+	defer cleanupTestConn(conn)
+	conn.WithLock(func() {
+		conn.LastErrorCode = remote.ConnErrCode_UserCancelled
+		conn.SuppressAutoReconnect = true
+	})
+	status := conn.DeriveConnStatus()
+	if status.CanAutoReconnect {
+		t.Fatal("expected CanAutoReconnect=false after password cancel")
+	}
+	if !status.SuppressAutoReconnect {
+		t.Fatal("expected SuppressAutoReconnect exposed in status")
+	}
+}
+
 // TestDeriveConnStatus_ExposesConnectCount verifies that DeriveConnStatus
 // exposes ConnectCount and LastConnectTime fields in the returned ConnStatus.
 func TestDeriveConnStatus_ExposesConnectCount(t *testing.T) {
@@ -1822,5 +2289,92 @@ func TestConnectCount_ZeroByDefault(t *testing.T) {
 
 	if conn.ConnectCount != 0 {
 		t.Fatalf("expected ConnectCount=0 for new connection, got %d", conn.ConnectCount)
+	}
+}
+
+// TestRecordConnectionUsage_IncrementsCount verifies that intentional usage
+// (CreateTab path) bumps ConnectCount without going through Connect().
+func TestRecordConnectionUsage_IncrementsCount(t *testing.T) {
+	testOpts := &remote.SSHOpts{SSHHost: "usage-count-test-host", SSHUser: "u", SSHPort: "2222"}
+	conn := GetConn(testOpts)
+	if conn.ConnectCount != 0 {
+		t.Fatalf("expected ConnectCount=0 initially, got %d", conn.ConnectCount)
+	}
+	RecordConnectionUsage(conn.GetName())
+	if conn.ConnectCount != 1 {
+		t.Fatalf("expected ConnectCount=1 after RecordConnectionUsage, got %d", conn.ConnectCount)
+	}
+	if conn.LastConnectTime == 0 {
+		t.Fatal("expected LastConnectTime set after RecordConnectionUsage")
+	}
+	RecordConnectionUsage(conn.GetName())
+	if conn.ConnectCount != 2 {
+		t.Fatalf("expected ConnectCount=2 after second usage, got %d", conn.ConnectCount)
+	}
+}
+
+// TestRecordConnectionUsage_SkipsLocal verifies local connections are not tracked.
+func TestRecordConnectionUsage_SkipsLocal(t *testing.T) {
+	RecordConnectionUsage("")
+	RecordConnectionUsage("local")
+	RecordConnectionUsage("local:default")
+	// no panic / no controller created for empty name
+}
+
+// TestConnect_ParentContextCancel_DoesNotSuppress: scheduler/Ensure timeouts must
+// NOT set sticky suppress (regression — was freezing auto-retry on all hosts).
+func TestConnect_ParentContextCancel_DoesNotSuppress(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2401", Status_Init)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptNone)
+
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel parent shortly after Connect starts (simulates Ensure/scheduler timeout).
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	_ = conn.Connect(ctx, &wconfig.ConnKeywords{})
+
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("parent context cancel must NOT set SuppressAutoReconnect")
+	}
+}
+
+// TestConnect_UserAbort_SetsSuppress: AbortConnect during Connect sets suppress.
+func TestConnect_UserAbort_SetsSuppress(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConnWithPort(t, "2402", Status_Init)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptNone)
+
+	started := make(chan struct{})
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = conn.Connect(context.Background(), &wconfig.ConnKeywords{})
+	}()
+	<-started
+	conn.AbortConnect()
+	<-done
+
+	if !conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected SuppressAutoReconnect after user AbortConnect")
 	}
 }
