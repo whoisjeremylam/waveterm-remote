@@ -126,6 +126,7 @@ type SSHConn struct {
 	ReconnectError       string
 	ReconnectGaveUp      bool   // true when scheduler exhausted retries (max duration, auth-failed, etc.)
 	ReconnectStopReason  string // reason: "max-duration", "auth-failed", "connection-refused", "no-jobs"
+	FlappingMode         bool // ≥3 reconnect attempts in last 30s (UX-2.2)
 
 	LocalForwardListeners  []ForwardingRule
 	RemoteForwardListeners []ForwardingRule
@@ -235,6 +236,13 @@ func (conn *SSHConn) ClearReconnectGaveUp() {
 		conn.ReconnectStopReason = ""
 	})
 	conn.FireConnChangeEvent()
+// SetFlappingMode sets the flapping mode flag. When true, the frontend shows
+// a single stable "Network unstable — retrying…" overlay instead of cycling
+// through RetryingOverlay → CountdownOverlay → DisconnectedOverlay. (UX-2.2)
+func (conn *SSHConn) SetFlappingMode(flapping bool) {
+	conn.WithLock(func() {
+		conn.FlappingMode = flapping
+	})
 }
 
 func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
@@ -286,6 +294,7 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 		ForwardingRules:               forwardingRules,
 		CanAutoReconnect:              canAutoReconnect,
 		SuppressAutoReconnect:         conn.SuppressAutoReconnect,
+		FlappingMode:                  conn.FlappingMode,
 	}
 }
 

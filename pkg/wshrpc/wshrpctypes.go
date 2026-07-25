@@ -446,6 +446,7 @@ type ConnStatus struct {
 	// password Cancel, or permanent handshake failure. Auto paths no-op until
 	// explicit Reconnect (UX-0.1, UX-0.4, UX-0.5).
 	SuppressAutoReconnect bool `json:"suppressautoreconnect,omitempty"`
+	FlappingMode                  bool     `json:"flappingmode,omitempty"` // true when ≥3 reconnect attempts in last 30s (UX-2.2)
 }
 
 type WebSelectorOpts struct {

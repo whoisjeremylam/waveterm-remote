@@ -505,6 +505,35 @@ GaveUpOverlay.displayName = "GaveUpOverlay";
 /** How long job may stay "disconnected" after conn is up before showing "failed". */
 const JOB_RECONNECT_GRACE_MS = 20_000;
 
+const FlappingOverlay = React.memo(
+    ({
+        connName,
+        attempt,
+        overlayRefCallback,
+    }: {
+        connName: string;
+        attempt: number;
+        overlayRefCallback: (el: HTMLDivElement | null) => void;
+    }) => {
+        return (
+            <div
+                className="@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90"
+                ref={overlayRefCallback}
+            >
+                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
+                    <i className="fa-solid fa-spinner fa-spin text-warning text-base shrink-0" title="Network unstable"></i>
+                    <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
+                        Network unstable — retrying…
+                        {attempt > 0 && <span className="text-white/70"> (attempt {attempt})</span>}
+                    </div>
+                    <div className="flex-1 hidden @max-xxs:block"></div>
+                </div>
+            </div>
+        );
+    }
+);
+FlappingOverlay.displayName = "FlappingOverlay";
+
 export const ConnStatusOverlay = React.memo(
     ({
         nodeModel,
@@ -730,6 +759,12 @@ export const ConnStatusOverlay = React.memo(
         // UX-1.1: gave-up overlay — scheduler exhausted retries
         const showGaveUp =
             !!connStatus.reconnectgaveup && showDisconnected && !permanentErrorTitle(connStatus.errorcode);
+        // (password cached or no interactive auth required)
+        const canAutoReconnect = connStatus.canautoreconnect;
+        const isFlapping = connStatus.flappingmode === true;
+        const showRetrying = !isFlapping && canAutoReconnect && connStatus.status == "connecting" && (connStatus.reconnectattempt ?? 0) > 0;
+        const showCountdown = !isFlapping && canAutoReconnect && connStatus.status == "disconnected" && (connStatus.reconnectnextattempt ?? 0) > 0;
+        const showDisconnected = connStatus.status == "disconnected" && !connStatus.connected;
 
         // Hide status overlay when a password prompt is active for this connection
         // and not dismissed on this tab
@@ -770,6 +805,16 @@ export const ConnStatusOverlay = React.memo(
         if (showStalled && !showWshError) {
             return (
                 <StalledOverlay connName={connName} connStatus={connStatus} overlayRefCallback={overlayRefCallback} onReconnect={handleTryReconnect} />
+            );
+        }
+
+        if (isFlapping) {
+            return (
+                <FlappingOverlay
+                    connName={connName}
+                    attempt={connStatus.reconnectattempt ?? 0}
+                    overlayRefCallback={overlayRefCallback}
+                />
             );
         }
 

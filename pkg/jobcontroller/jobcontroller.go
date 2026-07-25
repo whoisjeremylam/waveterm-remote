@@ -161,6 +161,10 @@ var (
 
 	// active connection-reconnect schedulers (deduplication for onConnectionDown)
 	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
+
+	// recentReconnectAttempts tracks timestamps of recent reconnect attempts
+	// per connection for flapping detection (UX-2.2).
+	recentReconnectAttempts = ds.MakeSyncMap[[]int64]()
 )
 
 const ConnReconnectInterval              = 5 * time.Second
@@ -174,6 +178,14 @@ const ConnReconnectAggressiveDuration    = 2 * time.Minute
 // connection comes back within this window, onConnectionDown silently returns
 // and no overlay flash occurs. (UX-2.1)
 const ReconnectHysteresisDuration = 1500 * time.Millisecond
+
+// FlappingWindowDuration is the lookback window for detecting rapid
+// disconnect/reconnect cycles. (UX-2.2)
+const FlappingWindowDuration = 30 * time.Second
+
+// FlappingAttemptThreshold is the minimum number of reconnect attempts
+// within FlappingWindowDuration to trigger flapping mode. (UX-2.2)
+const FlappingAttemptThreshold = 3
 
 func InitJobController() {
 	go connReconcileWorker()
@@ -940,8 +952,33 @@ func updateRetryState(connName string, attempt int, nextAttempt int64, errMsg st
 	conn := conncontroller.MaybeGetConn(connOpts)
 	if conn != nil {
 		conn.SetReconnectState(attempt, nextAttempt, errMsg)
+
+		// UX-2.2: Flapping detection — track recent attempt timestamps.
+		// If ≥FlappingAttemptThreshold attempts in the last FlappingWindowDuration,
+		// set FlappingMode so the frontend shows a single stable overlay.
+		now := time.Now().UnixMilli()
+		times := append(getReconnectTimes(connName), now)
+		// Prune old entries outside the window
+		cutoff := now - int64(FlappingWindowDuration/time.Millisecond)
+		pruned := make([]int64, 0, len(times))
+		for _, t := range times {
+			if t >= cutoff {
+				pruned = append(pruned, t)
+			}
+		}
+		recentReconnectAttempts.Set(connName, pruned)
+		flapping := len(pruned) >= FlappingAttemptThreshold
+		conn.SetFlappingMode(flapping)
+
 		conn.FireConnChangeEvent()
 	}
+}
+
+// getReconnectTimes returns the current reconnect attempt timestamps for a
+// connection. Extracted for testability.
+func getReconnectTimes(connName string) []int64 {
+	times, _ := recentReconnectAttempts.GetEx(connName)
+	return times
 }
 
 func clearRetryState(connName string) {
@@ -952,8 +989,11 @@ func clearRetryState(connName string) {
 	conn := conncontroller.MaybeGetConn(connOpts)
 	if conn != nil {
 		conn.ClearReconnectState()
+		conn.SetFlappingMode(false)
 		conn.FireConnChangeEvent()
 	}
+	// Clear flapping tracking for this connection
+	recentReconnectAttempts.Delete(connName)
 }
 
 // setReconnectGaveUpState records that the scheduler gave up.
