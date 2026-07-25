@@ -119,6 +119,7 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
                 maxLength={400}
                 className="resize-none bg-panel rounded-md border border-border py-1.5 pl-4 min-h-[30px] text-inherit cursor-text focus:ring-2 focus:ring-accent focus:outline-none"
                 autoFocus={true}
+                aria-label={userInputRequest.title || "Password input"}
                 onKeyDown={handleKeyDown}
             />
         );

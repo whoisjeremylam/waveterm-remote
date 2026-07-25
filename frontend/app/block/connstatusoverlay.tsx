@@ -136,7 +136,11 @@ const StalledOverlay = React.memo(
 
         return (
             <div className={overlayShellClass} ref={overlayRefCallback}>
-                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
+            <div
+                className="@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90"
+                ref={overlayRefCallback}
+                aria-live="polite"
+            >                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i
                         className="fa-solid fa-triangle-exclamation text-warning text-base shrink-0"
                         title="Connection Stalled"
@@ -220,7 +224,11 @@ const DisconnectedOverlay = React.memo(
 
         return (
             <div className={overlayShellClass} ref={overlayRefCallback}>
-                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
+            <div
+                className="@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90"
+                ref={overlayRefCallback}
+                aria-live="polite"
+            >                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i
                         className={clsx(
                             "text-base shrink-0",
@@ -305,7 +313,11 @@ const RetryingOverlay = React.memo(
     }) => {
         return (
             <div className={overlayShellClass} ref={overlayRefCallback}>
-                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
+            <div
+                className="@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90"
+                ref={overlayRefCallback}
+                aria-live="polite"
+            >                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i className="fa-solid fa-spinner fa-spin text-warning text-base shrink-0" title="Connecting"></i>
                     <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
                         Attempt {attempt} — connecting to "{connName}"…
@@ -349,7 +361,11 @@ const CountdownOverlay = React.memo(
 
         return (
             <div className={overlayShellClass} ref={overlayRefCallback}>
-                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
+            <div
+                className="@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90"
+                ref={overlayRefCallback}
+                aria-live="polite"
+            >                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i className="fa-solid fa-clock text-grey-text text-base shrink-0" title="Waiting to retry"></i>
                     <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
                         {connStatus.reconnecterror && (
@@ -519,6 +535,7 @@ const FlappingOverlay = React.memo(
             <div
                 className="@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90"
                 ref={overlayRefCallback}
+                aria-live="polite"
             >
                 <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i className="fa-solid fa-spinner fa-spin text-warning text-base shrink-0" title="Network unstable"></i>
