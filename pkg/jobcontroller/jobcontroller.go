@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -1181,15 +1182,31 @@ func scheduleConnectionReconnect(connName string) {
 			aggressiveMode = false
 		}
 
-		// Wait for next interval before retrying
+		// Wait for next interval before retrying.
+		// UX-2.7: Add per-connection jitter (±50% of interval) so multiple
+		// connections with active schedulers do not hammer the network
+		// simultaneously. This spreads out retry attempts naturally.
 		interval := ConnReconnectInterval
 		if aggressiveMode {
 			interval = ConnReconnectAggressiveInterval
 		}
-		timer := time.NewTimer(interval)
+		jitteredInterval := jitterInterval(interval)
+		timer := time.NewTimer(jitteredInterval)
 		<-timer.C
 		timer.Stop()
 	}
+}
+
+// jitterInterval returns d ± d/2 (randomized). Used to stagger retry
+// intervals across multiple connections so they don't fire simultaneously.
+// (UX-2.7)
+func jitterInterval(d time.Duration) time.Duration {
+	jitter := time.Duration(rand.Int63n(int64(d / 2)))
+	// Randomly add or subtract jitter
+	if rand.Intn(2) == 0 {
+		return d + jitter
+	}
+	return d - jitter
 }
 
 // hasRunningDurableJobsForConn checks if a connection has any running durable jobs.
