@@ -93,12 +93,15 @@ export function PortForwardStatusIndicator({
     }
 
     const count = forwardingRules.length;
+    const hasErrors = forwardingRules.some((r) => r.includes("[ERROR:"));
+    const iconColor = hasErrors ? "text-yellow-500" : "text-emerald-500";
+    const textColor = hasErrors ? "text-yellow-500" : "text-emerald-500";
 
     return (
         <>
             <div ref={refs.setReference} {...getReferenceProps()} className={divClassName}>
-                <i className="fa-sharp fa-solid fa-plug text-emerald-500" />
-                <span className="text-[10px] text-emerald-500 font-medium ml-[-2px]">{count}</span>
+                <i className={`fa-sharp fa-solid ${hasErrors ? "fa-plug-circle-exclamation" : "fa-plug"} ${iconColor}`} />
+                <span className={`text-[10px] ${textColor} font-medium ml-[-2px]`}>{count}</span>
             </div>
             {isOpen && (
                 <FloatingPortal>
@@ -123,11 +126,18 @@ export function PortForwardStatusIndicator({
                                 Port Forwarding
                             </div>
                             <div className="flex flex-col gap-1">
-                                {forwardingRules.map((rule, idx) => (
-                                    <div key={idx} className="text-xs text-secondary font-mono bg-zinc-900 rounded px-2 py-1">
-                                        {rule}
-                                    </div>
-                                ))}
+                                {forwardingRules.map((rule, idx) => {
+                                    const errorMatch = rule.match(/\[ERROR:\s*(.+?)\]/);
+                                    const isError = !!errorMatch;
+                                    return (
+                                        <div
+                                            key={idx}
+                                            className={`text-xs font-mono bg-zinc-900 rounded px-2 py-1 ${isError ? "text-yellow-400" : "text-secondary"}`}
+                                        >
+                                            {rule}
+                                        </div>
+                                    );
+                                })}
                             </div>
                         </div>
                     </div>

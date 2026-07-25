@@ -785,7 +785,8 @@ func TestStartPortForwarding_MalformedRule(t *testing.T) {
 
 	// Only the valid RemoteForward should have been attempted (but will fail
 	// because the mock client doesn't support Listen). The malformed rules
-	// should have been skipped.
+	// should have been skipped. UX-2.8: failed binds are tracked with an
+	// Error field so the frontend can surface them.
 	conn.lock.Lock()
 	localCount := len(conn.LocalForwardListeners)
 	remoteCount := len(conn.RemoteForwardListeners)
@@ -793,8 +794,15 @@ func TestStartPortForwarding_MalformedRule(t *testing.T) {
 	if localCount != 0 {
 		t.Fatalf("expected 0 LocalForwardListeners (all malformed), got %d", localCount)
 	}
-	if remoteCount != 0 {
-		t.Fatalf("expected 0 RemoteForwardListeners (mock client can't Listen), got %d", remoteCount)
+	if remoteCount != 1 {
+		t.Fatalf("expected 1 RemoteForwardListener (failed bind tracked with error), got %d", remoteCount)
+	}
+	// Verify the error is set on the failed rule
+	conn.lock.Lock()
+	rule := conn.RemoteForwardListeners[0]
+	conn.lock.Unlock()
+	if rule.Error == "" {
+		t.Fatal("expected Error field to be set on failed RemoteForwardListener")
 	}
 }
 

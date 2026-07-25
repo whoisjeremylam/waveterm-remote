@@ -163,6 +163,7 @@ type SSHConn struct {
 type ForwardingRule struct {
 	Listener net.Listener
 	Rule     string // e.g., "127.0.0.1:8080 -> localhost:80"
+	Error    string // non-empty if the listener failed to bind (UX-2.8)
 }
 
 var ConnServerCmdTemplate = strings.TrimSpace(
@@ -236,6 +237,8 @@ func (conn *SSHConn) ClearReconnectGaveUp() {
 		conn.ReconnectStopReason = ""
 	})
 	conn.FireConnChangeEvent()
+}
+
 // SetFlappingMode sets the flapping mode flag. When true, the frontend shows
 // a single stable "Network unstable — retrying…" overlay instead of cycling
 // through RetryingOverlay → CountdownOverlay → DisconnectedOverlay. (UX-2.2)
@@ -274,10 +277,18 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 	}
 	var forwardingRules []string
 	for _, rule := range conn.LocalForwardListeners {
-		forwardingRules = append(forwardingRules, "L: "+rule.Rule)
+		entry := "L: " + rule.Rule
+		if rule.Error != "" {
+			entry += " [ERROR: " + rule.Error + "]"
+		}
+		forwardingRules = append(forwardingRules, entry)
 	}
 	for _, rule := range conn.RemoteForwardListeners {
-		forwardingRules = append(forwardingRules, "R: "+rule.Rule)
+		entry := "R: " + rule.Rule
+		if rule.Error != "" {
+			entry += " [ERROR: " + rule.Error + "]"
+		}
+		forwardingRules = append(forwardingRules, entry)
 	}
 	// Determine if auto-reconnect is possible without user input:
 	// - Password is cached from a previous session, OR
@@ -2025,6 +2036,13 @@ func (conn *SSHConn) startLocalForwardTCP(ctx context.Context, client *ssh.Clien
 	listener, err := net.Listen("tcp", localAddr)
 	if err != nil {
 		conn.Infof(ctx, "LocalForward %s: failed to listen on %s: %v\n", rule, localAddr, err)
+		// UX-2.8: Store the failed rule so the frontend can display the error.
+		conn.WithLock(func() {
+			conn.LocalForwardListeners = append(conn.LocalForwardListeners, ForwardingRule{
+				Rule:  fmt.Sprintf("%s -> %s", localAddr, dialAddr),
+				Error: err.Error(),
+			})
+		})
 		return
 	}
 	conn.WithLock(func() {
@@ -2066,6 +2084,13 @@ func (conn *SSHConn) startRemoteForwardTCP(ctx context.Context, client *ssh.Clie
 	listener, err := client.Listen("tcp", remoteAddr)
 	if err != nil {
 		conn.Infof(ctx, "RemoteForward %s: failed to listen on %s: %v\n", rule, remoteAddr, err)
+		// UX-2.8: Store the failed rule so the frontend can display the error.
+		conn.WithLock(func() {
+			conn.RemoteForwardListeners = append(conn.RemoteForwardListeners, ForwardingRule{
+				Rule:  fmt.Sprintf("%s -> %s", remoteAddr, localAddr),
+				Error: err.Error(),
+			})
+		})
 		return
 	}
 	conn.WithLock(func() {

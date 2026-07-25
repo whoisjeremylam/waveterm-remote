@@ -1128,7 +1128,8 @@ func scheduleConnectionReconnect(connName string) {
 							conn.SetConnError("SSH agent may be unavailable — unlock your keychain or restart your SSH agent")
 							conn.FireConnChangeEvent()
 						}
-					}					clearRetryState(connName)
+					}
+					clearRetryState(connName)
 					return
 				}
 				// Early termination: connection-refused means the server is
