@@ -3,43 +3,45 @@
 ## Current focus (2026-07-24) — `feat/reconnect-ux-p0`
 
 **Branch:** `feat/reconnect-ux-p0` (worktree: `../waveterm-remote-reconnect-ux-p0`)  
-**Base:** merged with `origin/main` (includes Promise.all new-tab fix)  
-**Tip (as of last session):** `f86644ed` and ancestors — **push if not yet on origin**
+**Base:** merged with `origin/main`  
+**Status:** **P0 user-tested** — ready to push → PR → merge
 
-Kitchen-sink branch covering reconnection UX P0 + password cold-start + new-tab dropdown polish. Specs: [[specs/reconnection-ux-backlog.md]], [[specs/reconnection.md]], [[specs/newtab-connect-dropdown.md]].
+Kitchen-sink branch: reconnection UX P0 + password cold-start + new-tab dropdown + block-header connection switcher. Specs: [[specs/reconnection-ux-backlog.md]], [[specs/reconnection.md]], [[specs/newtab-connect-dropdown.md]].
 
-### Done on this branch (code complete; retest after rebuild)
+### Done on this branch (code + user retest)
 
 | Area | Status | Notes |
 |------|--------|--------|
-| UX-0.1 Sticky suppress after Disconnect | Done | Per-conn `SuppressAutoReconnect` |
-| UX-0.2 Job-level overlay (conn up / session down) | Done | Confirmed: kill `wsh jobmanager --jobid …` |
-| UX-0.3 Attention heartbeat while tab visible | Done | 30s / 10s network; focus regain → Ensure |
-| UX-0.4 Permanent failures (known_hosts / host key) | Done | Confirmed with corrupted known_hosts |
-| UX-0.5 Stop auto-retry + password Cancel | Done + hardened | Hard-abort Stop; Cancel-all prompts per conn |
-| Password cold-start (defer interactive Ensure) | Done | No ~60s invisible prompt race |
-| Password cache across network flaps | Done | Only clear on true credential rejection |
-| Suppress only on real user abort | Done | Scheduler timeouts must not sticky-suppress |
-| Overlay copy "stopped" not "paused" | Done | |
-| New-tab typeahead + frecency | Done | Count on CreateTab only; Cmd-T toggle; no default selection |
+| UX-0.1 Sticky suppress after Disconnect | Done + tested | Per-conn `SuppressAutoReconnect` |
+| UX-0.2 Job-level overlay (conn up / session down) | Done + tested | Confirmed: kill `wsh jobmanager --jobid …` |
+| UX-0.3 Attention heartbeat while tab visible | Done + tested | 30s / 10s network / **5s while connecting**; focus regain → Ensure |
+| UX-0.4 Permanent failures (known_hosts / host key) | Done + tested | Confirmed with corrupted known_hosts |
+| UX-0.5 Stop auto-retry + password Cancel | Done + tested | Hard-abort Stop; Cancel-all prompts per conn |
+| Password cold-start (defer interactive Ensure) | Done + tested | No ~60s invisible prompt race |
+| Password cache across network flaps | Done + tested | Only clear on true credential rejection |
+| Suppress only on real user abort | Done + tested | Scheduler timeouts must not sticky-suppress |
+| Overlay copy "stopped" not "paused" | Done + tested | |
+| Stale hung-dial soft-cancel (LS / firewall) | Done + tested | Soft-cancel `connecting` >8s without suppress; Ensure while connecting |
+| New-tab typeahead + frecency | Done + tested | Count on CreateTab; Cmd-T toggle; no default selection on open |
+| New-tab ≥2-char auto-select first match | Done + tested | Enter works after 2 chars; no-match still requires ↓/click for New Connection |
+| Block-header connection switcher (no filter) | Done | Full frecency list; no typeahead; New Connection only via Cmd-T |
 
-### Remaining test / ship checklist (user)
+### Retest matrix (user) — complete
 
-**Must retest after latest commits (`c6540dbb`+`f86644ed`+`73349acd`):**
+1. [x] **A2 Stop hard-abort** — Stop while connecting; only that host stops; overlay **stopped**
+2. [x] **Network flap + cached password** — silent reconnect, no re-prompt
+3. [x] **A3 Cancel** — two tabs same password host → Cancel once → no second dialog
+4. [x] **Sticky suppress after Stop** — holds until manual Reconnect; then auto-heal works
+5. [x] **New-tab** — Cmd-T toggle; no default selection on open; ≥2 chars selects first match; no-match needs ↓ for New Connection; frecency via new tabs
+6. [x] **Little Snitch / unsigned binary race** — allow LS → password prompt without waiting full 60s dial; does not kill on-screen password dialog
 
-1. **A2 Stop hard-abort** — Stop while "Attempt N — connecting…"; only **that** host stops; overlay says **stopped**; others keep retrying if down.
-2. **Network flap + cached password** — password host connected → bad network → auto-retry fails → good network → **silent reconnect, no password prompt**.
-3. **A3 Cancel** (regression) — two tabs same password host → Cancel once → no second dialog.
-4. **Sticky suppress after Stop** — intentional until **Reconnect**; after Reconnect, later network drops auto-heal again.
-5. **New-tab** C1–C12 if not finished (Cmd-T toggle, no default selection, frecency via new tabs not reconnects).
+**Confirmed earlier:** A4 known_hosts, A5 job kill overlay, password cold-start prompt speed.
 
-**Confirmed earlier (optional smoke):** A4 known_hosts, A5 job kill overlay, password cold-start prompt speed, A3 cancel once.
+### Next engineering steps
 
-### Next engineering steps (after ship / if bugs)
-
-1. **Land branch** — push `feat/reconnect-ux-p0`, open PR → merge to `main` when tests pass.
+1. **Push + PR** — `feat/reconnect-ux-p0` → merge to `main`.
 2. **P1 clarity** from [[specs/reconnection-ux-backlog.md]] (not blocking P0 ship): UX-1.1 post-give-up copy, UX-1.2 interactive idle overlay, UX-1.4 wrong-password feedback, UX-1.7 drain indicator, etc.
-3. **A6 optional polish** — reconnect retries while app unfocused is OK; focus regain already Ensures. Only if needed: do **not** set suppress on blur (already fixed). No keepalive changes.
+3. **Later (P2 UX-2.8):** soft network readiness gates before automatic TCP dial — see [[specs/reconnection-ux-backlog.md#ux-28--soft-network-readiness-gates-before-automatic-tcp-dial-later]].
 4. **Permanent-failure copy polish** — known_hosts error still shows raw Go path; friendlier message later.
 5. **Main workspace hygiene** — leftover untracked junk on `main` checkout (`.mimocode/`, `noclick_*`, etc.) is not part of this branch.
 
@@ -355,13 +357,16 @@ Spec: [[.pi/specs/reconnection-ux-backlog.md]] · Branch: `feat/reconnect-ux-p0`
 
 Backend + **P0 product loop** implemented on the feature branch (see **Current focus** at top). Remaining is P1 clarity + optional polish.
 
-**P0 — Trust & recovery** (code on `feat/reconnect-ux-p0`; finish user retest then merge)
+**P0 — Trust & recovery** (code + user retest on `feat/reconnect-ux-p0`; ready to merge)
 - [x] UX-0.1 Sticky suppress after user Disconnect
 - [x] UX-0.2 Job-level status when conn up / session down
 - [x] UX-0.3 Attention-bound recovery while dead tab is visible
 - [x] UX-0.4 Permanent failures (host key, etc.) stop silent retry
 - [x] UX-0.5 Cancel auto-retry + password Cancel semantics (+ hard-abort Stop; cancel-all prompts per conn)
 - [x] Hardening: no sticky suppress on scheduler timeouts; password cache survives network flaps
+- [x] Stale hung-dial soft-cancel (Little Snitch / firewall race)
+- [x] New-tab typeahead polish (≥2-char auto-select; Cmd-T toggle)
+- [x] Block-header connection switcher (no type filter; frecency order)
 
 **P1 — Clarity** (see full spec for acceptance criteria) — **next after merge**
 - [ ] UX-1.1 Post-give-up / early-stop overlay copy
@@ -373,7 +378,7 @@ Backend + **P0 product loop** implemented on the feature branch (see **Current f
 - [ ] UX-1.7 Disk drain / catch-up indicator
 - [ ] UX-1.8 Passphrase vs password prompt strings
 
-**Ship gate (updated):** P0 code complete on branch → user retest matrix (Current focus) → merge. P1 not required for first land of P0.
+**Ship gate (updated):** P0 code + user retest complete → push/PR/merge. P1 not required for first land of P0.
 
 ### Agent Orchestration API
 
@@ -461,7 +466,7 @@ Spec: [[.pi/specs/newtab-connect-dropdown.md]] · **Implemented on `feat/reconne
 - [x] `newTabDropdownOpenAtom`; Cmd-T **toggles**; no default selection; filter placeholder
 - [x] tabbar + vtabbar wiring; shared helpers in conntypeahead
 
-### Manual verification (finish on branch before merge)
-- [ ] Cmd-T open/close; nothing selected by default; Enter guard + New Connection ↓
-- [ ] Remote list populated; frecency rises from **new tabs** not password restarts
-- [ ] Vertical tab bar parity if used
+### Manual verification
+- [x] Cmd-T open/close; nothing selected by default; ≥2 chars auto-selects first match; no-match needs ↓ for New Connection
+- [x] Remote list populated; frecency rises from **new tabs** not password restarts
+- [x] Vertical tab bar parity if used

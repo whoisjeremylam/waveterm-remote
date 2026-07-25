@@ -15,6 +15,12 @@ const RECONNECT_DEBOUNCE_MS = 200;
 const HEARTBEAT_DEFAULT_MS = 30_000;
 /** Faster heartbeat after network-unreachable dial failures (UX-0.3 D4). */
 const HEARTBEAT_NETWORK_MS = 10_000;
+/**
+ * While status is still "connecting", poll Ensure more often so a hung dial
+ * (e.g. Little Snitch blocking an unsigned binary at launch) can be soft-canceled
+ * by the backend once stale (~8s) after the user allows network / refocuses.
+ */
+const HEARTBEAT_CONNECTING_MS = 5_000;
 
 const NETWORK_UNREACHABLE_CODES = new Set([
     "dial-error",
@@ -31,8 +37,9 @@ const NETWORK_UNREACHABLE_CODES = new Set([
  * The backend (EnsureConnection) is idempotent and cooldown-guarded (5s), so
  * rapid tab switches or focus events do not cause reconnect storms. Only
  * terminal blocks with a connection are considered; local and WSL connections
- * are skipped. Connections that are already connected or connecting are left
- * alone.
+ * are skipped. Already-connected hosts are left alone. "Connecting" is still
+ * Ensured so a stale hung dial can be soft-canceled and retried (Little Snitch
+ * / firewall block at launch).
  *
  * UX-0.1 / UX-0.5: skips conns with suppressautoreconnect (user Disconnect,
  * Stop auto-retry, password Cancel, permanent host-key failures). Backend also
@@ -51,9 +58,9 @@ export const VisibilityReconnectHandler = React.memo(
 
         // The reconnect scan. Reads block meta + conn status from the store
         // (non-reactive — we read on trigger, not subscribe) and fires
-        // ConnEnsureCommand for each unique disconnected/error connection.
+        // ConnEnsureCommand for each unique disconnected/error/connecting connection.
         // Returns the recommended next heartbeat interval (ms) based on last
-        // error codes seen, or null if no eligible disconnected conns.
+        // error codes / connecting state, or null if no eligible conns.
         const fireReconnect = React.useCallback((): number | null => {
             if (!tabId || !blockIds || blockIds.length === 0) {
                 return null;
@@ -61,6 +68,7 @@ export const VisibilityReconnectHandler = React.memo(
             const seenConns = new Set<string>();
             let eligibleCount = 0;
             let useNetworkInterval = false;
+            let anyConnecting = false;
             for (const blockId of blockIds) {
                 const view = globalStore.get(waveEnv.getBlockMetaKeyAtom(blockId, "view"));
                 if (view !== "term") {
@@ -79,13 +87,12 @@ export const VisibilityReconnectHandler = React.memo(
                     continue;
                 }
                 // Reconnect when not connected. Include "init" (controller exists
-                // but never connected this process) and the frontend default
-                // "disconnected" for hosts not yet in ConnStatus. Skip only
-                // "connecting" (handshake in flight) and "connected".
+                // but never connected this process), "disconnected", "error", and
+                // "connecting" (backend soft-cancels stale hung dials on Ensure).
                 // Interactive password hosts are deferred from server startup
                 // until this UI path so GetUserInput runs after userinput is
                 // subscribed — avoids the ~60s invisible prompt race.
-                if (connStatus.status === "connected" || connStatus.status === "connecting") {
+                if (connStatus.status === "connected") {
                     continue;
                 }
                 // UX-0.1 / UX-0.5: sticky suppress after user Disconnect, Stop
@@ -111,11 +118,15 @@ export const VisibilityReconnectHandler = React.memo(
                     continue;
                 }
                 eligibleCount++;
+                if (connStatus.status === "connecting") {
+                    anyConnecting = true;
+                }
                 if (connStatus.errorcode && NETWORK_UNREACHABLE_CODES.has(connStatus.errorcode)) {
                     useNetworkInterval = true;
                 }
                 // Fire-and-forget; backend serializes via cooldown + pendingAuth.
                 // Interactive auth without cache is OK when tab is visible (D5).
+                // For "connecting", EnsureConnection waits or soft-cancels if stale.
                 waveEnv.rpc
                     .ConnEnsureCommand(
                         TabRpcClient,
@@ -128,6 +139,9 @@ export const VisibilityReconnectHandler = React.memo(
             }
             if (eligibleCount === 0) {
                 return null;
+            }
+            if (anyConnecting) {
+                return HEARTBEAT_CONNECTING_MS;
             }
             return useNetworkInterval ? HEARTBEAT_NETWORK_MS : HEARTBEAT_DEFAULT_MS;
         }, [tabId, blockIds, waveEnv]);

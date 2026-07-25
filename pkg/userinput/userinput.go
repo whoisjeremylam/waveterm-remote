@@ -128,6 +128,24 @@ func (ui *UserInputHandler) unregisterChannel(id string) {
 	delete(ui.AuthRequestConns, id)
 }
 
+// HasActiveAuthPromptForConn reports whether a password/passphrase/kbd prompt
+// is currently waiting for the user for this connection. Used to avoid
+// soft-canceling a stale "connecting" dial while the user is typing a password.
+func HasActiveAuthPromptForConn(connName string) bool {
+	if connName == "" {
+		return false
+	}
+	ui := &MainUserInputHandler
+	ui.Lock.Lock()
+	defer ui.Lock.Unlock()
+	for _, cn := range ui.AuthRequestConns {
+		if cn == connName {
+			return true
+		}
+	}
+	return false
+}
+
 // CancelAllAuthPromptsForConn fails every pending SSH auth prompt (password,
 // passphrase, keyboard-interactive) for connName with a cancel error so all
 // GetUserInput waiters return. Used when the user Cancels one password dialog

@@ -1,7 +1,7 @@
 # Reconnection UX Backlog
 
-> Status: **P0 implemented on `feat/reconnect-ux-p0`** (pending final user retest + merge to main)  
-> Created: 2026-07-24 · Updated: 2026-07-24  
+> Status: **P0 code + user retest complete on `feat/reconnect-ux-p0`** (ready to push/PR/merge)  
+> Created: 2026-07-24 · Updated: 2026-07-25  
 > Design reference: [[reconnection-design.md]]  
 > Implementation reference: [[reconnection.md]]  
 > Related: [[visibility-driven-reconnect.md]], [[reconnect-ui-overlay.md]], [[disk-backed-stream-history.md]], [[newtab-connect-dropdown.md]]  
@@ -9,17 +9,16 @@
 
 ## Session handoff (post-compact)
 
-**Land next:** push branch → finish retest matrix in [[todos.md#current-focus-2026-07-24--featreconnect-ux-p0]] → PR → merge.
+**Land next:** push `feat/reconnect-ux-p0` → PR → merge to `main`.
 
-**P0 code complete.** Hardening commits of note:
+**P0 code + user retest complete** (2026-07-25). Includes LS hung-dial soft-cancel, new-tab ≥2-char auto-select, block-header filter-free connection switcher.
 
-| Commit (approx) | Fix |
-|-----------------|-----|
-| `170d8865`…`bcfc490e` | UX-0.1–0.5 core (suppress, stop-retry RPC, job overlay, heartbeat, permanent errors) |
-| `50f3e3e8` | Defer interactive Ensure at startup (no ~60s invisible password prompt) |
-| `73349acd` | Hard-abort Stop; Cancel all password prompts for one conn |
-| `c6540dbb` | Scheduler timeouts must not sticky-suppress; copy "stopped" |
-| `f86644ed` | Keep cached password across network flaps (only clear on true credential rejection) |
+| Area | Notes |
+|------|-------|
+| UX-0.1–0.5 + hardening | Suppress, stop-retry, job overlay, heartbeat, permanent errors, password cancel/cache |
+| Stale hung-dial soft-cancel | ~8s connecting without suppress; Ensure while connecting; prefer interactive auth when no pubkey |
+| New-tab dropdown | Frecency; Cmd-T toggle; no selection on open; ≥2 chars → first match; no-match needs ↓ |
+| Block-header switcher | No type filter; full frecency list; New Connection only via Cmd-T |
 
 **Open after merge:** P1 clarity items below; optional permanent-failure copy polish; A6 focus-pause not required (retries while unfocused OK; focus regain Ensures).
 
@@ -67,7 +66,9 @@ Backend reconnection (scheduler, `CloseInvoluntary`, visibility-driven `ConnEnsu
 | Password Cancel = per-connection (all prompts) | **Done (A3)** |
 | Password cache survives network flaps | **Done** — clear only on `unable to authenticate` |
 | Sticky suppress only on real user abort | **Done** — not on scheduler/Ensure timeouts |
+| Stale hung-dial soft-cancel (LS / firewall at launch) | **Done** — Ensure soft-cancels `connecting` >8s (no suppress; skip if auth prompt active); visibility still Ensures while connecting (5s heartbeat) |
 | Catch-up / drain UX | **Missing (P1 UX-1.7)** |
+| Soft network readiness gates before auto dial | **Later (P2 UX-2.8)** — DNS (non-IP) + optional short TCP probe; not in P0 land |
 
 ---
 
@@ -400,6 +401,60 @@ on keystroke (or other engagement) while disconnected:
 - [ ] If ≥N attempts within 30s, hold single "Network unstable — retrying…" state instead of cycling three overlays
 
 **Acceptance:** Flapping network does not strobe UI.
+
+---
+
+### UX-2.8 — Soft network readiness gates before automatic TCP dial (**later**)
+
+> **Status: backlog only — do not implement in the current P0 land.**  
+> Captured 2026-07-25 from design discussion (app start, sleep/wake, flaky network, Little Snitch).  
+> Related product intent: do not assume the network is ready when we start connecting; retry path failures; only prompt for passwords when SSH actually asks.
+
+**Problem:** Automatic connects (startup, visibility Ensure, scheduler, resume) often start a full SSH dial while the path is not ready yet. That burns long dial timeouts and confuses recovery. A fixed sleep at startup is arbitrary and does not cover Wi‑Fi roam or late VPN.
+
+**Idea:** Before an **automatic** TCP/SSH dial, run cheap **soft gates** from inside Wave. If a gate fails or times out, treat the network as not ready yet: wait/backoff and try again. Do not permanently lock out connects. Explicit user Connect/Reconnect may bypass or loosen the gates.
+
+**Candidate gates (Wave-initiated, in likely order):**
+
+1. **Local only (no outbound)** — non-loopback interface up, default route present, optional OS path-status. Fast. Catches true offline / early wake. Does **not** detect app firewalls (e.g. Little Snitch stalling Wave while the Mac looks online).
+
+2. **DNS lookup when the connection host is not a literal IP** — resolve the hostname Wave is about to use (preferred) or a short generic resolve, with an **explicit short timeout** (exact value TBD; do not rely on multi-second OS defaults).  
+   - Stall or timeout ⇒ in most cases something flaky is going on with the network; hostname connects are unlikely to work yet → backoff.  
+   - Success ⇒ name resolution looks alive; still not proof SSH will work.  
+   - **Skip entirely** when the host is already an IPv4/IPv6 literal (no real DNS; local parse only).  
+   - Little Snitch: a DNS attempt from Wave is still Wave traffic and can stall like TCP while an allow alert is pending — not a bypass around LS.
+
+3. **Optional short TCP probe** — e.g. dial a well-known endpoint or (carefully) a cheap check, with a **short timeout (TBD)**. Confirms outbound TCP for *this app* when already allowed. Same LS stall limitation as SSH. Must not block internal-only / air-gapped setups forever (bypass on timer, skip for clearly internal hosts, or user Connect overrides).
+
+**Then:** real SSH dial to the user host (existing connect path), with normal classification: path errors → retry; auth → prompt when appropriate.
+
+**What soft gates are not:**
+
+- Not a check that the remote SSH server is up (only the real dial answers that).  
+- Not a substitute for retry policy after path failures (including password hosts retrying **dial** without prompting until SSH asks for a password).  
+- Not a fix by themselves for Little Snitch “binary changed”: system-online and local gates can pass while Wave is stalled; recovery still needs retry after allow / failed hang.  
+- Not an arbitrary “sleep 2s at startup.”
+
+**Open design points (decide when implementing):**
+
+- [ ] Exact DNS timeout and TCP probe timeout  
+- [ ] Probe target(s) and privacy/policy (public IP vs none)  
+- [ ] Per-connection vs global gate; stagger many hosts at startup  
+- [ ] Interaction with existing scheduler / visibility Ensure / resume  
+- [ ] Status copy while gated (“Waiting for network…”) vs dialing  
+- [ ] Whether P0 draft “soft-cancel stale connecting” stays, is narrowed, or is replaced by gates + shorter auto dial budget + dial retries for interactive hosts  
+
+**Acceptance (when built):**
+
+| # | Scenario | Expected |
+|---|----------|----------|
+| 2.8.1 | No interface / no route at launch | No herd of long SSH dials; retry when path appears |
+| 2.8.2 | Hostname host, DNS times out under short cap | Automatic dial deferred; backoff; later success when DNS works |
+| 2.8.3 | Literal IP host, DNS “down” | Gate does not require DNS; dial still attempted per policy |
+| 2.8.4 | User clicks Connect while gated | Attempt proceeds (bypass or immediate try) |
+| 2.8.5 | Little Snitch pending allow | Local gate may pass; outbound DNS/TCP/SSH stall; after Allow, retries reach auth/prompt without requiring a special LS API |
+
+**Files (likely later):** `conncontroller` / connect admission, maybe small netutil helper, overlay copy, tests with fake resolver/dial.
 
 ---
 

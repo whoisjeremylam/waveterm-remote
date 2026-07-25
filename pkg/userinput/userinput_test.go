@@ -8,6 +8,27 @@ import (
 	"testing"
 )
 
+func TestHasActiveAuthPromptForConn(t *testing.T) {
+	id, ch := MainUserInputHandler.registerChannel("user@stalehost:22", true)
+	defer MainUserInputHandler.unregisterChannel(id)
+	_ = ch
+
+	if !HasActiveAuthPromptForConn("user@stalehost:22") {
+		t.Fatal("expected active auth prompt for registered conn")
+	}
+	if HasActiveAuthPromptForConn("user@other:22") {
+		t.Fatal("expected no active auth prompt for other conn")
+	}
+	if HasActiveAuthPromptForConn("") {
+		t.Fatal("empty connName must be false")
+	}
+
+	MainUserInputHandler.unregisterChannel(id)
+	if HasActiveAuthPromptForConn("user@stalehost:22") {
+		t.Fatal("expected false after unregister")
+	}
+}
+
 func TestUserInputRequestPromptType(t *testing.T) {
 	t.Parallel()
 

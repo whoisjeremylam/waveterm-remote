@@ -394,6 +394,49 @@ func (conn *SSHConn) AbortConnect() {
 	}
 }
 
+// staleConnectingThreshold: if a Connect has been "connecting" longer than this
+// with no active password prompt, EnsureConnection may soft-cancel and retry.
+// Covers hung dials while a packet filter (e.g. Little Snitch on unsigned builds)
+// blocks the binary — after the user allows network, focus/Ensure can abandon
+// the dead dial instead of waiting up to DefaultConnectionTimeout (60s).
+const staleConnectingThreshold = 8 * time.Second
+
+// softCancelInFlightConnect abandons a hung dial/handshake without sticky
+// suppress. Distinct from AbortConnect (user Stop), which sets userAbortConnect
+// and causes SuppressAutoReconnect. Context cancel alone is classified as a
+// transient dial/network failure so visibility and scheduler can retry.
+func (conn *SSHConn) softCancelInFlightConnect() {
+	conn.lock.Lock()
+	cancel := conn.connectCancel
+	// Do NOT set userAbortConnect — this is not a user Stop/Cancel.
+	conn.lock.Unlock()
+	if cancel != nil {
+		log.Printf("[conn:%s] softCancelInFlightConnect: canceling stale in-flight connect", conn.GetName())
+		cancel()
+	}
+}
+
+// isStaleConnecting reports whether Connect has been in-flight long enough to
+// treat as a hung dial (network blocked at launch, etc.). Never true while a
+// password/passphrase prompt is waiting — the user may be typing.
+func (conn *SSHConn) isStaleConnecting() bool {
+	conn.lock.Lock()
+	status := conn.Status
+	started := conn.LastConnectTryAt
+	conn.lock.Unlock()
+	if status != Status_Connecting || started == 0 {
+		return false
+	}
+	if time.Now().UnixMilli()-started < staleConnectingThreshold.Milliseconds() {
+		return false
+	}
+	// Active auth UI: do not kill the attempt the user is answering.
+	if userinput.HasActiveAuthPromptForConn(conn.GetName()) {
+		return false
+	}
+	return true
+}
+
 // CancelAuthForConnection handles password/passphrase Cancel for a shared
 // connection (A3): suppress auto-reconnect, abort in-flight Connect, fail all
 // pending auth prompts for this connName, stop scheduler. Password cache is
@@ -2029,16 +2072,27 @@ func (conn *SSHConn) connectInternal(ctx context.Context, connFlags *wconfig.Con
 	// Otherwise cold-start reconnect burns MaxAuthTries on local IdentityFiles
 	// that this host does not accept, fails once, and only then shows the
 	// password prompt (feels like "wait one retry").
+	// Also prefer interactive when state is unknown and no publickey is configured
+	// (password-only hosts on first cold start after a network block).
 	conn.WithLock(func() {
 		conn.seedAuthPromptStateFromConfig_nolock()
 	})
-	if conn.authPromptState.Load() == authPromptUsed && cachedPw == nil {
-		flagsCopy := *connFlags
-		// Override PreferredAuthentications so password methods run first.
-		// mergeKeywords in ConnectToClient applies connFlags after ssh config.
-		flagsCopy.SshPreferredAuthentications = []string{"password", "keyboard-interactive", "publickey"}
-		connFlags = &flagsCopy
-		conn.Infof(ctx, "preferring interactive auth methods (prior session needed a prompt)\n")
+	if cachedPw == nil {
+		state := conn.authPromptState.Load()
+		preferInteractive := state == authPromptUsed
+		if state == authPromptUnknown {
+			// No prior session flag: only skip publickey-first when we have no
+			// key path (password-only). Key hosts keep default order.
+			preferInteractive = !hasPublicKeyAuthForConn(conn.GetName())
+		}
+		if preferInteractive {
+			flagsCopy := *connFlags
+			// Override PreferredAuthentications so password methods run first.
+			// mergeKeywords in ConnectToClient applies connFlags after ssh config.
+			flagsCopy.SshPreferredAuthentications = []string{"password", "keyboard-interactive", "publickey"}
+			connFlags = &flagsCopy
+			conn.Infof(ctx, "preferring interactive auth methods (state=%d)\n", state)
+		}
 	}
 	connectStart := time.Now()
 	client, _, sshKeywords, authTracker, err := remote.ConnectToClient(ctx, conn.Opts, nil, 0, connFlags)
@@ -2413,6 +2467,35 @@ func EnsureConnection(ctx context.Context, connName string) error {
 	case Status_Connected:
 		return nil
 	case Status_Connecting:
+		// Hung dial (e.g. Little Snitch blocked unsigned binary at launch): after
+		// the user allows network, focus/visibility fires Ensure again. Soft-cancel
+		// the stale attempt and retry so the password prompt is not deferred until
+		// the original 60s dial timeout. Fresh connects and active password prompts
+		// are never treated as stale (isStaleConnecting).
+		if conn.isStaleConnecting() {
+			log.Printf("[conn:%s] EnsureConnection: stale connecting attempt (>%v), soft-cancel and retry", connName, staleConnectingThreshold)
+			conn.softCancelInFlightConnect()
+			// Wait for the in-flight Connect to exit and release lifecycleLock.
+			waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
+			waitErr := conn.WaitForConnect(waitCtx)
+			waitCancel()
+			if waitErr == nil {
+				return nil // connected during wait
+			}
+			if conn.IsSuppressAutoReconnect() {
+				return nil
+			}
+			// Fall through to a fresh Connect from Error/Disconnected.
+			status := conn.GetStatus()
+			if status == Status_Connected {
+				return nil
+			}
+			if status == Status_Connecting {
+				// Another Connect started; wait for it.
+				return conn.WaitForConnect(ctx)
+			}
+			return conn.Connect(ctx, &wconfig.ConnKeywords{})
+		}
 		return conn.WaitForConnect(ctx)
 	case Status_Init, Status_Disconnected:
 		// Cooldown guard: don't re-enter Connect() within 5 seconds of last attempt

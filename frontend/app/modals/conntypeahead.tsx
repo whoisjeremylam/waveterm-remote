@@ -8,7 +8,6 @@ import {
     createRemoteSuggestionItems,
     createWslSuggestionItems,
     createFilteredLocalSuggestionItem,
-    getNewConnectionSuggestionItem,
 } from "@/app/modals/conn-suggestions";
 import { ConnectionsModel } from "@/app/store/connections-model";
 import {
@@ -31,11 +30,14 @@ import * as React from "react";
 
 function getReconnectItem(
     connStatus: ConnStatus,
-    connSelected: string,
     blockId: string,
     changeConnModalAtom: jotai.PrimitiveAtom<boolean>
 ): SuggestionConnectionItem | null {
-    if (connSelected != "" || (connStatus.status != "disconnected" && connStatus.status != "error")) {
+    if (connStatus.status != "disconnected" && connStatus.status != "error") {
+        return null;
+    }
+    // Only offer reconnect when the block already has a remote connection set.
+    if (util.isBlank(connStatus.connection) || util.isLocalConnName(connStatus.connection)) {
         return null;
     }
     const reconnectSuggestionItem: SuggestionConnectionItem = {
@@ -59,20 +61,20 @@ function getReconnectItem(
 
 function getLocalSuggestions(
     localName: string,
-    connList: Array<string>,
+    wslList: Array<string>,
     connection: string,
-    connSelected: string,
     connStatusMap: Map<string, ConnStatus>,
     fullConfig: FullConfigType,
     filterOutNowsh: boolean,
     hasGitBash: boolean
 ): SuggestionConnectionScope | null {
-    const wslFiltered = filterConnections(connList, connSelected, fullConfig, filterOutNowsh);
+    // Empty filter → full list (connection switcher, no typeahead).
+    const wslFiltered = filterConnections(wslList, "", fullConfig, filterOutNowsh);
     const wslSuggestionItems = createWslSuggestionItems(wslFiltered, connection, connStatusMap);
-    const localSuggestionItem = createFilteredLocalSuggestionItem(localName, connection, connSelected);
+    const localSuggestionItem = createFilteredLocalSuggestionItem(localName, connection, "");
 
     const gitBashItems: Array<SuggestionConnectionItem> = [];
-    if (hasGitBash && "Git Bash".toLowerCase().includes(connSelected.toLowerCase())) {
+    if (hasGitBash) {
         gitBashItems.push({
             status: "connected",
             icon: "laptop",
@@ -98,12 +100,12 @@ function getLocalSuggestions(
 function getRemoteSuggestions(
     connList: Array<string>,
     connection: string,
-    connSelected: string,
     connStatusMap: Map<string, ConnStatus>,
     fullConfig: FullConfigType,
     filterOutNowsh: boolean
 ): SuggestionConnectionScope | null {
-    const filtered = filterConnections(connList, connSelected, fullConfig, filterOutNowsh);
+    // Empty filter → full list ordered by frecency (same as new-tab dropdown).
+    const filtered = filterConnections(connList, "", fullConfig, filterOutNowsh);
     const suggestionItems = createRemoteSuggestionItems(filtered, connection, connStatusMap);
     const sortedSuggestionItems = sortConnSuggestionItems(suggestionItems, fullConfig, connStatusMap);
     if (sortedSuggestionItems.length == 0) {
@@ -116,7 +118,7 @@ function getRemoteSuggestions(
     return remoteSuggestions;
 }
 
-// ─── Block-header modal ──────────────────────────────────────────────────────
+// ─── Block-header modal (connection switcher — no type filter) ───────────────
 
 const ChangeConnectionBlockModal = React.memo(
     ({
@@ -125,7 +127,7 @@ const ChangeConnectionBlockModal = React.memo(
         blockRef,
         connBtnRef,
         changeConnModalAtom,
-        nodeModel,
+        nodeModel: _nodeModel,
     }: {
         blockId: string;
         viewModel: ViewModel;
@@ -134,10 +136,8 @@ const ChangeConnectionBlockModal = React.memo(
         changeConnModalAtom: jotai.PrimitiveAtom<boolean>;
         nodeModel: NodeModel;
     }) => {
-        const [connSelected, setConnSelected] = React.useState("");
         const changeConnModalOpen = jotai.useAtomValue(changeConnModalAtom);
         const [blockData] = WOS.useWaveObjectValue<Block>(WOS.makeORef("block", blockId));
-        const isNodeFocused = jotai.useAtomValue(nodeModel.isFocused);
         const connection = blockData?.meta?.connection;
         const connStatusAtom = getConnStatusAtom(connection);
         const connStatus = jotai.useAtomValue(connStatusAtom);
@@ -151,11 +151,7 @@ const ChangeConnectionBlockModal = React.memo(
         const hasGitBash = jotai.useAtomValue(ConnectionsModel.getInstance().hasGitBashAtom);
         const localName = jotai.useAtomValue(getLocalHostDisplayNameAtom());
 
-        let maxActiveConnNum = 1;
         for (const conn of allConnStatus) {
-            if (conn.activeconnnum > maxActiveConnNum) {
-                maxActiveConnNum = conn.activeconnnum;
-            }
             connStatusMap.set(conn.connection, conn);
         }
         React.useEffect(() => {
@@ -170,15 +166,18 @@ const ChangeConnectionBlockModal = React.memo(
             const p2rtn = RpcApi.WslListCommand(TabRpcClient, { timeout: 2000 });
             p2rtn
                 .then((newWslList) => {
-                    console.log(newWslList);
                     setWslList(newWslList ?? []);
                 })
-                .catch((e) => {
-                    // removing this log and failing silently since it will happen
-                    // if a system isn't using the wsl. and would happen every time the
-                    // typeahead was opened. good candidate for verbose log level.
-                    //console.log("unable to load wsl list from backend. using blank list: ", e)
+                .catch((_e) => {
+                    // WSL not available on non-Windows — fail silently
                 });
+        }, [changeConnModalOpen]);
+
+        // Reset highlight when the modal opens.
+        React.useEffect(() => {
+            if (changeConnModalOpen) {
+                setRowIndex(0);
+            }
         }, [changeConnModalOpen]);
 
         const changeConnection = React.useCallback(
@@ -209,12 +208,11 @@ const ChangeConnectionBlockModal = React.memo(
             [blockId, blockData]
         );
 
-        const reconnectSuggestionItem = getReconnectItem(connStatus, connSelected, blockId, changeConnModalAtom);
+        const reconnectSuggestionItem = getReconnectItem(connStatus, blockId, changeConnModalAtom);
         const localSuggestions = getLocalSuggestions(
             localName,
             wslList,
             connection,
-            connSelected,
             connStatusMap,
             fullConfig,
             filterOutNowsh,
@@ -223,28 +221,15 @@ const ChangeConnectionBlockModal = React.memo(
         const remoteSuggestions = getRemoteSuggestions(
             connList,
             connection,
-            connSelected,
             connStatusMap,
             fullConfig,
             filterOutNowsh
-        );
-        const newConnectionSuggestionItem = getNewConnectionSuggestionItem(
-            connSelected,
-            localName,
-            connList,
-            wslList,
-            (connName: string) => {
-                util.fireAndForget(async () => {
-                    await changeConnection(connName);
-                });
-            }
         );
 
         const suggestions: Array<SuggestionsType> = [
             ...(reconnectSuggestionItem ? [reconnectSuggestionItem] : []),
             ...(localSuggestions ? [localSuggestions] : []),
             ...(remoteSuggestions ? [remoteSuggestions] : []),
-            ...(newConnectionSuggestionItem ? [newConnectionSuggestionItem] : []),
         ];
 
         let selectionList: Array<SuggestionConnectionItem> = suggestions.flatMap((item) => {
@@ -262,10 +247,13 @@ const ChangeConnectionBlockModal = React.memo(
             return item;
         });
 
-        const handleTypeAheadKeyDown = React.useCallback(
+        const handleSwitcherKeyDown = React.useCallback(
             (waveEvent: WaveKeyboardEvent): boolean => {
                 if (keyutil.checkKeyPressed(waveEvent, "Enter")) {
                     const rowItem = selectionList[rowIndex];
+                    if (!rowItem) {
+                        return true;
+                    }
                     if ("onSelect" in rowItem && rowItem.onSelect) {
                         rowItem.onSelect(rowItem.value);
                     } else {
@@ -278,7 +266,6 @@ const ChangeConnectionBlockModal = React.memo(
                 }
                 if (keyutil.checkKeyPressed(waveEvent, "Escape")) {
                     globalStore.set(changeConnModalAtom, false);
-                    setConnSelected("");
                     globalRefocusWithTimeout(10);
                     return true;
                 }
@@ -287,19 +274,25 @@ const ChangeConnectionBlockModal = React.memo(
                     return true;
                 }
                 if (keyutil.checkKeyPressed(waveEvent, "ArrowDown")) {
-                    setRowIndex((idx) => Math.min(idx + 1, selectionList.length - 1));
+                    setRowIndex((idx) => Math.min(idx + 1, Math.max(selectionList.length - 1, 0)));
                     return true;
                 }
-                setRowIndex(0);
+                // Swallow printable keys so they don't reach the terminal while the switcher is open.
+                if (keyutil.isCharacterKeyEvent(waveEvent)) {
+                    return true;
+                }
                 return false;
             },
-            [changeConnModalAtom, viewModel, blockId, connSelected, selectionList]
+            [changeConnModalAtom, blockId, selectionList, rowIndex, changeConnection]
         );
         React.useEffect(() => {
-            // this is specifically for the case when the list shrinks due
-            // to a search filter
-            setRowIndex((idx) => Math.min(idx, selectionList.flat().length - 1));
-        }, [selectionList, setRowIndex]);
+            setRowIndex((idx) => {
+                if (selectionList.length === 0) {
+                    return 0;
+                }
+                return Math.min(idx, selectionList.length - 1);
+            });
+        }, [selectionList.length, setRowIndex]);
         // this check was also moved to BlockFrame to prevent all the above code from running unnecessarily
         if (!changeConnModalOpen) {
             return null;
@@ -315,11 +308,9 @@ const ChangeConnectionBlockModal = React.memo(
                     globalRefocusWithTimeout(10);
                 }}
                 selectIndex={rowIndex}
-                autoFocus={isNodeFocused}
-                onKeyDown={(e) => keyutil.keydownWrapper(handleTypeAheadKeyDown)(e)}
-                onChange={(current: string) => setConnSelected(current)}
-                value={connSelected}
-                label="Connect to (username@host)..."
+                autoFocus
+                showFilter={false}
+                onKeyDown={(e) => keyutil.keydownWrapper(handleSwitcherKeyDown)(e)}
                 onClickBackdrop={() => globalStore.set(changeConnModalAtom, false)}
             />
         );

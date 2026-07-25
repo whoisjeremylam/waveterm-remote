@@ -32,6 +32,7 @@ describe("clampNewTabRowIndex", () => {
         expect(clampNewTabRowIndex(0, 0, 0)).toBe(-1);
         expect(clampNewTabRowIndex(5, 0, 0)).toBe(-1);
         expect(clampNewTabRowIndex(-1, 0, null)).toBe(-1);
+        expect(clampNewTabRowIndex(-1, 0, 0, 5)).toBe(-1);
     });
 
     it("clamps to selectable range when real items exist", () => {
@@ -40,8 +41,21 @@ describe("clampNewTabRowIndex", () => {
         expect(clampNewTabRowIndex(1, 3, null)).toBe(1);
     });
 
-    it("keeps no selection by default when real items exist", () => {
+    it("keeps no selection on open or short filter even when real items exist", () => {
         // Opening the dropdown with matches must not highlight localhost/first item
-        expect(clampNewTabRowIndex(-1, 3, null)).toBe(-1);
+        expect(clampNewTabRowIndex(-1, 3, null, 0)).toBe(-1);
+        // One character is still too short for auto-select
+        expect(clampNewTabRowIndex(-1, 3, null, 1)).toBe(-1);
+    });
+
+    it("auto-selects first match after two or more filter characters", () => {
+        expect(clampNewTabRowIndex(-1, 3, null, 2)).toBe(0);
+        expect(clampNewTabRowIndex(-1, 5, null, 4)).toBe(0);
+    });
+
+    it("does not auto-select New Connection when only it remains", () => {
+        // selectableCount 0 = only New Connection fallback (excluded from count)
+        expect(clampNewTabRowIndex(-1, 0, 0, 3)).toBe(-1);
+        expect(clampNewTabRowIndex(0, 0, 0, 3)).toBe(-1);
     });
 });

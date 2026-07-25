@@ -558,3 +558,33 @@ See [[specs/newtab-connect-dropdown.md]] for full spec.
 5. **Frecency `ConnectCount`** increments on `CreateTab` (`RecordConnectionUsage`), not on every SSH `Connect` (avoids password re-auth and durable reconnect inflating rank).
 
 **Commits:** `c6540dbb`, `f86644ed`, `c9f2e782`, `73349acd`, `50f3e3e8`. Branch: `feat/reconnect-ux-p0`.
+
+## 2026-07-25: Soft network readiness gates (backlog, not implementing now)
+
+**Decision:** Capture soft gates before automatic TCP dial as **later work** (UX-2.8 in [[specs/reconnection-ux-backlog.md]]), not part of the current P0 land.
+
+**Intent:** Do not assume the network is ready at connect time. Optional Wave-side checks before an automatic dial:
+
+1. Local interface/route (and similar) — no outbound traffic.  
+2. DNS with an explicit short timeout when the connection host is **not** a literal IP — stall/timeout usually means the network is flaky or not ready; backoff. Skip DNS for IP literals.  
+3. Optional TCP probe with a short timeout (value TBD).
+
+Gates are soft (delay/retry, user Connect can bypass). They do not prove the SSH host is up, do not replace path-failure retries, and do not alone solve Little Snitch (outbound checks from Wave stall while LS is pending).
+
+**Related open discussion:** draft soft-cancel of long `connecting` attempts vs gates + dial retry policy — not settled for ship.
+
+## 2026-07-24: Soft-cancel stale connecting (Little Snitch / firewall race)
+
+**Context:** Opening a new unsigned build triggers Little Snitch “binary changed.” While that modal is up, app network is blocked. UI-driven `ConnEnsure` starts dials that hang in `Status_Connecting` (up to `DefaultConnectionTimeout` = 60s). Visibility reconnect **skipped** connecting hosts, so after the user allowed the binary the hung dial kept running and password prompts only appeared after it failed — felt like “connection is trying, no password until it fails.” Key-based hosts auto-retried more quietly so the race was less noticeable.
+
+**Decision:**
+
+1. **Soft-cancel ≠ user Stop.** `softCancelInFlightConnect` cancels the in-flight connect context **without** setting `userAbortConnect` or `SuppressAutoReconnect`. Distinct from `AbortConnect` / `PauseAutoReconnect`.
+2. **Stale threshold = 8s** of `Status_Connecting` with no active password/passphrase/kbd prompt (`userinput.HasActiveAuthPromptForConn`). Never kill an on-screen auth dialog.
+3. **`EnsureConnection` owns the retry:** on stale connecting → soft-cancel → wait for lifecycle unlock → fresh `Connect`. Fresh connecting still uses `WaitForConnect`.
+4. **Visibility Ensures while connecting** (no longer skip); heartbeat **5s** while any eligible conn is connecting so focus after LS can hit the soft-cancel path within one interval after the 8s threshold.
+5. **Auth method order:** prefer `password`/`keyboard-interactive` before `publickey` when `authPromptUsed`, or when state is unknown and no publickey is configured (password-only cold start).
+
+**Files:** `pkg/remote/conncontroller/conncontroller.go`, `pkg/userinput/userinput.go`, `frontend/app/tab/visibilityreconnect.tsx`, unit tests in `conncontroller_test.go` / `userinput_test.go`.
+
+**Not changed:** global dial timeout stays 60s for slow networks; soft-cancel is attention-driven (Ensure on focus/heartbeat), not a shorter hard dial timeout.

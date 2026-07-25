@@ -39,22 +39,25 @@ export function connectionNamesFromConfig(fullConfig: FullConfigType | null | un
 /**
  * Decide the next rowIndex after filter/list changes.
  *
- * Spec S6: when there are no real matches (only the New Connection fallback),
- * highlight stays off (index -1) so Enter does nothing until the user presses
- * ↓ or clicks the item. We always reset to -1 in that case — even if the user
- * had previously highlighted New Connection — because a filter change means
- * the intent is a new search, not create.
+ * - Open / short filter (< 2 chars): no highlight (-1). User must ↓ or click.
+ * - Filter length >= 2 with real matches: auto-select first item so Enter works.
+ * - No real matches (only New Connection fallback): always -1 so Enter cannot
+ *   create a connection until the user presses ↓ or clicks (spec S6).
  */
 export function clampNewTabRowIndex(
     prevIndex: number,
     selectableCount: number,
-    _newConnectionIndex: number | null
+    _newConnectionIndex: number | null,
+    filterTextLength: number = 0
 ): number {
     if (selectableCount === 0) {
         return -1;
     }
-    // No default selection — user must ↓ or click (matches empty-filter open).
     if (prevIndex < 0) {
+        // Enough typed text to filter: select the top frecency match for Enter.
+        if (filterTextLength >= 2) {
+            return 0;
+        }
         return -1;
     }
     return Math.min(prevIndex, selectableCount - 1);
@@ -196,9 +199,11 @@ export const NewTabConnTypeahead = memo(function NewTabConnTypeahead({
     const selectableCount =
         newConnectionIndex !== null ? selectionList.length - 1 : selectionList.length;
 
-    // Clamp rowIndex when suggestions change
+    // Clamp / auto-select rowIndex when suggestions or filter change
     useEffect(() => {
-        setRowIndex((idx) => clampNewTabRowIndex(idx, selectableCount, newConnectionIndex));
+        setRowIndex((idx) =>
+            clampNewTabRowIndex(idx, selectableCount, newConnectionIndex, filterText.length)
+        );
     }, [filterText, selectableCount, newConnectionIndex]);
 
     // Keyboard handler

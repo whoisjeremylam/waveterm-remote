@@ -58,6 +58,11 @@
         }
     }
 
+    // Connection switcher (block header): list only, no filter input.
+    &.no-filter {
+        outline: none;
+    }
+
     .suggestions-wrapper {
         width: 100%;
         overflow: hidden;

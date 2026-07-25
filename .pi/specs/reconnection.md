@@ -890,6 +890,7 @@ Implemented sticky `SuppressAutoReconnect`, `ConnStopAutoRetryCommand`, job-leve
 | Sticky "paused" on many hosts after timeouts | Only `userAbortConnect` / UI "Canceled by the user" set suppress — not parent ctx deadline (`c6540dbb`) |
 | Overlay said "paused" | Copy → **"stopped"** |
 | Password re-prompt after network flap | Clear cache/`authPromptState` only on **credential rejection** (`unable to authenticate`); handshake failed/EOF/reset = dial (`f86644ed`) |
+| Little Snitch / unsigned binary blocks dial at launch; password prompt waits until hung dial dies (up to 60s) | Soft-cancel stale `connecting` (>8s, no active auth prompt) on `EnsureConnection` **without** sticky suppress; visibility fires Ensure while connecting + 5s heartbeat; prefer password/kbd before publickey when `authPromptUsed` or unknown-without-pubkey |
 
 ### Flags (scope)
 
@@ -900,8 +901,26 @@ Implemented sticky `SuppressAutoReconnect`, `ConnStopAutoRetryCommand`, job-leve
 | `CachedPassword` | **Per connection** (memory) | Survives involuntary disconnect + network flaps |
 | `authPromptState` / `conn:authpromptused` | **Per connection** | Interactive vs silent; persist for cold start |
 
+### Stale connecting / packet-filter race (detail)
+
+**Symptom:** New unsigned build → Little Snitch “binary changed” modal blocks app network. UI starts `ConnEnsure` for password hosts (deferred from silent startup). Dial hangs in `Status_Connecting`. Visibility previously **skipped** connecting, so after the user allowed the binary, nothing retried until the dial timed out (~60s). Password prompt only appeared on the *next* attempt. Key hosts felt less broken because silent retries eventually won.
+
+**Fix:**
+
+1. `softCancelInFlightConnect()` — cancel in-flight connect ctx **without** `userAbortConnect` / suppress.
+2. `EnsureConnection` on `Status_Connecting`: if `isStaleConnecting()` (age ≥ 8s and no `HasActiveAuthPromptForConn`), soft-cancel, wait for lifecycle exit, fresh `Connect`.
+3. `VisibilityReconnectHandler` Ensures connecting hosts too; heartbeat **5s** while any eligible conn is connecting.
+4. Prefer interactive auth methods when prior session needed a prompt, or cold-start unknown with no publickey path.
+
+**Retest:** allow LS → password dialog within ~8–15s of focus; typing password must not be killed by soft-cancel.
+
+### User retest (2026-07-25)
+
+P0 retest matrix in [[todos.md]] marked complete (Stop hard-abort, password flap cache, Cancel, sticky suppress, new-tab, Little Snitch soft-cancel).
+
 ### Not done (P1 / optional)
 
 - Drain/catch-up indicator (UX-1.7)
 - Friendlier permanent-failure copy (raw known_hosts path OK for now)
 - Pause reconnect on app blur (not required; keepalive unchanged)
+- **Soft network readiness gates before automatic TCP dial (later, UX-2.8)** — see [[reconnection-ux-backlog.md#ux-28--soft-network-readiness-gates-before-automatic-tcp-dial-later]]: local interface/route check; DNS with short timeout when host is not a literal IP (stall/timeout ⇒ treat network as flaky, backoff); optional short TCP probe (timeout TBD). Soft only — not a permanent lockout; skip DNS for IP literals; does not replace dial retries or fix Little Snitch by itself. **Do not implement in current P0 land.**

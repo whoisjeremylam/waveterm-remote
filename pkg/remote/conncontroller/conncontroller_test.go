@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/wavetermdev/waveterm/pkg/remote"
+	"github.com/wavetermdev/waveterm/pkg/userinput"
 	"github.com/wavetermdev/waveterm/pkg/wconfig"
 	"golang.org/x/crypto/ssh"
 )
@@ -1255,6 +1256,138 @@ func TestEnsureConnection_Connecting(t *testing.T) {
 	err := EnsureConnection(ctx, conn.GetName())
 	if err != nil {
 		t.Fatalf("expected nil after connecting, got %v", err)
+	}
+}
+
+// TestIsStaleConnecting_FreshVsOld covers the Little Snitch hung-dial threshold.
+func TestIsStaleConnecting_FreshVsOld(t *testing.T) {
+	conn := makeTestConn(Status_Connecting)
+	defer cleanupTestConn(conn)
+
+	conn.WithLock(func() {
+		conn.LastConnectTryAt = time.Now().UnixMilli()
+	})
+	if conn.isStaleConnecting() {
+		t.Fatal("fresh connecting attempt must not be stale")
+	}
+
+	conn.WithLock(func() {
+		conn.LastConnectTryAt = time.Now().Add(-staleConnectingThreshold - time.Second).UnixMilli()
+	})
+	if !conn.isStaleConnecting() {
+		t.Fatal("connecting longer than threshold with no auth prompt must be stale")
+	}
+
+	conn.WithLock(func() {
+		conn.Status = Status_Connected
+	})
+	if conn.isStaleConnecting() {
+		t.Fatal("non-connecting status must not be stale")
+	}
+}
+
+// TestIsStaleConnecting_ActiveAuthPrompt: never soft-cancel while user is typing password.
+func TestIsStaleConnecting_ActiveAuthPrompt(t *testing.T) {
+	conn := makeTestConn(Status_Connecting)
+	defer cleanupTestConn(conn)
+	conn.WithLock(func() {
+		conn.LastConnectTryAt = time.Now().Add(-time.Minute).UnixMilli()
+	})
+
+	// Simulate an in-flight password prompt registration (same maps GetUserInput uses).
+	userinput.MainUserInputHandler.Lock.Lock()
+	if userinput.MainUserInputHandler.AuthRequestConns == nil {
+		userinput.MainUserInputHandler.AuthRequestConns = make(map[string]string)
+	}
+	fakeID := "test-stale-auth-prompt"
+	userinput.MainUserInputHandler.AuthRequestConns[fakeID] = conn.GetName()
+	userinput.MainUserInputHandler.Lock.Unlock()
+	defer func() {
+		userinput.MainUserInputHandler.Lock.Lock()
+		delete(userinput.MainUserInputHandler.AuthRequestConns, fakeID)
+		userinput.MainUserInputHandler.Lock.Unlock()
+	}()
+
+	if conn.isStaleConnecting() {
+		t.Fatal("must not treat connecting as stale while auth prompt is active")
+	}
+}
+
+// TestEnsureConnection_SoftCancelsStaleConnecting: hung dial (LS block) is
+// abandoned without sticky suppress; a fresh Connect runs and can reach auth.
+func TestEnsureConnection_SoftCancelsStaleConnecting(t *testing.T) {
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	var attempts atomic.Int32
+	prev := connectInternalTestHook
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		n := attempts.Add(1)
+		if n == 1 {
+			// Hung dial — wait until soft-cancel.
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	defer func() { connectInternalTestHook = prev }()
+
+	go func() {
+		_ = conn.Connect(context.Background(), &wconfig.ConnKeywords{})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for conn.GetStatus() != Status_Connecting {
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for Status_Connecting")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	conn.WithLock(func() {
+		conn.LastConnectTryAt = time.Now().Add(-staleConnectingThreshold - time.Second).UnixMilli()
+	})
+
+	err := EnsureConnection(context.Background(), conn.GetName())
+	if err != nil {
+		t.Fatalf("expected success after soft-cancel retry, got %v", err)
+	}
+	if conn.GetStatus() != Status_Connected {
+		t.Fatalf("expected Status_Connected, got %s err=%q", conn.GetStatus(), conn.Error)
+	}
+	if conn.IsSuppressAutoReconnect() {
+		t.Fatal("soft-cancel must not set SuppressAutoReconnect")
+	}
+	if attempts.Load() < 2 {
+		t.Fatalf("expected >=2 connectInternal attempts, got %d", attempts.Load())
+	}
+}
+
+// TestSoftCancelInFlightConnect_NoUserAbort verifies soft cancel does not set
+// userAbortConnect (unlike AbortConnect / Stop).
+func TestSoftCancelInFlightConnect_NoUserAbort(t *testing.T) {
+	conn := makeTestConn(Status_Connecting)
+	defer cleanupTestConn(conn)
+
+	canceled := make(chan struct{})
+	conn.lock.Lock()
+	conn.connectCancel = func() { close(canceled) }
+	conn.userAbortConnect = false
+	conn.lock.Unlock()
+
+	conn.softCancelInFlightConnect()
+
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("expected softCancel to invoke connectCancel")
+	}
+
+	conn.lock.Lock()
+	userAbort := conn.userAbortConnect
+	conn.lock.Unlock()
+	if userAbort {
+		t.Fatal("softCancel must not set userAbortConnect")
 	}
 }
 
