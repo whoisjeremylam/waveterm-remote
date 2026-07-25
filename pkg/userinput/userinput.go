@@ -42,7 +42,9 @@ type UserInputRequest struct {
 	OkLabel      string `json:"oklabel,omitempty"`
 	CancelLabel  string `json:"cancellabel,omitempty"`
 	ConnName     string `json:"connname,omitempty"`
-	PromptType   string `json:"prompttype,omitempty"` // "password", "confirm", etc.
+	PromptType   string `json:"prompttype,omitempty"`   // "password", "confirm", etc.
+	QueuePosition int   `json:"queueposition,omitempty"` // UX-1.6: 1-based position in prompt queue
+	QueueTotal    int   `json:"queuetotal,omitempty"`    // UX-1.6: total queued prompts for this window
 }
 
 type UserInputResponse struct {
@@ -80,6 +82,34 @@ var orphanedPasswordsLock sync.Mutex
 // cancel, or timeout).
 var windowPromptLocks = make(map[string]*sync.Mutex)
 var windowPromptLocksMu sync.Mutex
+
+// windowPromptWaiters tracks how many connNames are queued behind the active
+// prompt per window. Keyed by windowId, value is a slice of connNames waiting.
+// UX-1.6: used to show "Signing in to host A (1 of N)" queue indicator.
+var windowPromptWaiters = make(map[string][]string)
+var windowPromptWaitersMu sync.Mutex
+
+func pushWindowPromptWaiter(windowId string, connName string) int {
+	windowPromptWaitersMu.Lock()
+	defer windowPromptWaitersMu.Unlock()
+	windowPromptWaiters[windowId] = append(windowPromptWaiters[windowId], connName)
+	return len(windowPromptWaiters[windowId])
+}
+
+func popWindowPromptWaiter(windowId string, connName string) {
+	windowPromptWaitersMu.Lock()
+	defer windowPromptWaitersMu.Unlock()
+	waiters := windowPromptWaiters[windowId]
+	for i, name := range waiters {
+		if name == connName {
+			windowPromptWaiters[windowId] = append(waiters[:i], waiters[i+1:]...)
+			break
+		}
+	}
+	if len(windowPromptWaiters[windowId]) == 0 {
+		delete(windowPromptWaiters, windowId)
+	}
+}
 
 // acquireWindowPromptLock returns (and lazily creates) the per-window mutex
 // for serializing SSH auth prompts. The caller must unlock it.
@@ -293,17 +323,23 @@ func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputR
 	// which is the pre-existing behavior. Non-auth prompts (confirm dialogs)
 	// are never serialized.
 	//
-	// Note: the SSH handshake timeout (60s, DefaultConnectionTimeout) covers
-	// the password callback. If a previous prompt holds the lock for a long
-	// time, a later connection's handshake may time out while waiting. That
-	// connection will retry on the next visibility-driven reconnect event —
-	// acceptable degradation in exchange for one-prompt-at-a-time UX.
+	// UX-1.6: Track queue position so the frontend can show "Signing in to
+	// host A (1 of N)" when multiple connections need auth on one window.
 	var windowPromptLock *sync.Mutex
+	var queueTotal int
 	if isSSHAuthPrompt(request.PromptType) && len(scopes) >= 1 {
-		windowPromptLock = acquireWindowPromptLock(scopes[0])
+		windowId := scopes[0]
+		windowPromptLock = acquireWindowPromptLock(windowId)
+		// Register this connName as a waiter (position includes itself)
+		queueTotal = pushWindowPromptWaiter(windowId, request.ConnName)
+		request.QueuePosition = queueTotal
+		request.QueueTotal = queueTotal
 		windowPromptLock.Lock()
-		defer windowPromptLock.Unlock()
-		log.Printf("[PW-PROMPT] acquired window prompt lock for window=%q connName=%q requestId=%q", scopes[0], request.ConnName, request.RequestId)
+		defer func() {
+			windowPromptLock.Unlock()
+			popWindowPromptWaiter(windowId, request.ConnName)
+		}()
+		log.Printf("[PW-PROMPT] acquired window prompt lock for window=%q connName=%q requestId=%q queuePos=%d/%d", windowId, request.ConnName, request.RequestId, queueTotal, queueTotal)
 	}
 
 	MainUserInputHandler.sendRequestToFrontend(request, scopes)

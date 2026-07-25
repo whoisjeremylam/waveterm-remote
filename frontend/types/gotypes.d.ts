@@ -847,6 +847,8 @@ declare global {
         reconnectattempt?: number;
         reconnectnextattempt?: number;
         reconnecterror?: string;
+        reconnectgaveup?: boolean;
+        reconnectstopreason?: string;
         forwardingrules?: string[];
         canautoreconnect: boolean;
         suppressautoreconnect?: boolean;
@@ -1602,6 +1604,8 @@ declare global {
         cancellabel?: string;
         connname?: string;
         prompttype?: string;
+        queueposition?: number;
+        queuetotal?: number;
     };
 
     // userinput.UserInputResponse

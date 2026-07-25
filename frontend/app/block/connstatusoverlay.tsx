@@ -101,10 +101,12 @@ const StalledOverlay = React.memo(
         connName,
         connStatus,
         overlayRefCallback,
+        onReconnect,
     }: {
         connName: string;
         connStatus: ConnStatus;
         overlayRefCallback: (el: HTMLDivElement | null) => void;
+        onReconnect: () => void;
     }) => {
         const [elapsedTime, setElapsedTime] = React.useState<string>("");
 
@@ -142,8 +144,22 @@ const StalledOverlay = React.memo(
                     <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
                         Connection to "{connName}" is stalled
                         {elapsedTime && ` (no activity for ${elapsedTime})`}
+                        {connStatus.canautoreconnect && !connStatus.suppressautoreconnect && (
+                            <div className="text-[10px] text-white/70 mt-0.5">
+                                Attempting to recover automatically…
+                            </div>
+                        )}
                     </div>
                     <div className="flex-1 hidden @max-xxs:block"></div>
+                    {/* UX-1.3: Reconnect Now is primary (preserves cache); Disconnect is secondary */}
+                    <Button
+                        className="green text-[11px] py-[3px] px-[7px] @max-w350:text-[12px] @max-w350:py-[5px] @max-w350:px-[6px]"
+                        onClick={onReconnect}
+                        title="Reconnect now"
+                    >
+                        <span className="@max-w350:hidden!">Reconnect Now</span>
+                        <i className="fa-solid fa-rotate-right hidden! @max-w350:inline!"></i>
+                    </Button>
                     <Button
                         className="outlined grey text-[11px] py-[3px] px-[7px] @max-w350:text-[12px] @max-w350:py-[5px] @max-w350:px-[6px]"
                         onClick={handleDisconnect}
@@ -241,6 +257,16 @@ const DisconnectedOverlay = React.memo(
                                         Auto-retry stopped — click Reconnect when ready
                                     </div>
                                 )}
+                                {/* UX-1.2: Interactive-auth idle — tell user they need to sign in */}
+                                {!connStatus.canautoreconnect &&
+                                    !connStatus.suppressautoreconnect &&
+                                    !hasCountdown &&
+                                    !connStatus.error && (
+                                        <div className="text-[10px] text-white/70 mt-0.5">
+                                            Sign in required — click Reconnect or focus this tab to enter your
+                                            credentials
+                                        </div>
+                                    )}
                             </>
                         )}
                     </div>
@@ -415,6 +441,66 @@ const JobSessionOverlay = React.memo(
     }
 );
 JobSessionOverlay.displayName = "JobSessionOverlay";
+
+/** UX-1.1: Post-give-up overlay — contextual copy based on why the scheduler stopped. */
+const GaveUpOverlay = React.memo(
+    ({
+        connName,
+        connStatus,
+        overlayRefCallback,
+        onReconnect,
+    }: {
+        connName: string;
+        connStatus: ConnStatus;
+        overlayRefCallback: (el: HTMLDivElement | null) => void;
+        onReconnect: () => void;
+    }) => {
+        const stopReason = connStatus.reconnectstopreason ?? "";
+        let icon = "fa-solid fa-circle-pause text-grey-text";
+        let title = "Auto-retry stopped";
+        let detail: string | null = null;
+
+        if (stopReason === "max-duration") {
+            title = "Auto-retry paused after 15 minutes";
+            detail = connStatus.reconnecterror
+                ? `Last error: ${connStatus.reconnecterror}.`
+                : "Will try again when the network returns or you click Reconnect.";
+        } else if (stopReason === "auth-failed") {
+            icon = "fa-solid fa-key text-error";
+            title = "Authentication failed";
+            detail = "Check your credentials and click Reconnect to try again.";
+        } else if (stopReason === "connection-refused") {
+            icon = "fa-solid fa-plug-circle-xmark text-warning";
+            title = "SSH refused the connection";
+            detail = "The server may be starting up — click Reconnect when ready.";
+        } else if (stopReason === "no-jobs") {
+            // Conn went down and all blocks closed — suppress entirely (no overlay needed)
+            return null;
+        }
+
+        return (
+            <div className={overlayShellClass} ref={overlayRefCallback}>
+                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
+                    <i className={clsx(icon, "text-base shrink-0")} title={title}></i>
+                    <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
+                        <div>{title} — "{connName}"</div>
+                        {detail && <div className="text-[10px] text-white/70 mt-0.5">{detail}</div>}
+                    </div>
+                    <div className="flex-1 hidden @max-xxs:block"></div>
+                    <Button
+                        className="outlined grey text-[11px] py-[3px] px-[7px] @max-w350:text-[12px] @max-w350:py-[5px] @max-w350:px-[6px]"
+                        onClick={onReconnect}
+                        title="Reconnect now"
+                    >
+                        <span className="@max-w350:hidden!">Reconnect</span>
+                        <i className="fa-solid fa-rotate-right hidden! @max-w350:inline!"></i>
+                    </Button>
+                </div>
+            </div>
+        );
+    }
+);
+GaveUpOverlay.displayName = "GaveUpOverlay";
 
 /** How long job may stay "disconnected" after conn is up before showing "failed". */
 const JOB_RECONNECT_GRACE_MS = 20_000;
@@ -641,6 +727,9 @@ export const ConnStatusOverlay = React.memo(
             !!permanentErrorTitle(connStatus.errorcode) ||
             (!!connStatus.suppressautoreconnect &&
                 (connStatus.status == "error" || connStatus.status == "disconnected"));
+        // UX-1.1: gave-up overlay — scheduler exhausted retries
+        const showGaveUp =
+            !!connStatus.reconnectgaveup && showDisconnected && !permanentErrorTitle(connStatus.errorcode);
 
         // Hide status overlay when a password prompt is active for this connection
         // and not dismissed on this tab
@@ -671,6 +760,8 @@ export const ConnStatusOverlay = React.memo(
             !showStalled &&
             !showRetrying &&
             !showCountdown &&
+            !showGaveUp &&
+            !showDisconnected &&
             (isLayoutMode || connStatus.status == "connected" || connModalOpen)
         ) {
             return null;
@@ -678,7 +769,7 @@ export const ConnStatusOverlay = React.memo(
 
         if (showStalled && !showWshError) {
             return (
-                <StalledOverlay connName={connName} connStatus={connStatus} overlayRefCallback={overlayRefCallback} />
+                <StalledOverlay connName={connName} connStatus={connStatus} overlayRefCallback={overlayRefCallback} onReconnect={handleTryReconnect} />
             );
         }
 
@@ -701,6 +792,18 @@ export const ConnStatusOverlay = React.memo(
                     overlayRefCallback={overlayRefCallback}
                     onReconnectNow={handleTryReconnect}
                     onStopAutoRetry={handleStopAutoRetry}
+                />
+            );
+        }
+
+        // UX-1.1: gave-up overlay takes priority over generic disconnected
+        if (showGaveUp) {
+            return (
+                <GaveUpOverlay
+                    connName={connName}
+                    connStatus={connStatus}
+                    overlayRefCallback={overlayRefCallback}
+                    onReconnect={handleTryReconnect}
                 />
             );
         }

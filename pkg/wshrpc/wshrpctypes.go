@@ -438,6 +438,8 @@ type ConnStatus struct {
 	ReconnectAttempt              int      `json:"reconnectattempt,omitempty"`
 	ReconnectNextAttempt          int64    `json:"reconnectnextattempt,omitempty"`
 	ReconnectError                string   `json:"reconnecterror,omitempty"`
+	ReconnectGaveUp               bool     `json:"reconnectgaveup,omitempty"`     // UX-1.1: scheduler exhausted retries
+	ReconnectStopReason           string   `json:"reconnectstopreason,omitempty"` // UX-1.1: "max-duration", "auth-failed", etc.
 	ForwardingRules               []string `json:"forwardingrules,omitempty"`
 	CanAutoReconnect              bool     `json:"canautoreconnect"` // true if scheduler can auto-reconnect without user input
 	// SuppressAutoReconnect is true after user Disconnect, Stop auto-retry,

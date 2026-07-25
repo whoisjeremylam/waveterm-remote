@@ -118,6 +118,8 @@ type SSHConn struct {
 	ReconnectAttempt     int
 	ReconnectNextAttempt int64
 	ReconnectError       string
+	ReconnectGaveUp      bool   // true when scheduler exhausted retries (max duration, auth-failed, etc.)
+	ReconnectStopReason  string // reason: "max-duration", "auth-failed", "connection-refused", "no-jobs"
 
 	LocalForwardListeners  []ForwardingRule
 	RemoteForwardListeners []ForwardingRule
@@ -210,6 +212,25 @@ func (conn *SSHConn) ClearReconnectState() {
 	})
 }
 
+// SetReconnectGaveUp marks the scheduler as having given up with the given reason.
+// UX-1.1: persisted state so the frontend can show contextual copy.
+func (conn *SSHConn) SetReconnectGaveUp(gaveUp bool, reason string) {
+	conn.WithLock(func() {
+		conn.ReconnectGaveUp = gaveUp
+		conn.ReconnectStopReason = reason
+	})
+	conn.FireConnChangeEvent()
+}
+
+// ClearReconnectGaveUp resets gave-up state (called on explicit Reconnect).
+func (conn *SSHConn) ClearReconnectGaveUp() {
+	conn.WithLock(func() {
+		conn.ReconnectGaveUp = false
+		conn.ReconnectStopReason = ""
+	})
+	conn.FireConnChangeEvent()
+}
+
 func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 	conn.lock.Lock()
 	defer conn.lock.Unlock()
@@ -254,6 +275,8 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 		ReconnectAttempt:              conn.ReconnectAttempt,
 		ReconnectNextAttempt:          conn.ReconnectNextAttempt,
 		ReconnectError:                conn.ReconnectError,
+		ReconnectGaveUp:               conn.ReconnectGaveUp,
+		ReconnectStopReason:           conn.ReconnectStopReason,
 		ForwardingRules:               forwardingRules,
 		CanAutoReconnect:              canAutoReconnect,
 		SuppressAutoReconnect:         conn.SuppressAutoReconnect,
@@ -1354,8 +1377,9 @@ func (conn *SSHConn) requestPasswordRePrompt() {
 		defer cancelFn()
 		request := &userinput.UserInputRequest{
 			ResponseType: "text",
-			// Same copy as handshake password prompt (unified wording).
-			QueryText:   fmt.Sprintf("Password for connection  \n%s\n\nPassword:", conn.GetName()),
+			// UX-1.4: Add "Incorrect password" feedback so the user knows why
+			// they're being re-prompted (auth-failed triggered this path).
+			QueryText:   fmt.Sprintf("Incorrect password — please try again.\n\nPassword for connection  \n%s\n\nPassword:", conn.GetName()),
 			Markdown:    true,
 			Title:       "Password Authentication",
 			PromptType:  "password",

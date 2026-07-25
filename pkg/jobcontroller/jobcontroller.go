@@ -950,6 +950,31 @@ func clearRetryState(connName string) {
 	}
 }
 
+// setReconnectGaveUpState records that the scheduler gave up.
+// UX-1.1: persists the stop reason so the frontend can show contextual copy.
+func setReconnectGaveUpState(connName string, reason string) {
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.SetReconnectGaveUp(true, reason)
+	}
+}
+
+// clearReconnectGaveUpState resets gave-up state (called on successful reconnect).
+func clearReconnectGaveUpState(connName string) {
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.ClearReconnectGaveUp()
+	}
+}
+
 func scheduleConnectionReconnect(connName string) {
 	log.Printf("[conn:%s] reconnect scheduler started", connName)
 	startTime := time.Now()
@@ -976,6 +1001,7 @@ func scheduleConnectionReconnect(connName string) {
 
 		if time.Since(startTime) > maxDuration {
 			log.Printf("[conn:%s] reconnect scheduler reached max duration, stopping", connName)
+			setReconnectGaveUpState(connName, "max-duration")
 			clearRetryState(connName)
 			return
 		}
@@ -995,6 +1021,7 @@ func scheduleConnectionReconnect(connName string) {
 		cancelFn()
 		if !hasJobs {
 			log.Printf("[conn:%s] no running durable jobs, stopping reconnect scheduler", connName)
+			setReconnectGaveUpState(connName, "no-jobs")
 			clearRetryState(connName)
 			return
 		}
@@ -1035,6 +1062,7 @@ func scheduleConnectionReconnect(connName string) {
 				errorCode, errorSubCode := remote.ClassifyConnError(err)
 				if errorCode == remote.ConnErrCode_AuthFailed {
 					log.Printf("[conn:%s] auth-failed during reconnect, stopping scheduler (server rejecting credentials)", connName)
+					setReconnectGaveUpState(connName, "auth-failed")
 					clearRetryState(connName)
 					return
 				}
@@ -1053,6 +1081,7 @@ func scheduleConnectionReconnect(connName string) {
 				// on the next tab switch / app focus when the user returns.
 				if errorCode == remote.ConnErrCode_Dial && errorSubCode == remote.DialSubCode_Refused {
 					log.Printf("[conn:%s] connection refused during reconnect, stopping scheduler (server not accepting connections)", connName)
+					setReconnectGaveUpState(connName, "connection-refused")
 					clearRetryState(connName)
 					return
 				}
@@ -1084,6 +1113,7 @@ func scheduleConnectionReconnect(connName string) {
 				}
 			} else {
 				log.Printf("[conn:%s] scheduler attempt succeeded in %v", connName, attemptDuration)
+				clearReconnectGaveUpState(connName)
 				clearRetryState(connName)
 				return
 			}

@@ -73,6 +73,11 @@ type StreamManager struct {
 	diskEndSeq   int64    // last byte written to disk (= totalSize of last write)
 	diskReadPos  int64    // next byte to read from disk during drain (absolute Seq)
 	drainGen     int64    // generation counter: incremented on disconnect to kill old drain goroutines
+
+	// UX-1.7: drain progress tracking for catch-up indicator
+	DrainActive          bool
+	DrainTotalBytes      int64
+	DrainRemainingBytes  int64
 }
 
 // SetJobId sets the job ID for disk file path generation. Must be called before
@@ -181,6 +186,11 @@ func (sm *StreamManager) ClientConnected(streamId string, dataSender DataSender,
 		if clientSeq > sm.diskReadPos {
 			sm.diskReadPos = clientSeq
 		}
+		// UX-1.7: track drain progress for catch-up indicator
+		totalBytes := sm.diskEndSeq - sm.diskReadPos
+		sm.DrainActive = true
+		sm.DrainTotalBytes = totalBytes
+		sm.DrainRemainingBytes = totalBytes
 		sm.drainGen++
 		go sm.drainDiskToCirBuf(sm.drainGen)
 	} else if sm.diskFile != nil {
@@ -543,6 +553,10 @@ func (sm *StreamManager) drainDiskToCirBuf(myGen int64) {
 				sm.lock.Lock()
 				if sm.drainGen == myGen {
 					sm.diskReadPos += int64(nw)
+					// UX-1.7: update remaining bytes for catch-up indicator
+					if sm.diskEndSeq-sm.diskReadPos < sm.DrainRemainingBytes {
+						sm.DrainRemainingBytes = sm.diskEndSeq - sm.diskReadPos
+					}
 				}
 				sm.drainCond.Signal()
 				sm.lock.Unlock()
@@ -576,6 +590,10 @@ func (sm *StreamManager) deactivateDiskBuffering() {
 	sm.diskStartSeq = 0
 	sm.diskEndSeq = 0
 	sm.diskReadPos = 0
+	// UX-1.7: clear drain progress tracking
+	sm.DrainActive = false
+	sm.DrainTotalBytes = 0
+	sm.DrainRemainingBytes = 0
 	sm.drainGen++
 	sm.drainCond.Signal()
 	go func() {
