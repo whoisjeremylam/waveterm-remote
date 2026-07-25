@@ -30,9 +30,10 @@ const NETWORK_UNREACHABLE_CODES = new Set([
 /**
  * VisibilityReconnectHandler fires ConnEnsureCommand for disconnected/error
  * connections on the active tab when the user's attention returns to waveterm
- * — on tab switch and on window focus. This is the core "feels connected all
- * along" behavior: the user should never have to click "Reconnect" after a
- * sleep/wake or network drop just because they switched tabs.
+ * — on tab switch, window focus, and document visibility change. This is the
+ * core "feels connected all along" behavior: the user should never have to
+ * click "Reconnect" after a sleep/wake or network drop just because they
+ * switched tabs.
  *
  * The backend (EnsureConnection) is idempotent and cooldown-guarded (5s), so
  * rapid tab switches or focus events do not cause reconnect storms. Only
@@ -48,6 +49,16 @@ const NETWORK_UNREACHABLE_CODES = new Set([
  * UX-0.3: while the tab stays visible with a disconnected/error conn (and
  * suppress clear), runs a slow heartbeat (30s default, 10s after network
  * errors) and fires immediately on the browser `online` event.
+ * rapid tab switches or focus events do not cause reconnect storms. ALL block
+ * view types (term, preview, scm, process, etc.) are considered — an SCM-only
+ * tab can heal the shared SSH connection. Local and WSL connections are
+ * skipped. Connections that are already connected or connecting are left
+ * alone. *
+ * Platform coverage:
+ *   - tab switch (tabId change): all platforms
+ *   - window focus: all platforms
+ *   - document visibilitychange: all platforms (covers tab-away / sleep-wake
+ *     where window focus may not fire, e.g., browser-based Electron)
  *
  * This component renders nothing — it is a side-effect-only handler mounted
  * in WorkspaceElem alongside TabUserInputPromptOverlay.
@@ -71,7 +82,9 @@ export const VisibilityReconnectHandler = React.memo(
             let anyConnecting = false;
             for (const blockId of blockIds) {
                 const view = globalStore.get(waveEnv.getBlockMetaKeyAtom(blockId, "view"));
-                if (view !== "term") {
+                // Include ALL view types (term, preview, scm, process, etc.).
+                // An SCM-only tab can heal the shared SSH connection.
+                if (!view) {
                     continue;
                 }
                 const connName = globalStore.get(waveEnv.getBlockMetaKeyAtom(blockId, "connection"));
@@ -220,18 +233,20 @@ export const VisibilityReconnectHandler = React.memo(
         }, [scheduleReconnect]);
 
         // Pause heartbeat when the document is hidden; resume on visible.
-        React.useEffect(() => {
+        // Trigger 3: document visibility change — when the tab becomes visible
+        // (e.g., sleep/wake, browser tab switch). Complements window focus on
+        // platforms where focus events don't fire reliably after resume.        React.useEffect(() => {
             const handleVisibility = () => {
                 if (document.visibilityState === "visible") {
                     scheduleReconnect();
                 } else {
                     clearHeartbeat();
+>>>>>>> b1d30fba (feat(reconnect): expand visibility triggers to all view types (UX-2.3))
                 }
             };
             document.addEventListener("visibilitychange", handleVisibility);
             return () => document.removeEventListener("visibilitychange", handleVisibility);
         }, [scheduleReconnect, clearHeartbeat]);
-
         return null;
     }
 );
