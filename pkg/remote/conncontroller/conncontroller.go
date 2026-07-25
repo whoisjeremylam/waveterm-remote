@@ -245,6 +245,23 @@ func (conn *SSHConn) SetFlappingMode(flapping bool) {
 	})
 }
 
+// WasAgentBasedAuth returns true if the last successful SSH handshake
+// used no interactive prompt (authPromptNone), indicating key-based or
+// SSH-agent authentication. Used by the reconnect scheduler to detect
+// agent/keychain unavailability after sleep/wake. (UX-2.5)
+func (conn *SSHConn) WasAgentBasedAuth() bool {
+	return conn.authPromptState.Load() == authPromptNone
+}
+
+// SetConnError sets a persistent error message on the connection.
+// Unlike ClearReconnectState which only clears transient retry tracking,
+// this sets conn.Error which appears in the disconnected overlay. (UX-2.5)
+func (conn *SSHConn) SetConnError(errMsg string) {
+	conn.WithLock(func() {
+		conn.Error = errMsg
+	})
+}
+
 func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 	conn.lock.Lock()
 	defer conn.lock.Unlock()

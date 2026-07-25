@@ -1117,7 +1117,17 @@ func scheduleConnectionReconnect(connName string) {
 				// exit the scheduler immediately.
 				if remote.IsPermanentConnError(errorCode) {
 					log.Printf("[conn:%s] permanent error %q during reconnect, stopping scheduler", connName, errorCode)
-					clearRetryState(connName)
+					// UX-2.5: If the last successful connect used no interactive
+					// prompt (agent/key-based), the SSH agent or keychain may be
+					// locked/unavailable after sleep. Surface a helpful message.
+					connOpts, _ := remote.ParseOpts(connName)
+					if connOpts != nil {
+						conn := conncontroller.MaybeGetConn(connOpts)
+						if conn != nil && conn.WasAgentBasedAuth() {
+							conn.SetConnError("SSH agent may be unavailable — unlock your keychain or restart your SSH agent")
+							conn.FireConnChangeEvent()
+						}
+					}					clearRetryState(connName)
 					return
 				}
 				// Early termination: connection-refused means the server is
