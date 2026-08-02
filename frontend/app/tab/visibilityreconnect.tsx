@@ -233,15 +233,15 @@ export const VisibilityReconnectHandler = React.memo(
         }, [scheduleReconnect]);
 
         // Pause heartbeat when the document is hidden; resume on visible.
-        // Trigger 3: document visibility change — when the tab becomes visible
+        // Also: document visibility change — when the tab becomes visible
         // (e.g., sleep/wake, browser tab switch). Complements window focus on
-        // platforms where focus events don't fire reliably after resume.        React.useEffect(() => {
+        // platforms where focus events don't fire reliably after resume.
+        React.useEffect(() => {
             const handleVisibility = () => {
                 if (document.visibilityState === "visible") {
                     scheduleReconnect();
                 } else {
                     clearHeartbeat();
->>>>>>> b1d30fba (feat(reconnect): expand visibility triggers to all view types (UX-2.3))
                 }
             };
             document.addEventListener("visibilitychange", handleVisibility);
