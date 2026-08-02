@@ -1529,12 +1529,11 @@ func runOutputLoop(ctx context.Context, jobId string, streamId string, reader *s
 	buf := make([]byte, 4096)
 	for {
 		n, err := reader.Read(buf)
-		currentStreamId, _ := jobStreamIds.GetEx(jobId)
-		if currentStreamId != streamId {
-			log.Printf("[job:%s] [stream:%s] stream superseded by [stream:%s], exiting output loop", jobId, streamId, currentStreamId)
-			break
-		}
 		if n > 0 {
+			// Append to WaveFS before the supersession check so bytes returned by
+			// Read() are never dropped, even when the stream is being superseded.
+			// Dropping them would leave a hole in the term file (missing ESC bytes),
+			// which neither a force-refresh nor a reconnect can repair.
 			health, ok := jobStreamHealth.GetEx(jobId)
 			if ok && health.streamId == streamId {
 				health.lastReadAt = time.Now()
@@ -1545,6 +1544,11 @@ func runOutputLoop(ctx context.Context, jobId string, streamId string, reader *s
 			if appendErr != nil {
 				log.Printf("[job:%s] error appending data to WaveFS: %v", jobId, appendErr)
 			}
+		}
+		currentStreamId, _ := jobStreamIds.GetEx(jobId)
+		if currentStreamId != streamId {
+			log.Printf("[job:%s] [stream:%s] stream superseded by [stream:%s], exiting output loop", jobId, streamId, currentStreamId)
+			break
 		}
 
 		if err == io.EOF {
@@ -1942,6 +1946,22 @@ func ReconnectJobsForConn(ctx context.Context, connName string) error {
 	return nil
 }
 
+// waitForStreamLoopExit waits (bounded) for the runOutputLoop associated with
+// the given streamId to exit. It is used after the previous stream reader is
+// closed during a restart so that any in-flight bytes the old loop read are
+// appended to WaveFS before the caller recomputes the stream seq.
+func waitForStreamLoopExit(jobId string, streamId string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		health, ok := jobStreamHealth.GetEx(jobId)
+		if !ok || !health.active || health.streamId != streamId {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	log.Printf("[job:%s] warning: output loop [stream:%s] did not exit within %v; proceeding without seq adjustment", jobId, streamId, timeout)
+}
+
 func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rtOpts *waveobj.RuntimeOpts) error {
 	job, err := wstore.DBMustGet[*waveobj.Job](ctx, jobId)
 	if err != nil {
@@ -1974,10 +1994,33 @@ func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rt
 		}
 	}
 
+	// Retrieve the previous reader (if any) before creating the new one.
+	// It will be closed after the new streamId is set so that the old
+	// runOutputLoop's supersession check (jobStreamIds != old streamId) fires
+	// and exits cleanly instead of blocking forever on the dead stream.
+	prevReader, prevReaderOk := jobReaders.GetEx(jobId)
+
+	// Drain any bytes the previous reader already received (and ACKed to the
+	// remote StreamManager) into WaveFS before computing currentSeq. Those bytes
+	// are part of the remote stream seq space but not yet in the term file; if
+	// they are dropped (the reader is closed below without draining), they are
+	// permanently lost — a hole in the term file that a force-refresh cannot
+	// repair, plus a bogus reconnect gap.
+	if prevReaderOk {
+		if drained := prevReader.DrainBuffered(); len(drained) > 0 {
+			appendErr := handleAppendJobFile(ctx, jobId, JobOutputFileName, drained)
+			if appendErr != nil {
+				log.Printf("[job:%s] error appending drained data to WaveFS: %v", jobId, appendErr)
+			}
+		}
+	}
+
 	var currentSeq int64 = 0
 	var totalGap int64 = 0
+	initialFileSize := int64(0)
 	waveFile, err := filestore.WFS.Stat(ctx, jobId, JobOutputFileName)
 	if err == nil {
+		initialFileSize = waveFile.Size
 		currentSeq = waveFile.Size
 		totalGap = getMetaInt64(waveFile.Meta, MetaKey_TotalGap)
 		currentSeq += totalGap
@@ -1988,12 +2031,7 @@ func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rt
 	readerRouteId := wshclient.GetBareRpcClientRouteId()
 	writerRouteId := wshutil.MakeJobRouteId(jobId)
 
-	// Retrieve the previous reader (if any) before creating the new one.
-	// It will be closed after the new streamId is set so that the old
-	// runOutputLoop's supersession check (jobStreamIds != old streamId) fires
-	// and exits cleanly instead of blocking forever on the dead stream.
-	prevReader, prevReaderOk := jobReaders.GetEx(jobId)
-
+	oldStreamId, _ := jobStreamIds.GetEx(jobId)
 	reader, streamMeta := broker.CreateStreamReaderWithSeq(readerRouteId, writerRouteId, DefaultStreamRwnd, currentSeq)
 	jobStreamIds.Set(jobId, streamMeta.Id)
 	jobReaders.Set(jobId, reader)
@@ -2007,6 +2045,23 @@ func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rt
 		prevReader.Close()
 	}
 
+	// The old runOutputLoop may still be appending bytes it read from the
+	// previous reader right before the supersession. Wait (bounded) for it to
+	// exit so those in-flight bytes land in WaveFS, then re-stat the job file and
+	// adjust currentSeq if it grew. Skipping this would double-count those bytes
+	// (present both in the file and in totalGap), shifting every future stream seq
+	// and potentially causing "client seq beyond stream end" failures on reconnect.
+	waitForStreamLoopExit(jobId, oldStreamId, 1*time.Second)
+	waveFile2, statErr2 := filestore.WFS.Stat(ctx, jobId, JobOutputFileName)
+	if statErr2 == nil {
+		recomputedSeq := waveFile2.Size + totalGap
+		if recomputedSeq > currentSeq {
+			log.Printf("[job:%s] adjusted stream seq after draining in-flight output: %d -> %d", jobId, currentSeq, recomputedSeq)
+			currentSeq = recomputedSeq
+			reader.UpdateNextSeq(currentSeq)
+		}
+	}
+
 	prepareData := wshrpc.CommandJobPrepareConnectData{
 		StreamMeta: *streamMeta,
 		Seq:        currentSeq,
@@ -2018,7 +2073,7 @@ func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rt
 		Timeout: 5000,
 	}
 
-	log.Printf("[job:%s] sending JobPrepareConnectCommand with seq=%d (fileSize=%d, totalGap=%d)", jobId, currentSeq, waveFile.Size, totalGap)
+	log.Printf("[job:%s] sending JobPrepareConnectCommand with seq=%d (fileSize=%d, totalGap=%d)", jobId, currentSeq, initialFileSize, totalGap)
 	rtnData, err := wshclient.JobPrepareConnectCommand(bareRpc, prepareData, rpcOpts)
 	if err != nil {
 		reader.Close()
@@ -2081,6 +2136,17 @@ func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rt
 		}
 
 		reader.UpdateNextSeq(rtnData.Seq)
+
+		// Inject a terminal reset + muted gap marker into the attached block's
+		// term file (display only) so the terminal parser resynchronizes instead
+		// of printing partial CSI sequences ("39m", "[38;5;139m", etc.) followed
+		// by garbled/duplicated output. The job output file stays a pure stream
+		// of remote bytes (holes tracked by totalGap in its metadata), so the
+		// marker does not shift the stream seq accounting.
+		if job.AttachedBlockId != "" {
+			resetTerminalState(ctx, job.AttachedBlockId)
+			writeMutedMessageToTerminal(job.AttachedBlockId, fmt.Sprintf("[stream gap: %d bytes lost - terminal state reset]", gap))
+		}
 	}
 
 	log.Printf("[job:%s] sending JobStartStreamCommand", jobId)
