@@ -486,6 +486,11 @@ const GaveUpOverlay = React.memo(
                     <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
                         <div>{title} — "{connName}"</div>
                         {detail && <div className="text-[10px] text-white/70 mt-0.5">{detail}</div>}
+                        {/* UX-2.5: after sleep/resume an agent-based connection that
+                            failed auth surfaces a specific agent/keychain hint here. */}
+                        {stopReason === "auth-failed" && connStatus.error && (
+                            <div className="text-[10px] text-white/50 mt-0.5">{connStatus.error}</div>
+                        )}
                     </div>
                     <div className="flex-1 hidden @max-xxs:block"></div>
                     <Button
@@ -757,17 +762,27 @@ export const ConnStatusOverlay = React.memo(
             canAutoReconnect &&
             connStatus.status == "disconnected" &&
             (connStatus.reconnectnextattempt ?? 0) > 0;
+        // UX-2.1: while auto-reconnect is actively engaged (canautoreconnect and
+        // not suppressed), the reconnect scheduler owns the disconnected state —
+        // Retrying/Countdown/GaveUp overlays carry the chrome, so the red
+        // "Disconnected" overlay must not flash for brief Wi-Fi flaps.
+        const autoRetryEngaged = canAutoReconnect;
         // Disconnected-style overlay: plain disconnect, permanent host-key, or
         // suppress-on-error (password Cancel / Stop / permanent) so users see
         // "Auto-retry stopped — click Reconnect" instead of a raw error shell.
         const showDisconnected =
-            (connStatus.status == "disconnected" && !connStatus.connected) ||
+            (connStatus.status == "disconnected" && !connStatus.connected && !autoRetryEngaged) ||
             !!permanentErrorTitle(connStatus.errorcode) ||
             (!!connStatus.suppressautoreconnect &&
                 (connStatus.status == "error" || connStatus.status == "disconnected"));
-        // UX-1.1: gave-up overlay — scheduler exhausted retries
+        // UX-1.1: gave-up overlay — scheduler exhausted retries. Deliberately
+        // independent of showDisconnected so it still appears while auto-retry
+        // is engaged (e.g. scheduler hit max-duration from a disconnected or
+        // error status).
         const showGaveUp =
-            !!connStatus.reconnectgaveup && showDisconnected && !permanentErrorTitle(connStatus.errorcode);
+            !!connStatus.reconnectgaveup &&
+            (connStatus.status == "disconnected" || connStatus.status == "error") &&
+            !permanentErrorTitle(connStatus.errorcode);
 
         // Hide status overlay when a password prompt is active for this connection
         // and not dismissed on this tab
@@ -800,7 +815,13 @@ export const ConnStatusOverlay = React.memo(
             !showCountdown &&
             !showGaveUp &&
             !showDisconnected &&
-            (isLayoutMode || connStatus.status == "connected" || connModalOpen)
+            (isLayoutMode ||
+                connStatus.status == "connected" ||
+                connModalOpen ||
+                // UX-2.1: auto-retry is engaged but the first countdown/retry
+                // event hasn't arrived yet — keep the overlay hidden so a brief
+                // flap never flashes disconnected chrome.
+                (autoRetryEngaged && connStatus.status == "disconnected"))
         ) {
             return null;
         }

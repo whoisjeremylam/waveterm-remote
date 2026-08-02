@@ -174,12 +174,6 @@ const ConnReconnectMaxDurationSilent     = 15 * time.Minute // cap for silently-
 const ConnReconnectAggressiveInterval    = 3 * time.Second
 const ConnReconnectAggressiveDuration    = 2 * time.Minute
 
-// ReconnectHysteresisDuration is the delay before propagating a disconnect event
-// when CanAutoReconnect is true. Sub-second Wi-Fi flaps are suppressed: if the
-// connection comes back within this window, onConnectionDown silently returns
-// and no overlay flash occurs. (UX-2.1)
-const ReconnectHysteresisDuration = 1500 * time.Millisecond
-
 // FlappingWindowDuration is the lookback window for detecting rapid
 // disconnect/reconnect cycles. (UX-2.2)
 const FlappingWindowDuration = 30 * time.Second
@@ -195,6 +189,11 @@ func InitJobController() {
 	// Stop reconnect scheduler whenever user Disconnect or Stop auto-retry
 	// sets suppress — avoids import cycle (conncontroller cannot import us).
 	conncontroller.OnUserSuppressAutoReconnect = StopReconnectScheduler
+	// Start the reconnect scheduler as soon as an involuntary disconnect is
+	// detected on an auto-reconnectable connection, so the first attempt can
+	// run during the disconnect hysteresis window instead of waiting for the
+	// (possibly delayed) connchange event. (UX-2.1)
+	conncontroller.OnInvoluntaryDisconnect = onConnectionDown
 
 	rpcClient := wshclient.GetBareRpcClient()
 	rpcClient.EventListener.On(wps.Event_RouteUp, handleRouteUpEvent)
@@ -1022,6 +1021,92 @@ func clearReconnectGaveUpState(connName string) {
 	}
 }
 
+// agentUnavailableErrorMsg is the UX-2.5 message shown when an agent-based
+// connection fails authentication after sleep/resume because the SSH agent or
+// keychain is locked/unavailable.
+const agentUnavailableErrorMsg = "SSH agent may be unavailable — unlock your keychain or restart your SSH agent"
+
+// maybeSetAgentUnavailableError sets conn.Error (and fires a connchange event)
+// on the named connection with the agent-unavailable message. Called only on
+// the auth-failed path, and only when the last successful handshake used no
+// interactive prompt (agent/key-based, captured BEFORE the failed attempt —
+// a credential-rejection error clears authPromptState on the way out of
+// Connect). Permanent host-key / known_hosts errors never get this message:
+// their own error copy is the source of truth. (UX-2.5)
+func maybeSetAgentUnavailableError(connName string, wasAgentBasedAuth bool) {
+	if !wasAgentBasedAuth {
+		return
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.SetConnError(agentUnavailableErrorMsg)
+		conn.FireConnChangeEvent()
+	}
+}
+
+// schedulerAttemptErrorAction is the outcome of classifying a failed reconnect
+// attempt in the scheduler loop.
+type schedulerAttemptErrorAction struct {
+	stop         bool   // true if the scheduler should exit
+	gaveUpReason string // set when stopping with a gave-up reason (UX-1.1)
+	logMsg       string // scheduler log line for the stop reason
+}
+
+// classifySchedulerAttemptError decides how the reconnect scheduler should
+// respond to a failed reconnect attempt: keep retrying (re-arm countdown) or
+// stop (optionally recording a gave-up reason).
+//
+// UX-2.5: auth-failed on a connection whose last successful handshake used no
+// interactive prompt (agent/key-based) surfaces an agent-unavailable message
+// instead of a generic credential rejection — after sleep/resume the agent may
+// be locked or unavailable while the user's credentials are actually fine.
+// Permanent host-key / known_hosts / config errors never get that treatment.
+func classifySchedulerAttemptError(connName string, err error, wasAgentBasedAuth bool) schedulerAttemptErrorAction {
+	errorCode, errorSubCode := remote.ClassifyConnError(err)
+	// Early termination: auth-failed means the server is up but rejecting
+	// credentials. Retrying won't help — the user must fix credentials (or the
+	// agent must be unlocked). The requestPasswordRePrompt goroutine handles
+	// re-prompting; the scheduler should exit.
+	if errorCode == remote.ConnErrCode_AuthFailed {
+		if wasAgentBasedAuth {
+			maybeSetAgentUnavailableError(connName, true)
+		}
+		return schedulerAttemptErrorAction{
+			stop:         true,
+			gaveUpReason: "auth-failed",
+			logMsg:       "auth-failed during reconnect, stopping scheduler (server rejecting credentials)",
+		}
+	}
+	// UX-0.4: permanent handshake failures (host-key, known_hosts, config)
+	// must not silent-retry. Suppress is set in Connect; exit immediately.
+	// These never get the agent-unavailable message — the host-key/known_hosts
+	// error itself is the source of truth.
+	if remote.IsPermanentConnError(errorCode) {
+		return schedulerAttemptErrorAction{
+			stop:   true,
+			logMsg: fmt.Sprintf("permanent error %q during reconnect, stopping scheduler", errorCode),
+		}
+	}
+	// Early termination: connection-refused means the server is reachable but
+	// the SSH service is not accepting connections (port closed, daemon
+	// stopped, firewall rejecting). Retrying every 5s is wasteful —
+	// visibility-driven reconnect will retry on the next tab switch / app
+	// focus when the user returns.
+	if errorCode == remote.ConnErrCode_Dial && errorSubCode == remote.DialSubCode_Refused {
+		return schedulerAttemptErrorAction{
+			stop:         true,
+			gaveUpReason: "connection-refused",
+			logMsg:       "connection refused during reconnect, stopping scheduler (server not accepting connections)",
+		}
+	}
+	// Transient failure — keep retrying (the scheduler re-arms the countdown).
+	return schedulerAttemptErrorAction{stop: false}
+}
+
 func scheduleConnectionReconnect(connName string) {
 	log.Printf("[conn:%s] reconnect scheduler started", connName)
 	startTime := time.Now()
@@ -1083,6 +1168,12 @@ func scheduleConnectionReconnect(connName string) {
 			connectTimeout := 5 * time.Second
 			log.Printf("[conn:%s] scheduler attempt start (timeout=%s, aggressive=%v)", connName, connectTimeout, aggressiveMode)
 			attemptStart := time.Now()
+			// UX-2.5: capture whether the last successful handshake used no
+			// interactive prompt (agent/key-based) BEFORE this attempt. A
+			// credential-rejection error clears authPromptState on the way out
+			// of Connect, so the agent-unavailable decision must use the
+			// pre-attempt classification.
+			wasAgentBasedAuth := conncontroller.WasAgentBasedAuthByName(connName)
 			ctx, cancelFn := context.WithTimeout(context.Background(), connectTimeout)
 			err := conncontroller.AttemptReconnect(ctx, connName)
 			cancelFn()
@@ -1102,44 +1193,12 @@ func scheduleConnectionReconnect(connName string) {
 				isNetErr := isNetworkUnreachableError(err)
 				log.Printf("[conn:%s] scheduler attempt failed in %v (net-unreachable=%v): %v", connName, attemptDuration, isNetErr, err)
 
-				// Early termination: auth-failed means the server is up but
-				// rejecting credentials. Retrying won't help — the user must
-				// fix credentials. The requestPasswordRePrompt goroutine
-				// handles re-prompting; the scheduler should exit.
-				errorCode, errorSubCode := remote.ClassifyConnError(err)
-				if errorCode == remote.ConnErrCode_AuthFailed {
-					log.Printf("[conn:%s] auth-failed during reconnect, stopping scheduler (server rejecting credentials)", connName)
-					setReconnectGaveUpState(connName, "auth-failed")
-					clearRetryState(connName)
-					return
-				}
-				// UX-0.4: permanent handshake failures (host-key, known_hosts,
-				// config) must not silent-retry. Suppress is set in Connect;
-				// exit the scheduler immediately.
-				if remote.IsPermanentConnError(errorCode) {
-					log.Printf("[conn:%s] permanent error %q during reconnect, stopping scheduler", connName, errorCode)
-					// UX-2.5: If the last successful connect used no interactive
-					// prompt (agent/key-based), the SSH agent or keychain may be
-					// locked/unavailable after sleep. Surface a helpful message.
-					connOpts, _ := remote.ParseOpts(connName)
-					if connOpts != nil {
-						conn := conncontroller.MaybeGetConn(connOpts)
-						if conn != nil && conn.WasAgentBasedAuth() {
-							conn.SetConnError("SSH agent may be unavailable — unlock your keychain or restart your SSH agent")
-							conn.FireConnChangeEvent()
-						}
+				action := classifySchedulerAttemptError(connName, err, wasAgentBasedAuth)
+				if action.stop {
+					log.Printf("[conn:%s] %s", connName, action.logMsg)
+					if action.gaveUpReason != "" {
+						setReconnectGaveUpState(connName, action.gaveUpReason)
 					}
-					clearRetryState(connName)
-					return
-				}
-				// Early termination: connection-refused means the server is
-				// reachable but the SSH service is not accepting connections
-				// (port closed, daemon stopped, firewall rejecting). Retrying
-				// every 5s is wasteful — visibility-driven reconnect will retry
-				// on the next tab switch / app focus when the user returns.
-				if errorCode == remote.ConnErrCode_Dial && errorSubCode == remote.DialSubCode_Refused {
-					log.Printf("[conn:%s] connection refused during reconnect, stopping scheduler (server not accepting connections)", connName)
-					setReconnectGaveUpState(connName, "connection-refused")
 					clearRetryState(connName)
 					return
 				}

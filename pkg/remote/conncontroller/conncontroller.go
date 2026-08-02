@@ -75,9 +75,10 @@ const (
 
 // ReconnectHysteresisDuration is the delay before propagating a disconnect event
 // when auto-reconnect is possible. Sub-second Wi-Fi flaps are suppressed: if the
-// connection comes back within this window, waitForDisconnect silently returns
-// and no overlay flash occurs. (UX-2.1)
-const ReconnectHysteresisDuration = 1500 * time.Millisecond
+// connection comes back within this window, the disconnect event is never
+// published and no overlay flash occurs. A var (not a const) so tests can
+// shorten the window. (UX-2.1)
+var ReconnectHysteresisDuration = 1500 * time.Millisecond
 
 var globalLock = &sync.Mutex{}
 var clientControllerMap = make(map[remote.SSHOpts]*SSHConn)
@@ -100,6 +101,14 @@ var ErrAutoReconnectSuppressed = errors.New("auto-reconnect suppressed")
 // StopReconnectScheduler here to avoid an import cycle (conncontroller must
 // not import jobcontroller). Nil-safe; optional.
 var OnUserSuppressAutoReconnect func(connName string)
+
+// OnInvoluntaryDisconnect is invoked when an involuntary disconnect settles
+// (the disconnect hysteresis window expired without a reconnect) on a
+// connection that can auto-reconnect. jobcontroller registers onConnectionDown
+// here so the reconnect scheduler starts retrying immediately instead of
+// waiting for the (possibly suppressed) disconnect event. Nil-safe; optional.
+// (UX-2.1)
+var OnInvoluntaryDisconnect func(connName string)
 
 type SSHConn struct {
 	lock          *sync.Mutex // this lock protects the fields in the struct from concurrent access
@@ -265,6 +274,31 @@ func (conn *SSHConn) SetConnError(errMsg string) {
 	})
 }
 
+// shouldDelayDisconnectEvent reports whether an involuntary disconnect should
+// defer publishing the disconnected connchange event by the hysteresis window:
+// auto-reconnect is possible without a prompt and has not been suppressed.
+// User Disconnect (suppress set), permanent host-key/known_hosts failures, and
+// interactive-auth connections report immediately. (UX-2.1)
+func (conn *SSHConn) shouldDelayDisconnectEvent() bool {
+	conn.lock.Lock()
+	defer conn.lock.Unlock()
+	if conn.SuppressAutoReconnect {
+		return false
+	}
+	return conn.canAutoReconnectLocked()
+}
+
+// kickReconnectScheduler notifies the jobcontroller (via OnInvoluntaryDisconnect)
+// that an involuntary disconnect has settled (the hysteresis window expired
+// without a reconnect) so the reconnect scheduler starts retrying. Idempotent —
+// the scheduler dedupes on connection name. Nil-safe when the callback is not
+// registered (e.g. unit tests). (UX-2.1)
+func (conn *SSHConn) kickReconnectScheduler() {
+	if OnInvoluntaryDisconnect != nil {
+		OnInvoluntaryDisconnect(conn.GetName())
+	}
+}
+
 func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 	conn.lock.Lock()
 	defer conn.lock.Unlock()
@@ -372,9 +406,15 @@ func (conn *SSHConn) closeInternal(clearPassword bool) error {
 	conn.lifecycleLock.Lock()
 	defer conn.lifecycleLock.Unlock()
 
+	// UX-2.1: involuntary disconnects (stall, sleep/wake) on auto-reconnectable
+	// connections defer publishing the disconnected connchange event by
+	// ReconnectHysteresisDuration so brief flaps don't flash the red overlay.
+	// User Disconnect (clearPassword) stays immediate. The status itself is
+	// still flipped synchronously — only the event is delayed.
+	delayEvent := !clearPassword && conn.shouldDelayDisconnectEvent()
+
 	conn.WithLock(func() {
 		if conn.Status == Status_Connected || conn.Status == Status_Connecting {
-			// if status is init, disconnected, or error don't change it
 			conn.Status = Status_Disconnected
 		}
 		conn.ConnHealthStatus = ConnHealthStatus_Good
@@ -390,6 +430,41 @@ func (conn *SSHConn) closeInternal(clearPassword bool) error {
 	if clearPassword {
 		// Clear cached password on explicit disconnect
 		conn.clearCachedPassword()
+	}
+	if delayEvent {
+		// Free dead resources now so a reconnect can start immediately (e.g.
+		// HandleSystemResume's fast-path reconnect), then defer the disconnect
+		// event by the hysteresis window. If a reconnect re-establishes the
+		// connection within the window, the event is suppressed entirely — no
+		// red overlay flash for brief flaps. (UX-2.1)
+		conn.closeInternal_withlifecyclelock(nil)
+		// Capture the window into a local before spawning the goroutine so the
+		// goroutine never re-reads the package var (avoids data races when
+		// tests shorten the window).
+		hysteresisDelay := ReconnectHysteresisDuration
+		go func() {
+			defer func() {
+				panichandler.PanicHandler("conncontroller:closeInternal-hysteresis", recover())
+			}()
+			time.Sleep(hysteresisDelay)
+			conn.lifecycleLock.Lock()
+			defer conn.lifecycleLock.Unlock()
+			if conn.GetClient() != nil {
+				// Connection re-established within the window — suppress the
+				// disconnect event (the reconnect's own events carry the UI).
+				log.Printf("[conn:%s] disconnect event suppressed by hysteresis: connection re-established within %v window",
+					conn.GetName(), hysteresisDelay)
+				return
+			}
+			// Keep auto-retry going even if the delayed event does not drive
+			// onConnectionDown (e.g. an in-flight attempt already failed into
+			// Status_Error during the window).
+			conn.kickReconnectScheduler()
+			if conn.GetStatus() == Status_Disconnected {
+				conn.FireConnChangeEvent()
+			}
+		}()
+		return nil
 	}
 	// Fire event BEFORE closeInternal_withlifecyclelock so the UI updates
 	// even if client.Close() blocks on a dead network connection.
@@ -2296,25 +2371,58 @@ func (conn *SSHConn) waitForDisconnect() {
 	}
 
 	// UX-2.1: Overlay hysteresis for brief blips.
-	// When auto-reconnect is possible (cached password or replayable key),
-	// delay setting Status=Disconnected by ReconnectHysteresisDuration.
-	// If a new connection establishes within the window, suppress the
-	// disconnect event — no red overlay flash for sub-second Wi-Fi flaps.
-	conn.lock.Lock()
-	canAuto := conn.canAutoReconnectLocked()
-	conn.lock.Unlock()
-	if canAuto {
+	// When auto-reconnect is possible (cached password or replayable key) and
+	// not suppressed, defer publishing the disconnected connchange event by
+	// ReconnectHysteresisDuration. Status is flipped to Disconnected immediately
+	// (without an event) so IsConnected / EnsureConnection / GetAllConnStatus
+	// observe the real state during the window, but the event itself is
+	// deferred: if a new connection establishes within the window (or an
+	// in-flight reconnect attempt succeeds), the event is suppressed entirely —
+	// no red overlay flash for sub-second Wi-Fi flaps.
+	if conn.shouldDelayDisconnectEvent() {
+		conn.WithLock(func() {
+			if err != nil && conn.Error == "" {
+				conn.Error = err.Error()
+			}
+			if conn.Status == Status_Connected || conn.Status == Status_Connecting {
+				conn.Status = Status_Disconnected
+			}
+			conn.ConnHealthStatus = ConnHealthStatus_Good
+		})
+		// Free the dead connection's resources now (a reconnect can start
+		// immediately); the delayed event fires from the expiry goroutine below.
+		conn.closeInternal_withlifecyclelock(client)
 		conn.lifecycleLock.Unlock()
-		time.Sleep(ReconnectHysteresisDuration)
-		conn.lifecycleLock.Lock()
-		// Re-check: did a new connection start during the hysteresis window?
-		currentClient = conn.GetClient()
-		if currentClient != nil && currentClient != client {
-			conn.lifecycleLock.Unlock()
-			log.Printf("[conn:%s] disconnect suppressed by hysteresis: new connection active within %v window",
-				conn.GetName(), ReconnectHysteresisDuration)
-			return
-		}
+		// Capture the window into a local before spawning the goroutine so the
+		// goroutine never re-reads the package var (avoids data races when
+		// tests shorten the window).
+		hysteresisDelay := ReconnectHysteresisDuration
+		go func() {
+			defer func() {
+				panichandler.PanicHandler("conncontroller:waitForDisconnect-hysteresis", recover())
+			}()
+			time.Sleep(hysteresisDelay)
+			// Re-check under lifecycleLock: any in-flight Connect holds this
+			// lock for its whole duration, so by the time we acquire it the
+			// reconnect has either established a client or concluded in
+			// Error/Disconnected.
+			conn.lifecycleLock.Lock()
+			defer conn.lifecycleLock.Unlock()
+			currentClient = conn.GetClient()
+			if currentClient != nil && currentClient != client {
+				log.Printf("[conn:%s] disconnect suppressed by hysteresis: new connection active within %v window",
+					conn.GetName(), hysteresisDelay)
+				return
+			}
+			// Keep auto-retry going even if the delayed event does not drive
+			// onConnectionDown (e.g. status already Error from a failed attempt
+			// during the window).
+			conn.kickReconnectScheduler()
+			if conn.GetStatus() == Status_Disconnected {
+				conn.FireConnChangeEvent()
+			}
+		}()
+		return
 	}
 
 	defer conn.lifecycleLock.Unlock()
@@ -2668,6 +2776,25 @@ func IsSuppressAutoReconnectByName(connName string) bool {
 		return false
 	}
 	return conn.IsSuppressAutoReconnect()
+}
+
+// WasAgentBasedAuthByName returns true if the named connection's last
+// successful handshake used no interactive prompt (SSH agent / unencrypted
+// key). Used by the reconnect scheduler to detect agent/keychain unavailability
+// after sleep/wake. (UX-2.5)
+func WasAgentBasedAuthByName(connName string) bool {
+	if IsLocalConnName(connName) {
+		return false
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return false
+	}
+	conn := MaybeGetConn(connOpts)
+	if conn == nil {
+		return false
+	}
+	return conn.WasAgentBasedAuth()
 }
 
 // DisconnectClient performs a user-initiated disconnect (Close). Suppress is
