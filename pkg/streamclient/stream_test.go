@@ -521,3 +521,92 @@ func TestOutOfOrderWithEOF(t *testing.T) {
 		t.Fatalf("Expected EOF, got %v", err)
 	}
 }
+
+// TestDrainBuffered verifies that DrainBuffered returns all data buffered but
+// not yet read, and clears the buffer. It is the recovery path for bytes that
+// would otherwise be lost when a superseded reader is closed (after Close,
+// Read returns io.ErrClosedPipe even when data is still buffered).
+func TestDrainBuffered(t *testing.T) {
+	transport := newFakeTransport()
+	reader := NewReader("drain-test", 1024, transport)
+
+	reader.RecvData(wshrpc.CommandStreamData{
+		Id:     "drain-test",
+		Seq:    0,
+		Data64: base64.StdEncoding.EncodeToString([]byte("hello")),
+	})
+	reader.RecvData(wshrpc.CommandStreamData{
+		Id:     "drain-test",
+		Seq:    5,
+		Data64: base64.StdEncoding.EncodeToString([]byte("world")),
+	})
+
+	drained := reader.DrainBuffered()
+	if string(drained) != "helloworld" {
+		t.Fatalf("DrainBuffered returned %q, expected %q", drained, "helloworld")
+	}
+
+	// The buffer is cleared; a second drain returns nothing.
+	if extra := reader.DrainBuffered(); len(extra) != 0 {
+		t.Fatalf("DrainBuffered after drain should be empty, got %q", extra)
+	}
+}
+
+// TestDrainBufferedAfterPartialRead verifies that DrainBuffered returns only the
+// bytes still buffered (bytes already consumed by Read are not returned twice).
+func TestDrainBufferedAfterPartialRead(t *testing.T) {
+	transport := newFakeTransport()
+	reader := NewReader("drain-partial", 1024, transport)
+
+	reader.RecvData(wshrpc.CommandStreamData{
+		Id:     "drain-partial",
+		Seq:    0,
+		Data64: base64.StdEncoding.EncodeToString([]byte("abcdef")),
+	})
+
+	buf := make([]byte, 2)
+	n, err := reader.Read(buf)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if n != 2 || string(buf[:n]) != "ab" {
+		t.Fatalf("Read returned %q, expected %q", buf[:n], "ab")
+	}
+
+	// The remainder is still buffered; drain should return exactly it.
+	drained := reader.DrainBuffered()
+	if string(drained) != "cdef" {
+		t.Fatalf("DrainBuffered returned %q, expected %q", drained, "cdef")
+	}
+}
+
+// TestDrainBufferedAfterClose verifies the exact supersession hazard: after
+// Close, Read returns io.ErrClosedPipe even if data is still buffered (those
+// bytes were already ACKed to the sender, so without DrainBuffered they are
+// permanently lost). DrainBuffered must still return them after Close.
+func TestDrainBufferedAfterClose(t *testing.T) {
+	transport := newFakeTransport()
+	reader := NewReader("drain-closed", 1024, transport)
+
+	reader.RecvData(wshrpc.CommandStreamData{
+		Id:     "drain-closed",
+		Seq:    0,
+		Data64: base64.StdEncoding.EncodeToString([]byte("still-there")),
+	})
+
+	reader.Close()
+
+	// Read after Close returns io.ErrClosedPipe — the buffered data is
+	// unreachable through Read.
+	buf := make([]byte, 64)
+	_, err := reader.Read(buf)
+	if err != io.ErrClosedPipe {
+		t.Fatalf("Expected io.ErrClosedPipe after Close, got %v", err)
+	}
+
+	// DrainBuffered recovers the bytes that Read can no longer reach.
+	drained := reader.DrainBuffered()
+	if string(drained) != "still-there" {
+		t.Fatalf("DrainBuffered after Close returned %q, expected %q", drained, "still-there")
+	}
+}
