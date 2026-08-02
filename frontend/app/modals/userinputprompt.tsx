@@ -199,6 +199,7 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
             </div>
         </div>
     );
+    };
 
     return renderPrompt();
 };
