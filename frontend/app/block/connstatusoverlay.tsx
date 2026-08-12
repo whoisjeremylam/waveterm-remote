@@ -258,11 +258,12 @@ const DisconnectedOverlay = React.memo(
                                         Auto-retry stopped — click Reconnect when ready
                                     </div>
                                 )}
-                                {/* UX-1.2: Interactive-auth idle — tell user they need to sign in */}
+                                {/* UX-1.2: Interactive-auth idle — tell user they need to sign in.
+                                    Show even when a leftover error string is present (common after
+                                    failed ensure/connect); error stays as secondary detail above. */}
                                 {!connStatus.canautoreconnect &&
                                     !connStatus.suppressautoreconnect &&
-                                    !hasCountdown &&
-                                    !connStatus.error && (
+                                    !hasCountdown && (
                                         <div className="text-[10px] text-white/70 mt-0.5">
                                             Sign in required — click Reconnect or focus this tab to enter your
                                             credentials
@@ -443,6 +444,46 @@ const JobSessionOverlay = React.memo(
 );
 JobSessionOverlay.displayName = "JobSessionOverlay";
 
+/** UX-1.7: Disk drain / catch-up indicator after reconnect. */
+const DrainCatchUpOverlay = React.memo(
+    ({
+        remainingBytes,
+        totalBytes,
+        overlayRefCallback,
+    }: {
+        remainingBytes: number;
+        totalBytes: number;
+        overlayRefCallback: (el: HTMLDivElement | null) => void;
+    }) => {
+        const detail =
+            totalBytes > 0 && remainingBytes >= 0
+                ? `Catching up on output from while disconnected… (${formatByteCount(Math.max(0, totalBytes - remainingBytes))} / ${formatByteCount(totalBytes)})`
+                : "Catching up on output from while disconnected…";
+        return (
+            <div className={overlayShellClass} ref={overlayRefCallback}>
+                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
+                    <i className="fa-solid fa-spinner fa-spin text-warning text-base shrink-0" title="Catching up"></i>
+                    <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
+                        {detail}
+                    </div>
+                    <div className="flex-1 hidden @max-xxs:block"></div>
+                </div>
+            </div>
+        );
+    }
+);
+DrainCatchUpOverlay.displayName = "DrainCatchUpOverlay";
+
+function formatByteCount(n: number): string {
+    if (n < 1024) {
+        return `${n} B`;
+    }
+    if (n < 1024 * 1024) {
+        return `${(n / 1024).toFixed(1)} KB`;
+    }
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /** UX-1.1: Post-give-up overlay — contextual copy based on why the scheduler stopped. */
 const GaveUpOverlay = React.memo(
     ({
@@ -462,10 +503,12 @@ const GaveUpOverlay = React.memo(
         let detail: string | null = null;
 
         if (stopReason === "max-duration") {
-            title = "Auto-retry paused after 15 minutes";
+            // Cap differs for silent (15m) vs interactive (5m); avoid hardcoding.
+            title = "Auto-retry paused after the time limit";
+            const recovery = "Will try again when the network returns or you click Reconnect.";
             detail = connStatus.reconnecterror
-                ? `Last error: ${connStatus.reconnecterror}.`
-                : "Will try again when the network returns or you click Reconnect.";
+                ? `Last error: ${connStatus.reconnecterror}. ${recovery}`
+                : recovery;
         } else if (stopReason === "auth-failed") {
             icon = "fa-solid fa-key text-error";
             title = "Authentication failed";
@@ -475,8 +518,10 @@ const GaveUpOverlay = React.memo(
             title = "SSH refused the connection";
             detail = "The server may be starting up — click Reconnect when ready.";
         } else if (stopReason === "no-jobs") {
-            // Conn went down and all blocks closed — suppress entirely (no overlay needed)
-            return null;
+            // Backend no longer sets gave-up for no-jobs; if a stale reason arrives,
+            // show generic stopped copy rather than returning null (which blanks chrome).
+            title = "Auto-retry stopped";
+            detail = null;
         }
 
         return (
@@ -648,6 +693,26 @@ export const ConnStatusOverlay = React.memo(
             prtn.catch((e) => console.log("error reconnecting", connName, e));
         }, [connName, nodeModel.blockId, waveEnv]);
 
+        // UX-1.3: stalled Reconnect Now must force involuntary close + connect
+        // (preserve password cache). Plain ConnConnect refuses while connected.
+        // Debounce double-clicks until the RPC settles (server also no-ops a
+        // second Force after a healthy heal).
+        const forceReconnectInFlightRef = React.useRef(false);
+        const handleForceReconnect = React.useCallback(() => {
+            if (forceReconnectInFlightRef.current) {
+                return;
+            }
+            forceReconnectInFlightRef.current = true;
+            const prtn = waveEnv.rpc.ConnConnectCommand(
+                TabRpcClient,
+                { host: connName, logblockid: nodeModel.blockId, force: true },
+                { timeout: 60000 }
+            );
+            prtn.catch((e) => console.log("error force-reconnecting", connName, e)).finally(() => {
+                forceReconnectInFlightRef.current = false;
+            });
+        }, [connName, nodeModel.blockId, waveEnv]);
+
         const handleStopAutoRetry = React.useCallback(() => {
             const prtn = waveEnv.rpc.ConnStopAutoRetryCommand(TabRpcClient, connName, { timeout: 5000 });
             prtn.catch((e) => console.log("error stopping auto-retry", connName, e));
@@ -775,14 +840,23 @@ export const ConnStatusOverlay = React.memo(
             !!permanentErrorTitle(connStatus.errorcode) ||
             (!!connStatus.suppressautoreconnect &&
                 (connStatus.status == "error" || connStatus.status == "disconnected"));
-        // UX-1.1: gave-up overlay — scheduler exhausted retries. Deliberately
-        // independent of showDisconnected so it still appears while auto-retry
-        // is engaged (e.g. scheduler hit max-duration from a disconnected or
-        // error status).
+        // UX-1.1: gave-up overlay — scheduler exhausted retries. Gate on unhealthy
+        // status directly (not showDisconnected): after failed AttemptReconnect
+        // status is often "error", which previously never showed GaveUpOverlay.
         const showGaveUp =
             !!connStatus.reconnectgaveup &&
             (connStatus.status == "disconnected" || connStatus.status == "error") &&
             !permanentErrorTitle(connStatus.errorcode);
+        // UX-1.6: blocked behind another password prompt on this window
+        const showAuthQueueWaiting =
+            !!connStatus.authqueuewaiting &&
+            (connStatus.status == "connecting" || connStatus.status == "disconnected" || connStatus.status == "error");
+        // UX-1.7: catch-up after reconnect while disk drain is active
+        const showDrainCatchUp =
+            connStatus.status == "connected" &&
+            !showStalled &&
+            !!termDurableStatus?.drainactive &&
+            (termDurableStatus.drainremainingbytes ?? 0) > 0;
 
         // Hide status overlay when a password prompt is active for this connection
         // and not dismissed on this tab
@@ -797,7 +871,8 @@ export const ConnStatusOverlay = React.memo(
         }
 
         // UX-0.2: job-level overlay when conn is healthy but session is not
-        if (jobOverlayMode && !showStalled && !showWshError) {
+        // (drain catch-up takes priority when both would apply)
+        if (jobOverlayMode && !showStalled && !showWshError && !showDrainCatchUp) {
             return (
                 <JobSessionOverlay
                     mode={jobOverlayMode}
@@ -815,6 +890,8 @@ export const ConnStatusOverlay = React.memo(
             !showCountdown &&
             !showGaveUp &&
             !showDisconnected &&
+            !showAuthQueueWaiting &&
+            !showDrainCatchUp &&
             (isLayoutMode ||
                 connStatus.status == "connected" ||
                 connModalOpen ||
@@ -828,7 +905,39 @@ export const ConnStatusOverlay = React.memo(
 
         if (showStalled && !showWshError) {
             return (
-                <StalledOverlay connName={connName} connStatus={connStatus} overlayRefCallback={overlayRefCallback} onReconnect={handleTryReconnect} />
+                <StalledOverlay
+                    connName={connName}
+                    connStatus={connStatus}
+                    overlayRefCallback={overlayRefCallback}
+                    onReconnect={handleForceReconnect}
+                />
+            );
+        }
+
+        if (showDrainCatchUp && !showWshError) {
+            return (
+                <DrainCatchUpOverlay
+                    remainingBytes={termDurableStatus!.drainremainingbytes ?? 0}
+                    totalBytes={termDurableStatus!.draintotalbytes ?? 0}
+                    overlayRefCallback={overlayRefCallback}
+                />
+            );
+        }
+
+        if (showAuthQueueWaiting && !showWshError) {
+            return (
+                <div className={overlayShellClass} ref={overlayRefCallback}>
+                    <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
+                        <i className="fa-solid fa-hourglass-half text-warning text-base shrink-0" title="Waiting"></i>
+                        <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
+                            Waiting to sign in to "{connName}"…
+                            <div className="text-[10px] text-white/70 mt-0.5">
+                                Waiting for another sign-in to finish…
+                            </div>
+                        </div>
+                        <div className="flex-1 hidden @max-xxs:block"></div>
+                    </div>
+                </div>
             );
         }
 

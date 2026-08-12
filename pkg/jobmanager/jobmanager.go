@@ -347,6 +347,11 @@ func (jm *JobManager) PrepareConnect(msc *MainServerConn, data wshrpc.CommandJob
 		jm.pendingStreamMeta = &data.StreamMeta
 		rtnData.Seq = serverSeq
 		rtnData.StreamDone = false
+		// UX-1.7: surface disk drain snapshot so the main server can show catch-up UI.
+		drainActive, drainTotal, drainRemaining := jm.StreamManager.GetDrainProgress()
+		rtnData.DrainActive = drainActive
+		rtnData.DrainTotalBytes = drainTotal
+		rtnData.DrainRemainingBytes = drainRemaining
 	}
 
 	hasExited, exitData := jm.Cmd.GetExitInfo()

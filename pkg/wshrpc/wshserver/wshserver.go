@@ -655,6 +655,8 @@ func (ws *WshServer) ConnConnectCommand(ctx context.Context, connRequest wshrpc.
 		if conn == nil {
 			return fmt.Errorf("connection not found: %s", connName)
 		}
+		// Force (UX-1.3 stall heal) is SSH-only — WSL has no stall monitor /
+		// ForceReconnect path. connRequest.Force is intentionally ignored here.
 		return conn.Connect(ctx)
 	}
 	connOpts, err := remote.ParseOpts(connName)
@@ -664,6 +666,10 @@ func (ws *WshServer) ConnConnectCommand(ctx context.Context, connRequest wshrpc.
 	conn := conncontroller.GetConn(connOpts)
 	if conn == nil {
 		return fmt.Errorf("connection not found: %s", connName)
+	}
+	// UX-1.3: Force = involuntary close + connect (preserve password cache).
+	if connRequest.Force {
+		return conn.ForceReconnect(ctx, &connRequest.Keywords)
 	}
 	return conn.Connect(ctx, &connRequest.Keywords)
 }

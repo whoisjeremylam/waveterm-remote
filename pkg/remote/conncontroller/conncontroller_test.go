@@ -1093,7 +1093,6 @@ func TestCachedPasswordClearedOnDisconnect(t *testing.T) {
 	}
 }
 
-
 func TestCachedPasswordPreservedOnHandshakeFailed(t *testing.T) {
 	t.Parallel()
 	conn := makeTestConn(Status_Disconnected)
@@ -2686,5 +2685,156 @@ func TestConnect_UserAbort_SetsSuppress(t *testing.T) {
 
 	if !conn.IsSuppressAutoReconnect() {
 		t.Fatal("expected SuppressAutoReconnect after user AbortConnect")
+	}
+}
+
+// TestForceReconnect_StalledClosesAndConnects: UX-1.3 stall path tears down and reconnects
+// while preserving the password cache.
+func TestForceReconnect_StalledClosesAndConnects(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+	conn.WithLock(func() {
+		conn.ConnHealthStatus = ConnHealthStatus_Stalled
+	})
+	conn.cachePassword("force-secret")
+
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		return nil
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	err := conn.ForceReconnect(context.Background(), &wconfig.ConnKeywords{})
+	if err != nil {
+		t.Fatalf("ForceReconnect: %v", err)
+	}
+	if conn.GetStatus() != Status_Connected {
+		t.Fatalf("expected Connected after ForceReconnect, got %s", conn.GetStatus())
+	}
+	if pw := conn.getCachedPassword(); pw == nil || *pw != "force-secret" {
+		t.Fatal("expected password cache preserved across ForceReconnect")
+	}
+}
+
+// TestForceReconnect_HealthyConnectedNoOp: second Force / double-click after heal must not
+// tear down a healthy session (Issue 5).
+func TestForceReconnect_HealthyConnectedNoOp(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+	// ConnHealthStatus_Good by default
+
+	called := false
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		called = true
+		return nil
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	err := conn.ForceReconnect(context.Background(), &wconfig.ConnKeywords{})
+	if err != nil {
+		t.Fatalf("ForceReconnect: %v", err)
+	}
+	if called {
+		t.Fatal("ForceReconnect must no-op when already Connected and not stalled")
+	}
+	if conn.GetStatus() != Status_Connected {
+		t.Fatalf("expected status still Connected, got %s", conn.GetStatus())
+	}
+}
+
+// TestForceReconnect_HoldsLockSoSchedulerCannotWinRace: while ForceReconnect holds
+// lifecycleLock through close+connect, AttemptReconnect must wait (not fail with
+// "already connecting/connected") and succeed when Force finishes (Issue 1).
+func TestForceReconnect_HoldsLockSoSchedulerCannotWinRace(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+	conn.WithLock(func() {
+		conn.ConnHealthStatus = ConnHealthStatus_Stalled
+	})
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		close(started)
+		<-release
+		return nil
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	forceDone := make(chan error, 1)
+	go func() {
+		forceDone <- conn.ForceReconnect(context.Background(), &wconfig.ConnKeywords{})
+	}()
+	<-started
+
+	// Force is mid-connect holding lifecycleLock; status is Connecting.
+	if status := conn.GetStatus(); status != Status_Connecting {
+		t.Fatalf("expected Connecting during Force, got %s", status)
+	}
+
+	attemptDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		attemptDone <- AttemptReconnect(ctx, conn.GetName())
+	}()
+
+	// Let AttemptReconnect observe Connecting and enter WaitForConnect.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	if err := <-forceDone; err != nil {
+		t.Fatalf("ForceReconnect: %v", err)
+	}
+	if err := <-attemptDone; err != nil {
+		t.Fatalf("AttemptReconnect raced Force and failed: %v", err)
+	}
+	if conn.GetStatus() != Status_Connected {
+		t.Fatalf("expected Connected, got %s", conn.GetStatus())
+	}
+}
+
+// TestAttemptReconnect_WaitsWhenConnecting: concurrent Connect in progress is not
+// treated as a hard failure by the scheduler path.
+func TestAttemptReconnect_WaitsWhenConnecting(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	conn := makeTestConn(Status_Disconnected)
+	defer cleanupTestConn(conn)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	connectInternalTestHook = func(c *SSHConn, ctx context.Context, flags *wconfig.ConnKeywords) error {
+		close(started)
+		<-release
+		return nil
+	}
+	defer func() { connectInternalTestHook = nil }()
+
+	connectDone := make(chan error, 1)
+	go func() {
+		connectDone <- conn.Connect(context.Background(), &wconfig.ConnKeywords{})
+	}()
+	<-started
+
+	attemptDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		attemptDone <- AttemptReconnect(ctx, conn.GetName())
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	if err := <-connectDone; err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if err := <-attemptDone; err != nil {
+		t.Fatalf("AttemptReconnect while Connecting: %v", err)
 	}
 }
