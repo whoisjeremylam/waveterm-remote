@@ -47,3 +47,10 @@ docs/superpowers
 golang-*/
 zig-*/
 .pi/delegate-results/
+
+# Local tooling / accidental artifacts (never commit)
+server
+restart_waveterm.png
+investigation-*.md
+noclick_*.md
+.mimocode/plans/

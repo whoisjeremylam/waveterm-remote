@@ -6,6 +6,7 @@ import { Markdown } from "@/element/markdown";
 import { modalsModel } from "@/store/modalmodel";
 import * as keyutil from "@/util/keyutil";
 import { fireAndForget } from "@/util/util";
+import clsx from "clsx";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { UserInputService } from "../store/services";
 import "./userinputprompt.scss";
@@ -118,6 +119,7 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
                 maxLength={400}
                 className="resize-none bg-panel rounded-md border border-border py-1.5 pl-4 min-h-[30px] text-inherit cursor-text focus:ring-2 focus:ring-accent focus:outline-none"
                 autoFocus={true}
+                aria-label={userInputRequest.title || "Password input"}
                 onKeyDown={handleKeyDown}
             />
         );
@@ -153,11 +155,33 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
         }
     }, [userInputRequest.responsetype, handleSendErrResponse, handleSendConfirm]);
 
-    const renderPrompt = () => (
+    const renderPrompt = () => {
+        // UX-1.8: Visual differentiation based on prompt type
+        let headerIcon: string | null = null;
+        let headerAccentClass = "";
+        if (userInputRequest.prompttype === "password") {
+            headerIcon = "fa-solid fa-key";
+            headerAccentClass = "text-warning";
+        } else if (userInputRequest.prompttype === "passphrase") {
+            headerIcon = "fa-solid fa-lock";
+            headerAccentClass = "text-sky-400";
+        } else if (userInputRequest.prompttype === "keyboard-interactive") {
+            headerIcon = "fa-solid fa-circle-question";
+            headerAccentClass = "text-warning";
+        }
+
+        return (
         <div className="userinput-prompt-wrapper">
             <div className="userinput-prompt" onKeyDown={handleKeyDown}>
                 <div className="userinput-prompt-header">
+                    {headerIcon && <i className={clsx(headerIcon, headerAccentClass, "mr-2 text-sm")}></i>}
                     <div className="font-bold text-primary">{userInputRequest.title}</div>
+                    {/* UX-1.6: Queue position indicator for multi-connection password prompts */}
+                    {(userInputRequest.queuetotal ?? 1) > 1 && (
+                        <span className="text-[10px] text-white/50 ml-2">
+                            ({userInputRequest.queueposition ?? 1} of {userInputRequest.queuetotal})
+                        </span>
+                    )}
                 </div>
                 <div className="userinput-prompt-body">
                     {queryText}
@@ -175,6 +199,7 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
             </div>
         </div>
     );
+    };
 
     return renderPrompt();
 };

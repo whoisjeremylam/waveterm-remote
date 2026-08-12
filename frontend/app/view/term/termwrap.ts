@@ -654,6 +654,32 @@ export class TermWrap {
                 this.connectElem.removeEventListener("paste", pasteHandler, true);
             },
         });
+
+        // Intercept native copy (macOS Cmd+C via Electron role:"copy", etc.).
+        // xterm's own copy handler (bubble-phase on element) writes
+        // selectionText verbatim, which keeps real trailing space cells
+        // padded to the terminal width. A capture-phase listener fires first
+        // for events targeting the textarea, so we can trim and preventDefault.
+        const copyHandler = (e: ClipboardEvent) => {
+            if (!this.terminal.hasSelection()) {
+                return;
+            }
+            let text = this.terminal.getSelection();
+            if (globalStore.get(getSettingsKeyAtom("term:trimtrailingwhitespace")) !== false) {
+                text = trimTerminalSelection(text);
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            navigator.clipboard.writeText(text);
+        };
+        if (this.terminal.element != null) {
+            this.terminal.element.addEventListener("copy", copyHandler, true);
+            this.toDispose.push({
+                dispose: () => {
+                    this.terminal.element.removeEventListener("copy", copyHandler, true);
+                },
+            });
+        }
     }
 
     getZoneId(): string {

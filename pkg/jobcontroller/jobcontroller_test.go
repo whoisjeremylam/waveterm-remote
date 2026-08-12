@@ -18,6 +18,7 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
 	"github.com/wavetermdev/waveterm/pkg/streamclient"
 	"github.com/wavetermdev/waveterm/pkg/util/ds"
+	"github.com/wavetermdev/waveterm/pkg/utilds"
 	"github.com/wavetermdev/waveterm/pkg/waveobj"
 	"github.com/wavetermdev/waveterm/pkg/wps"
 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
@@ -984,6 +985,71 @@ func TestStartConnectionReconnectScheduler_DedupSharedWithOnConnectionDown(t *te
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("scheduler entry still set after 2s — goroutine did not clean up")
+}
+
+// TestSchedulerAgentUnavailable_OnAuthFailed (UX-2.5): the reconnect scheduler
+// surfaces a clear "SSH agent may be unavailable" message on conn.Error when a
+// reconnect attempt fails with auth-failed on a connection whose last
+// successful handshake used no interactive prompt (agent/key-based). The
+// message must NOT be set for permanent host-key/known_hosts errors (their own
+// error copy is the source of truth) or for password-based connections.
+func TestSchedulerAgentUnavailable_OnAuthFailed(t *testing.T) {
+	makeConn := func(host string, agentBased bool) (*conncontroller.SSHConn, string) {
+		opts := &remote.SSHOpts{SSHHost: host, SSHUser: "u", SSHPort: "2222"}
+		conn := conncontroller.GetConn(opts)
+		conn.Status = conncontroller.Status_Disconnected
+		if agentBased {
+			conncontroller.ForceAuthPromptNoneForTest(conn)
+		} else {
+			conncontroller.ForceAuthPromptUsedForTest(conn)
+		}
+		return conn, conn.GetName()
+	}
+
+	t.Run("auth-failed on agent-based conn sets agent message", func(t *testing.T) {
+		conn, connName := makeConn("ux25-agent-host", true)
+		action := classifySchedulerAttemptError(connName, fmt.Errorf("unable to authenticate"), true)
+		if !action.stop || action.gaveUpReason != "auth-failed" {
+			t.Fatalf("expected stop with auth-failed gave-up, got %+v", action)
+		}
+		if conn.Error != agentUnavailableErrorMsg {
+			t.Fatalf("expected agent-unavailable message on conn.Error, got %q", conn.Error)
+		}
+	})
+
+	t.Run("auth-failed on password-based conn does not set agent message", func(t *testing.T) {
+		conn, connName := makeConn("ux25-password-host", false)
+		action := classifySchedulerAttemptError(connName, fmt.Errorf("unable to authenticate"), false)
+		if !action.stop || action.gaveUpReason != "auth-failed" {
+			t.Fatalf("expected stop with auth-failed gave-up, got %+v", action)
+		}
+		if conn.Error != "" {
+			t.Fatalf("expected no agent message for password-based conn, got %q", conn.Error)
+		}
+	})
+
+	t.Run("permanent host-key error never sets agent message", func(t *testing.T) {
+		conn, connName := makeConn("ux25-hostkey-host", true)
+		hostKeyErr := utilds.Errorf(remote.ConnErrCode_HostKeyChanged, "host key changed")
+		action := classifySchedulerAttemptError(connName, hostKeyErr, true)
+		if !action.stop {
+			t.Fatalf("expected permanent error to stop scheduler, got %+v", action)
+		}
+		if action.gaveUpReason != "" {
+			t.Fatalf("expected no gave-up reason for permanent error, got %q", action.gaveUpReason)
+		}
+		if conn.Error != "" {
+			t.Fatalf("expected no agent message on permanent error, got %q", conn.Error)
+		}
+	})
+
+	t.Run("transient dial error keeps retrying", func(t *testing.T) {
+		_, connName := makeConn("ux25-dial-host", true)
+		action := classifySchedulerAttemptError(connName, fmt.Errorf("connection reset"), true)
+		if action.stop {
+			t.Fatalf("expected transient dial error to keep retrying, got %+v", action)
+		}
+	})
 }
 
 // mockStreamRpc is a minimal StreamRpcInterface for testing runOutputLoop without a real RPC.

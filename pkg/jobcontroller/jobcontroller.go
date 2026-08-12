@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -95,6 +96,17 @@ type streamHealthInfo struct {
 	streamId   string
 }
 
+// drainProgressInfo tracks UX-1.7 catch-up progress for a job after reconnect.
+// Seeded from remote PrepareConnect drain snapshot; decremented as runOutputLoop
+// receives bytes. Cleared when remaining hits 0.
+type drainProgressInfo struct {
+	active         bool
+	totalBytes     int64
+	remainingBytes int64
+	// lastEventAt throttles BlockJobStatus events during large drains
+	lastEventAt time.Time
+}
+
 type jobState struct {
 	stateLock       sync.Mutex
 	isConnecting    bool
@@ -123,6 +135,9 @@ var (
 	// Used to diagnose whether a "Connected" job has an active stream pulling data
 	// from the remote, or is stuck in a Connected-but-no-stream state (failure mode B).
 	jobStreamHealth = ds.MakeSyncMap[streamHealthInfo]()
+
+	// jobDrainProgress tracks UX-1.7 disk drain / catch-up progress per job.
+	jobDrainProgress = ds.MakeSyncMap[drainProgressInfo]()
 
 	jobTerminationMessageWritten = ds.MakeSyncMap[bool]()
 
@@ -161,13 +176,25 @@ var (
 
 	// active connection-reconnect schedulers (deduplication for onConnectionDown)
 	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
+
+	// recentReconnectAttempts tracks timestamps of recent reconnect attempts
+	// per connection for flapping detection (UX-2.2).
+	recentReconnectAttempts = ds.MakeSyncMap[[]int64]()
 )
 
-const ConnReconnectInterval              = 5 * time.Second
-const ConnReconnectMaxDuration           = 5 * time.Minute  // cap for interactive-attempt connections (defensive; interactive conns rarely reach the scheduler post-fix-#1)
-const ConnReconnectMaxDurationSilent     = 15 * time.Minute // cap for silently-reconnectable connections (key-based / cached password) — silent retries are cheap
-const ConnReconnectAggressiveInterval    = 3 * time.Second
-const ConnReconnectAggressiveDuration    = 2 * time.Minute
+const ConnReconnectInterval = 5 * time.Second
+const ConnReconnectMaxDuration = 5 * time.Minute        // cap for interactive-attempt connections (defensive; interactive conns rarely reach the scheduler post-fix-#1)
+const ConnReconnectMaxDurationSilent = 15 * time.Minute // cap for silently-reconnectable connections (key-based / cached password) — silent retries are cheap
+const ConnReconnectAggressiveInterval = 3 * time.Second
+const ConnReconnectAggressiveDuration = 2 * time.Minute
+
+// FlappingWindowDuration is the lookback window for detecting rapid
+// disconnect/reconnect cycles. (UX-2.2)
+const FlappingWindowDuration = 30 * time.Second
+
+// FlappingAttemptThreshold is the minimum number of reconnect attempts
+// within FlappingWindowDuration to trigger flapping mode. (UX-2.2)
+const FlappingAttemptThreshold = 3
 
 func InitJobController() {
 	go connReconcileWorker()
@@ -176,6 +203,11 @@ func InitJobController() {
 	// Stop reconnect scheduler whenever user Disconnect or Stop auto-retry
 	// sets suppress — avoids import cycle (conncontroller cannot import us).
 	conncontroller.OnUserSuppressAutoReconnect = StopReconnectScheduler
+	// Start the reconnect scheduler as soon as an involuntary disconnect is
+	// detected on an auto-reconnectable connection, so the first attempt can
+	// run during the disconnect hysteresis window instead of waiting for the
+	// (possibly delayed) connchange event. (UX-2.1)
+	conncontroller.OnInvoluntaryDisconnect = onConnectionDown
 
 	rpcClient := wshclient.GetBareRpcClient()
 	rpcClient.EventListener.On(wps.Event_RouteUp, handleRouteUpEvent)
@@ -278,7 +310,65 @@ func GetBlockJobStatus(ctx context.Context, blockId string) (*wshrpc.BlockJobSta
 		}
 	}
 
+	// UX-1.7: include drain catch-up progress when active
+	if drain, ok := jobDrainProgress.GetEx(job.OID); ok && drain.active && drain.remainingBytes > 0 {
+		data.DrainActive = true
+		data.DrainTotalBytes = drain.totalBytes
+		data.DrainRemainingBytes = drain.remainingBytes
+	}
+
 	return data, nil
+}
+
+// setJobDrainProgress seeds or clears UX-1.7 drain tracking for a job and
+// publishes a block job status event when the attached block is known.
+func setJobDrainProgress(ctx context.Context, jobId string, active bool, total, remaining int64) {
+	if !active || remaining <= 0 {
+		jobDrainProgress.Delete(jobId)
+	} else {
+		jobDrainProgress.Set(jobId, drainProgressInfo{
+			active:         true,
+			totalBytes:     total,
+			remainingBytes: remaining,
+			lastEventAt:    time.Now(),
+		})
+	}
+	sendBlockJobStatusEventByJobId(ctx, jobId)
+}
+
+func sendBlockJobStatusEventByJobId(ctx context.Context, jobId string) {
+	job, err := wstore.DBGet[*waveobj.Job](ctx, jobId)
+	if err != nil || job == nil || job.AttachedBlockId == "" {
+		return
+	}
+	SendBlockJobStatusEvent(ctx, job.AttachedBlockId)
+}
+
+// noteDrainBytesReceived decrements drain remaining as stream data arrives.
+// Publishes status at most ~4 times/sec while draining.
+func noteDrainBytesReceived(ctx context.Context, jobId string, n int) {
+	if n <= 0 {
+		return
+	}
+	drain, ok := jobDrainProgress.GetEx(jobId)
+	if !ok || !drain.active {
+		return
+	}
+	drain.remainingBytes -= int64(n)
+	if drain.remainingBytes <= 0 {
+		jobDrainProgress.Delete(jobId)
+		sendBlockJobStatusEventByJobId(ctx, jobId)
+		return
+	}
+	now := time.Now()
+	shouldPublish := now.Sub(drain.lastEventAt) >= 250*time.Millisecond
+	if shouldPublish {
+		drain.lastEventAt = now
+	}
+	jobDrainProgress.Set(jobId, drain)
+	if shouldPublish {
+		sendBlockJobStatusEventByJobId(ctx, jobId)
+	}
 }
 
 func SendBlockJobStatusEvent(ctx context.Context, blockId string) {
@@ -934,8 +1024,33 @@ func updateRetryState(connName string, attempt int, nextAttempt int64, errMsg st
 	conn := conncontroller.MaybeGetConn(connOpts)
 	if conn != nil {
 		conn.SetReconnectState(attempt, nextAttempt, errMsg)
+
+		// UX-2.2: Flapping detection — track recent attempt timestamps.
+		// If ≥FlappingAttemptThreshold attempts in the last FlappingWindowDuration,
+		// set FlappingMode so the frontend shows a single stable overlay.
+		now := time.Now().UnixMilli()
+		times := append(getReconnectTimes(connName), now)
+		// Prune old entries outside the window
+		cutoff := now - int64(FlappingWindowDuration/time.Millisecond)
+		pruned := make([]int64, 0, len(times))
+		for _, t := range times {
+			if t >= cutoff {
+				pruned = append(pruned, t)
+			}
+		}
+		recentReconnectAttempts.Set(connName, pruned)
+		flapping := len(pruned) >= FlappingAttemptThreshold
+		conn.SetFlappingMode(flapping)
+
 		conn.FireConnChangeEvent()
 	}
+}
+
+// getReconnectTimes returns the current reconnect attempt timestamps for a
+// connection. Extracted for testability.
+func getReconnectTimes(connName string) []int64 {
+	times, _ := recentReconnectAttempts.GetEx(connName)
+	return times
 }
 
 func clearRetryState(connName string) {
@@ -946,8 +1061,128 @@ func clearRetryState(connName string) {
 	conn := conncontroller.MaybeGetConn(connOpts)
 	if conn != nil {
 		conn.ClearReconnectState()
+		conn.SetFlappingMode(false)
 		conn.FireConnChangeEvent()
 	}
+	// Clear flapping tracking for this connection
+	recentReconnectAttempts.Delete(connName)
+}
+
+// setReconnectGaveUpState records that the scheduler gave up.
+// UX-1.1: persists the stop reason so the frontend can show contextual copy.
+// Snapshots the last reconnect/connect error so clearRetryState does not wipe it.
+func setReconnectGaveUpState(connName string, reason string) {
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		status := conn.DeriveConnStatus()
+		lastErr := status.ReconnectError
+		if lastErr == "" {
+			lastErr = status.Error
+		}
+		conn.SetReconnectGaveUp(true, reason, lastErr)
+	}
+}
+
+// clearReconnectGaveUpState resets gave-up state (called on successful reconnect).
+func clearReconnectGaveUpState(connName string) {
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.ClearReconnectGaveUp()
+	}
+}
+
+// agentUnavailableErrorMsg is the UX-2.5 message shown when an agent-based
+// connection fails authentication after sleep/resume because the SSH agent or
+// keychain is locked/unavailable.
+const agentUnavailableErrorMsg = "SSH agent may be unavailable — unlock your keychain or restart your SSH agent"
+
+// maybeSetAgentUnavailableError sets conn.Error (and fires a connchange event)
+// on the named connection with the agent-unavailable message. Called only on
+// the auth-failed path, and only when the last successful handshake used no
+// interactive prompt (agent/key-based, captured BEFORE the failed attempt —
+// a credential-rejection error clears authPromptState on the way out of
+// Connect). Permanent host-key / known_hosts errors never get this message:
+// their own error copy is the source of truth. (UX-2.5)
+func maybeSetAgentUnavailableError(connName string, wasAgentBasedAuth bool) {
+	if !wasAgentBasedAuth {
+		return
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.SetConnError(agentUnavailableErrorMsg)
+		conn.FireConnChangeEvent()
+	}
+}
+
+// schedulerAttemptErrorAction is the outcome of classifying a failed reconnect
+// attempt in the scheduler loop.
+type schedulerAttemptErrorAction struct {
+	stop         bool   // true if the scheduler should exit
+	gaveUpReason string // set when stopping with a gave-up reason (UX-1.1)
+	logMsg       string // scheduler log line for the stop reason
+}
+
+// classifySchedulerAttemptError decides how the reconnect scheduler should
+// respond to a failed reconnect attempt: keep retrying (re-arm countdown) or
+// stop (optionally recording a gave-up reason).
+//
+// UX-2.5: auth-failed on a connection whose last successful handshake used no
+// interactive prompt (agent/key-based) surfaces an agent-unavailable message
+// instead of a generic credential rejection — after sleep/resume the agent may
+// be locked or unavailable while the user's credentials are actually fine.
+// Permanent host-key / known_hosts / config errors never get that treatment.
+func classifySchedulerAttemptError(connName string, err error, wasAgentBasedAuth bool) schedulerAttemptErrorAction {
+	errorCode, errorSubCode := remote.ClassifyConnError(err)
+	// Early termination: auth-failed means the server is up but rejecting
+	// credentials. Retrying won't help — the user must fix credentials (or the
+	// agent must be unlocked). The requestPasswordRePrompt goroutine handles
+	// re-prompting; the scheduler should exit.
+	if errorCode == remote.ConnErrCode_AuthFailed {
+		if wasAgentBasedAuth {
+			maybeSetAgentUnavailableError(connName, true)
+		}
+		return schedulerAttemptErrorAction{
+			stop:         true,
+			gaveUpReason: "auth-failed",
+			logMsg:       "auth-failed during reconnect, stopping scheduler (server rejecting credentials)",
+		}
+	}
+	// UX-0.4: permanent handshake failures (host-key, known_hosts, config)
+	// must not silent-retry. Suppress is set in Connect; exit immediately.
+	// These never get the agent-unavailable message — the host-key/known_hosts
+	// error itself is the source of truth.
+	if remote.IsPermanentConnError(errorCode) {
+		return schedulerAttemptErrorAction{
+			stop:   true,
+			logMsg: fmt.Sprintf("permanent error %q during reconnect, stopping scheduler", errorCode),
+		}
+	}
+	// Early termination: connection-refused means the server is reachable but
+	// the SSH service is not accepting connections (port closed, daemon
+	// stopped, firewall rejecting). Retrying every 5s is wasteful —
+	// visibility-driven reconnect will retry on the next tab switch / app
+	// focus when the user returns.
+	if errorCode == remote.ConnErrCode_Dial && errorSubCode == remote.DialSubCode_Refused {
+		return schedulerAttemptErrorAction{
+			stop:         true,
+			gaveUpReason: "connection-refused",
+			logMsg:       "connection refused during reconnect, stopping scheduler (server not accepting connections)",
+		}
+	}
+	// Transient failure — keep retrying (the scheduler re-arms the countdown).
+	return schedulerAttemptErrorAction{stop: false}
 }
 
 func scheduleConnectionReconnect(connName string) {
@@ -976,6 +1211,7 @@ func scheduleConnectionReconnect(connName string) {
 
 		if time.Since(startTime) > maxDuration {
 			log.Printf("[conn:%s] reconnect scheduler reached max duration, stopping", connName)
+			setReconnectGaveUpState(connName, "max-duration")
 			clearRetryState(connName)
 			return
 		}
@@ -985,6 +1221,7 @@ func scheduleConnectionReconnect(connName string) {
 			log.Printf("[conn:%s] error checking connection status: %v", connName, checkErr)
 		} else if isConnected {
 			log.Printf("[conn:%s] connection is back up, stopping reconnect scheduler", connName)
+			clearReconnectGaveUpState(connName)
 			clearRetryState(connName)
 			return
 		}
@@ -994,6 +1231,8 @@ func scheduleConnectionReconnect(connName string) {
 		hasJobs := hasRunningDurableJobsForConn(ctx, connName)
 		cancelFn()
 		if !hasJobs {
+			// No blocks left — stop quietly without setting gave-up noise (UX-1.1 nit).
+			// A later durable job / Connect will start fresh without stale stop reason.
 			log.Printf("[conn:%s] no running durable jobs, stopping reconnect scheduler", connName)
 			clearRetryState(connName)
 			return
@@ -1009,6 +1248,12 @@ func scheduleConnectionReconnect(connName string) {
 			connectTimeout := 5 * time.Second
 			log.Printf("[conn:%s] scheduler attempt start (timeout=%s, aggressive=%v)", connName, connectTimeout, aggressiveMode)
 			attemptStart := time.Now()
+			// UX-2.5: capture whether the last successful handshake used no
+			// interactive prompt (agent/key-based) BEFORE this attempt. A
+			// credential-rejection error clears authPromptState on the way out
+			// of Connect, so the agent-unavailable decision must use the
+			// pre-attempt classification.
+			wasAgentBasedAuth := conncontroller.WasAgentBasedAuthByName(connName)
 			ctx, cancelFn := context.WithTimeout(context.Background(), connectTimeout)
 			err := conncontroller.AttemptReconnect(ctx, connName)
 			cancelFn()
@@ -1028,31 +1273,12 @@ func scheduleConnectionReconnect(connName string) {
 				isNetErr := isNetworkUnreachableError(err)
 				log.Printf("[conn:%s] scheduler attempt failed in %v (net-unreachable=%v): %v", connName, attemptDuration, isNetErr, err)
 
-				// Early termination: auth-failed means the server is up but
-				// rejecting credentials. Retrying won't help — the user must
-				// fix credentials. The requestPasswordRePrompt goroutine
-				// handles re-prompting; the scheduler should exit.
-				errorCode, errorSubCode := remote.ClassifyConnError(err)
-				if errorCode == remote.ConnErrCode_AuthFailed {
-					log.Printf("[conn:%s] auth-failed during reconnect, stopping scheduler (server rejecting credentials)", connName)
-					clearRetryState(connName)
-					return
-				}
-				// UX-0.4: permanent handshake failures (host-key, known_hosts,
-				// config) must not silent-retry. Suppress is set in Connect;
-				// exit the scheduler immediately.
-				if remote.IsPermanentConnError(errorCode) {
-					log.Printf("[conn:%s] permanent error %q during reconnect, stopping scheduler", connName, errorCode)
-					clearRetryState(connName)
-					return
-				}
-				// Early termination: connection-refused means the server is
-				// reachable but the SSH service is not accepting connections
-				// (port closed, daemon stopped, firewall rejecting). Retrying
-				// every 5s is wasteful — visibility-driven reconnect will retry
-				// on the next tab switch / app focus when the user returns.
-				if errorCode == remote.ConnErrCode_Dial && errorSubCode == remote.DialSubCode_Refused {
-					log.Printf("[conn:%s] connection refused during reconnect, stopping scheduler (server not accepting connections)", connName)
+				action := classifySchedulerAttemptError(connName, err, wasAgentBasedAuth)
+				if action.stop {
+					log.Printf("[conn:%s] %s", connName, action.logMsg)
+					if action.gaveUpReason != "" {
+						setReconnectGaveUpState(connName, action.gaveUpReason)
+					}
 					clearRetryState(connName)
 					return
 				}
@@ -1084,6 +1310,7 @@ func scheduleConnectionReconnect(connName string) {
 				}
 			} else {
 				log.Printf("[conn:%s] scheduler attempt succeeded in %v", connName, attemptDuration)
+				clearReconnectGaveUpState(connName)
 				clearRetryState(connName)
 				return
 			}
@@ -1095,15 +1322,31 @@ func scheduleConnectionReconnect(connName string) {
 			aggressiveMode = false
 		}
 
-		// Wait for next interval before retrying
+		// Wait for next interval before retrying.
+		// UX-2.7: Add per-connection jitter (±50% of interval) so multiple
+		// connections with active schedulers do not hammer the network
+		// simultaneously. This spreads out retry attempts naturally.
 		interval := ConnReconnectInterval
 		if aggressiveMode {
 			interval = ConnReconnectAggressiveInterval
 		}
-		timer := time.NewTimer(interval)
+		jitteredInterval := jitterInterval(interval)
+		timer := time.NewTimer(jitteredInterval)
 		<-timer.C
 		timer.Stop()
 	}
+}
+
+// jitterInterval returns d ± d/2 (randomized). Used to stagger retry
+// intervals across multiple connections so they don't fire simultaneously.
+// (UX-2.7)
+func jitterInterval(d time.Duration) time.Duration {
+	jitter := time.Duration(rand.Int63n(int64(d / 2)))
+	// Randomly add or subtract jitter
+	if rand.Intn(2) == 0 {
+		return d + jitter
+	}
+	return d - jitter
 }
 
 // hasRunningDurableJobsForConn checks if a connection has any running durable jobs.
@@ -1436,6 +1679,8 @@ func runOutputLoop(ctx context.Context, jobId string, streamId string, reader *s
 				health.totalBytes += int64(n)
 				jobStreamHealth.Set(jobId, health)
 			}
+			// UX-1.7: track catch-up drain progress for overlay
+			noteDrainBytesReceived(ctx, jobId, n)
 			appendErr := handleAppendJobFile(ctx, jobId, JobOutputFileName, buf[:n])
 			if appendErr != nil {
 				log.Printf("[job:%s] error appending data to WaveFS: %v", jobId, appendErr)
@@ -1974,6 +2219,14 @@ func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rt
 	if err != nil {
 		reader.Close()
 		return fmt.Errorf("failed to prepare connect: %w", err)
+	}
+
+	// UX-1.7: seed drain progress from remote StreamManager snapshot
+	if rtnData.DrainActive && rtnData.DrainRemainingBytes > 0 {
+		log.Printf("[job:%s] drain catch-up active total=%d remaining=%d", jobId, rtnData.DrainTotalBytes, rtnData.DrainRemainingBytes)
+		setJobDrainProgress(ctx, jobId, true, rtnData.DrainTotalBytes, rtnData.DrainRemainingBytes)
+	} else {
+		setJobDrainProgress(ctx, jobId, false, 0, 0)
 	}
 
 	if rtnData.HasExited {

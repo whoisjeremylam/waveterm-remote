@@ -341,7 +341,6 @@ type CommandEventReadHistoryData struct {
 	MaxItems int    `json:"maxitems"`
 }
 
-
 type CpuDataRequest struct {
 	Id    string `json:"id"`
 	Count int    `json:"count"`
@@ -375,6 +374,9 @@ type ConnRequest struct {
 	Host       string               `json:"host"`
 	Keywords   wconfig.ConnKeywords `json:"keywords,omitempty"`
 	LogBlockId string               `json:"logblockid,omitempty"`
+	// Force, when true, performs CloseInvoluntary then Connect if already
+	// connected/connecting. Preserves password cache (UX-1.3 stalled Reconnect Now).
+	Force bool `json:"force,omitempty"`
 }
 
 type RemoteInfo struct {
@@ -438,12 +440,18 @@ type ConnStatus struct {
 	ReconnectAttempt              int      `json:"reconnectattempt,omitempty"`
 	ReconnectNextAttempt          int64    `json:"reconnectnextattempt,omitempty"`
 	ReconnectError                string   `json:"reconnecterror,omitempty"`
+	ReconnectGaveUp               bool     `json:"reconnectgaveup,omitempty"`     // UX-1.1: scheduler exhausted retries
+	ReconnectStopReason           string   `json:"reconnectstopreason,omitempty"` // UX-1.1: "max-duration", "auth-failed", etc.
 	ForwardingRules               []string `json:"forwardingrules,omitempty"`
 	CanAutoReconnect              bool     `json:"canautoreconnect"` // true if scheduler can auto-reconnect without user input
 	// SuppressAutoReconnect is true after user Disconnect, Stop auto-retry,
 	// password Cancel, or permanent handshake failure. Auto paths no-op until
 	// explicit Reconnect (UX-0.1, UX-0.4, UX-0.5).
 	SuppressAutoReconnect bool `json:"suppressautoreconnect,omitempty"`
+	FlappingMode   bool `json:"flappingmode,omitempty"` // true when ≥3 reconnect attempts in last 30s (UX-2.2)
+	// AuthQueueWaiting is true while this connection is blocked on the per-window
+	// password prompt lock waiting for another conn to finish signing in (UX-1.6).
+	AuthQueueWaiting bool `json:"authqueuewaiting,omitempty"`
 }
 
 type WebSelectorOpts struct {
@@ -737,6 +745,10 @@ type CommandJobConnectRtnData struct {
 	ExitCode    *int   `json:"exitcode,omitempty"`
 	ExitSignal  string `json:"exitsignal,omitempty"`
 	ExitErr     string `json:"exiterr,omitempty"`
+	// UX-1.7: snapshot of remote StreamManager drain progress at PrepareConnect
+	DrainActive         bool  `json:"drainactive,omitempty"`
+	DrainTotalBytes     int64 `json:"draintotalbytes,omitempty"`
+	DrainRemainingBytes int64 `json:"drainremainingbytes,omitempty"`
 }
 
 type CommandJobCmdExitedData struct {
@@ -799,6 +811,10 @@ type BlockJobStatusData struct {
 	CmdExitTs     int64  `json:"cmdexitts,omitempty"`
 	CmdExitCode   *int   `json:"cmdexitcode,omitempty"`
 	CmdExitSignal string `json:"cmdexitsignal,omitempty"`
+	// UX-1.7: disk drain / catch-up progress after reconnect
+	DrainActive         bool  `json:"drainactive,omitempty"`
+	DrainTotalBytes     int64 `json:"draintotalbytes,omitempty"`
+	DrainRemainingBytes int64 `json:"drainremainingbytes,omitempty"`
 }
 
 type FocusedBlockData struct {
@@ -901,7 +917,7 @@ type CommandGitDiffData struct {
 type GitDiffResponse struct {
 	Original    string        `json:"original"`
 	Modified    string        `json:"modified"`
-	Language    string        `json:"language"`              // detected from file extension
+	Language    string        `json:"language"` // detected from file extension
 	Hunks       []GitDiffHunk `json:"hunks,omitempty"`
 	IsBinary    bool          `json:"isBinary,omitempty"`    // true if file contains binary content
 	IsTruncated bool          `json:"isTruncated,omitempty"` // true if content was truncated for size
@@ -911,12 +927,12 @@ type GitDiffResponse struct {
 // Git staging operations
 type CommandGitStageData struct {
 	Dir   string   `json:"dir,omitempty"` // working directory
-	Paths []string `json:"paths"`        // file paths to stage
+	Paths []string `json:"paths"`         // file paths to stage
 }
 
 type CommandGitUnstageData struct {
 	Dir   string   `json:"dir,omitempty"` // working directory
-	Paths []string `json:"paths"`        // file paths to unstage
+	Paths []string `json:"paths"`         // file paths to unstage
 }
 
 type CommandGitStageHunkData struct {
@@ -942,8 +958,8 @@ type GitDiffHunk struct {
 }
 
 type CommandGitCommitData struct {
-	Dir     string `json:"dir,omitempty"` // working directory
-	Message string `json:"message"`       // commit message
+	Dir     string `json:"dir,omitempty"`   // working directory
+	Message string `json:"message"`         // commit message
 	Amend   bool   `json:"amend,omitempty"` // amend the last commit
 }
 
@@ -953,13 +969,13 @@ type GitCommitResponse struct {
 }
 
 type CommandGitPushData struct {
-	Dir      string `json:"dir,omitempty"`       // working directory
-	Remote   string `json:"remote,omitempty"`    // remote name (default: origin)
-	Branch   string `json:"branch,omitempty"`    // branch name (default: current branch)
-	Username string `json:"username,omitempty"`  // for HTTPS auth
-	Password string `json:"password,omitempty"`  // for HTTPS auth
-	Force    bool   `json:"force,omitempty"`     // force push
-	SetUpstream bool `json:"setUpstream,omitempty"` // set upstream branch
+	Dir         string `json:"dir,omitempty"`         // working directory
+	Remote      string `json:"remote,omitempty"`      // remote name (default: origin)
+	Branch      string `json:"branch,omitempty"`      // branch name (default: current branch)
+	Username    string `json:"username,omitempty"`    // for HTTPS auth
+	Password    string `json:"password,omitempty"`    // for HTTPS auth
+	Force       bool   `json:"force,omitempty"`       // force push
+	SetUpstream bool   `json:"setUpstream,omitempty"` // set upstream branch
 }
 
 type GitPushResponse struct {

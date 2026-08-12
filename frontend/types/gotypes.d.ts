@@ -103,6 +103,9 @@ declare global {
         cmdexitts?: number;
         cmdexitcode?: number;
         cmdexitsignal?: string;
+        drainactive?: boolean;
+        draintotalbytes?: number;
+        drainremainingbytes?: number;
     };
 
     // wshrpc.BlocksListEntry
@@ -412,6 +415,9 @@ declare global {
         exitcode?: number;
         exitsignal?: string;
         exiterr?: string;
+        drainactive?: boolean;
+        draintotalbytes?: number;
+        drainremainingbytes?: number;
     };
 
     // wshrpc.CommandJobControllerAttachJobData
@@ -824,6 +830,7 @@ declare global {
         host: string;
         keywords?: ConnKeywords;
         logblockid?: string;
+        force?: boolean;
     };
 
     // wshrpc.ConnStatus
@@ -847,9 +854,13 @@ declare global {
         reconnectattempt?: number;
         reconnectnextattempt?: number;
         reconnecterror?: string;
+        reconnectgaveup?: boolean;
+        reconnectstopreason?: string;
         forwardingrules?: string[];
         canautoreconnect: boolean;
         suppressautoreconnect?: boolean;
+        flappingmode?: boolean;
+        authqueuewaiting?: boolean;
     };
 
     // wshrpc.CpuDataRequest
@@ -1602,6 +1613,8 @@ declare global {
         cancellabel?: string;
         connname?: string;
         prompttype?: string;
+        queueposition?: number;
+        queuetotal?: number;
     };
 
     // userinput.UserInputResponse

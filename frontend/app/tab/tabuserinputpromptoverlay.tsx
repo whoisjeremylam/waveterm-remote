@@ -9,7 +9,7 @@ import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { BlockEnv } from "@/app/block/blockenv";
 import { globalStore } from "@/app/store/jotaiStore";
 
-const tabHasTerminalBlockForConn = (
+const tabHasBlockForConn = (
     waveEnv: ReturnType<typeof useWaveEnv<BlockEnv>>,
     blockIds: string[],
     connName: string,
@@ -19,7 +19,9 @@ const tabHasTerminalBlockForConn = (
         const connAtom = waveEnv.getBlockMetaKeyAtom(blockId, "connection");
         const view = globalStore.get(viewAtom);
         const blockConn = globalStore.get(connAtom);
-        if (view === "term" && blockConn === connName) {
+        // Include ALL view types (term, preview, scm, process, etc.) —
+        // any block on the tab that shares this connection is relevant. (UX-2.3)
+        if (view && blockConn === connName) {
             return true;
         }
     }
@@ -39,7 +41,7 @@ export const TabUserInputPromptOverlay = React.memo(
 
         const connNamesForThisTab: string[] = [];
         for (const connName of Object.keys(activeUserInputPrompts)) {
-            if (tabHasTerminalBlockForConn(waveEnv, blockIds, connName)) {
+            if (tabHasBlockForConn(waveEnv, blockIds, connName)) {
                 connNamesForThisTab.push(connName);
             }
         }

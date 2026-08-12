@@ -462,7 +462,7 @@ func createPublicKeyCallback(connCtx context.Context, sshKeywords *wconfig.ConnK
 		request := &userinput.UserInputRequest{
 			ResponseType: "text",
 			QueryText:    fmt.Sprintf("Enter passphrase for the SSH key: %s", identityFile),
-			Title:        "Publickey Auth + Passphrase",
+			Title:        "Key passphrase",
 			PromptType:   "passphrase",
 		}
 		if connData := genconn.GetConnData(connCtx); connData != nil {
