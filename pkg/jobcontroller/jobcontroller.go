@@ -95,6 +95,17 @@ type streamHealthInfo struct {
 	streamId   string
 }
 
+// drainProgressInfo tracks UX-1.7 catch-up progress for a job after reconnect.
+// Seeded from remote PrepareConnect drain snapshot; decremented as runOutputLoop
+// receives bytes. Cleared when remaining hits 0.
+type drainProgressInfo struct {
+	active         bool
+	totalBytes     int64
+	remainingBytes int64
+	// lastEventAt throttles BlockJobStatus events during large drains
+	lastEventAt time.Time
+}
+
 type jobState struct {
 	stateLock       sync.Mutex
 	isConnecting    bool
@@ -123,6 +134,9 @@ var (
 	// Used to diagnose whether a "Connected" job has an active stream pulling data
 	// from the remote, or is stuck in a Connected-but-no-stream state (failure mode B).
 	jobStreamHealth = ds.MakeSyncMap[streamHealthInfo]()
+
+	// jobDrainProgress tracks UX-1.7 disk drain / catch-up progress per job.
+	jobDrainProgress = ds.MakeSyncMap[drainProgressInfo]()
 
 	jobTerminationMessageWritten = ds.MakeSyncMap[bool]()
 
@@ -163,11 +177,11 @@ var (
 	connectionReconnectSchedulers = ds.MakeSyncMap[bool]()
 )
 
-const ConnReconnectInterval              = 5 * time.Second
-const ConnReconnectMaxDuration           = 5 * time.Minute  // cap for interactive-attempt connections (defensive; interactive conns rarely reach the scheduler post-fix-#1)
-const ConnReconnectMaxDurationSilent     = 15 * time.Minute // cap for silently-reconnectable connections (key-based / cached password) — silent retries are cheap
-const ConnReconnectAggressiveInterval    = 3 * time.Second
-const ConnReconnectAggressiveDuration    = 2 * time.Minute
+const ConnReconnectInterval = 5 * time.Second
+const ConnReconnectMaxDuration = 5 * time.Minute        // cap for interactive-attempt connections (defensive; interactive conns rarely reach the scheduler post-fix-#1)
+const ConnReconnectMaxDurationSilent = 15 * time.Minute // cap for silently-reconnectable connections (key-based / cached password) — silent retries are cheap
+const ConnReconnectAggressiveInterval = 3 * time.Second
+const ConnReconnectAggressiveDuration = 2 * time.Minute
 
 func InitJobController() {
 	go connReconcileWorker()
@@ -278,7 +292,65 @@ func GetBlockJobStatus(ctx context.Context, blockId string) (*wshrpc.BlockJobSta
 		}
 	}
 
+	// UX-1.7: include drain catch-up progress when active
+	if drain, ok := jobDrainProgress.GetEx(job.OID); ok && drain.active && drain.remainingBytes > 0 {
+		data.DrainActive = true
+		data.DrainTotalBytes = drain.totalBytes
+		data.DrainRemainingBytes = drain.remainingBytes
+	}
+
 	return data, nil
+}
+
+// setJobDrainProgress seeds or clears UX-1.7 drain tracking for a job and
+// publishes a block job status event when the attached block is known.
+func setJobDrainProgress(ctx context.Context, jobId string, active bool, total, remaining int64) {
+	if !active || remaining <= 0 {
+		jobDrainProgress.Delete(jobId)
+	} else {
+		jobDrainProgress.Set(jobId, drainProgressInfo{
+			active:         true,
+			totalBytes:     total,
+			remainingBytes: remaining,
+			lastEventAt:    time.Now(),
+		})
+	}
+	sendBlockJobStatusEventByJobId(ctx, jobId)
+}
+
+func sendBlockJobStatusEventByJobId(ctx context.Context, jobId string) {
+	job, err := wstore.DBGet[*waveobj.Job](ctx, jobId)
+	if err != nil || job == nil || job.AttachedBlockId == "" {
+		return
+	}
+	SendBlockJobStatusEvent(ctx, job.AttachedBlockId)
+}
+
+// noteDrainBytesReceived decrements drain remaining as stream data arrives.
+// Publishes status at most ~4 times/sec while draining.
+func noteDrainBytesReceived(ctx context.Context, jobId string, n int) {
+	if n <= 0 {
+		return
+	}
+	drain, ok := jobDrainProgress.GetEx(jobId)
+	if !ok || !drain.active {
+		return
+	}
+	drain.remainingBytes -= int64(n)
+	if drain.remainingBytes <= 0 {
+		jobDrainProgress.Delete(jobId)
+		sendBlockJobStatusEventByJobId(ctx, jobId)
+		return
+	}
+	now := time.Now()
+	shouldPublish := now.Sub(drain.lastEventAt) >= 250*time.Millisecond
+	if shouldPublish {
+		drain.lastEventAt = now
+	}
+	jobDrainProgress.Set(jobId, drain)
+	if shouldPublish {
+		sendBlockJobStatusEventByJobId(ctx, jobId)
+	}
 }
 
 func SendBlockJobStatusEvent(ctx context.Context, blockId string) {
@@ -950,6 +1022,37 @@ func clearRetryState(connName string) {
 	}
 }
 
+// setReconnectGaveUpState records that the scheduler gave up.
+// UX-1.1: persists the stop reason so the frontend can show contextual copy.
+// Snapshots the last reconnect/connect error so clearRetryState does not wipe it.
+func setReconnectGaveUpState(connName string, reason string) {
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		status := conn.DeriveConnStatus()
+		lastErr := status.ReconnectError
+		if lastErr == "" {
+			lastErr = status.Error
+		}
+		conn.SetReconnectGaveUp(true, reason, lastErr)
+	}
+}
+
+// clearReconnectGaveUpState resets gave-up state (called on successful reconnect).
+func clearReconnectGaveUpState(connName string) {
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := conncontroller.MaybeGetConn(connOpts)
+	if conn != nil {
+		conn.ClearReconnectGaveUp()
+	}
+}
+
 func scheduleConnectionReconnect(connName string) {
 	log.Printf("[conn:%s] reconnect scheduler started", connName)
 	startTime := time.Now()
@@ -976,6 +1079,7 @@ func scheduleConnectionReconnect(connName string) {
 
 		if time.Since(startTime) > maxDuration {
 			log.Printf("[conn:%s] reconnect scheduler reached max duration, stopping", connName)
+			setReconnectGaveUpState(connName, "max-duration")
 			clearRetryState(connName)
 			return
 		}
@@ -985,6 +1089,7 @@ func scheduleConnectionReconnect(connName string) {
 			log.Printf("[conn:%s] error checking connection status: %v", connName, checkErr)
 		} else if isConnected {
 			log.Printf("[conn:%s] connection is back up, stopping reconnect scheduler", connName)
+			clearReconnectGaveUpState(connName)
 			clearRetryState(connName)
 			return
 		}
@@ -994,6 +1099,8 @@ func scheduleConnectionReconnect(connName string) {
 		hasJobs := hasRunningDurableJobsForConn(ctx, connName)
 		cancelFn()
 		if !hasJobs {
+			// No blocks left — stop quietly without setting gave-up noise (UX-1.1 nit).
+			// A later durable job / Connect will start fresh without stale stop reason.
 			log.Printf("[conn:%s] no running durable jobs, stopping reconnect scheduler", connName)
 			clearRetryState(connName)
 			return
@@ -1035,6 +1142,7 @@ func scheduleConnectionReconnect(connName string) {
 				errorCode, errorSubCode := remote.ClassifyConnError(err)
 				if errorCode == remote.ConnErrCode_AuthFailed {
 					log.Printf("[conn:%s] auth-failed during reconnect, stopping scheduler (server rejecting credentials)", connName)
+					setReconnectGaveUpState(connName, "auth-failed")
 					clearRetryState(connName)
 					return
 				}
@@ -1053,6 +1161,7 @@ func scheduleConnectionReconnect(connName string) {
 				// on the next tab switch / app focus when the user returns.
 				if errorCode == remote.ConnErrCode_Dial && errorSubCode == remote.DialSubCode_Refused {
 					log.Printf("[conn:%s] connection refused during reconnect, stopping scheduler (server not accepting connections)", connName)
+					setReconnectGaveUpState(connName, "connection-refused")
 					clearRetryState(connName)
 					return
 				}
@@ -1084,6 +1193,7 @@ func scheduleConnectionReconnect(connName string) {
 				}
 			} else {
 				log.Printf("[conn:%s] scheduler attempt succeeded in %v", connName, attemptDuration)
+				clearReconnectGaveUpState(connName)
 				clearRetryState(connName)
 				return
 			}
@@ -1437,6 +1547,8 @@ func runOutputLoop(ctx context.Context, jobId string, streamId string, reader *s
 				health.totalBytes += int64(n)
 				jobStreamHealth.Set(jobId, health)
 			}
+			// UX-1.7: track catch-up drain progress for overlay
+			noteDrainBytesReceived(ctx, jobId, n)
 			appendErr := handleAppendJobFile(ctx, jobId, JobOutputFileName, buf[:n])
 			if appendErr != nil {
 				log.Printf("[job:%s] error appending data to WaveFS: %v", jobId, appendErr)
@@ -1919,6 +2031,14 @@ func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rt
 	if err != nil {
 		reader.Close()
 		return fmt.Errorf("failed to prepare connect: %w", err)
+	}
+
+	// UX-1.7: seed drain progress from remote StreamManager snapshot
+	if rtnData.DrainActive && rtnData.DrainRemainingBytes > 0 {
+		log.Printf("[job:%s] drain catch-up active total=%d remaining=%d", jobId, rtnData.DrainTotalBytes, rtnData.DrainRemainingBytes)
+		setJobDrainProgress(ctx, jobId, true, rtnData.DrainTotalBytes, rtnData.DrainRemainingBytes)
+	} else {
+		setJobDrainProgress(ctx, jobId, false, 0, 0)
 	}
 
 	if rtnData.HasExited {
