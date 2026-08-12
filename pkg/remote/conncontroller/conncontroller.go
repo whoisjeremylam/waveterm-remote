@@ -95,6 +95,12 @@ var ErrAutoReconnectSuppressed = errors.New("auto-reconnect suppressed")
 // not import jobcontroller). Nil-safe; optional.
 var OnUserSuppressAutoReconnect func(connName string)
 
+func init() {
+	// UX-1.6: surface "Waiting to sign in…" while blocked on the password queue.
+	// Registered here to avoid userinput → conncontroller import cycle.
+	userinput.OnAuthQueueWait = SetAuthQueueWaitingByName
+}
+
 type SSHConn struct {
 	lock          *sync.Mutex // this lock protects the fields in the struct from concurrent access
 	lifecycleLock *sync.Mutex // this protects the lifecycle from concurrent calls
@@ -124,11 +130,14 @@ type SSHConn struct {
 	LocalForwardListeners  []ForwardingRule
 	RemoteForwardListeners []ForwardingRule
 
-	PendingAuth      bool          // true while waiting for user auth input
-	pendingAuthDone  chan struct{} // closed when PendingAuth transitions to false
-	CachedPassword   *string       // cached password for reconnect (in-memory only)
-	LastConnectTryAt int64         // UnixMilli of last Connect() attempt (cooldown guard)
-	LastErrorCode    string        // error code from last failed Connect() (e.g., "auth-failed")
+	PendingAuth     bool          // true while waiting for user auth input
+	pendingAuthDone chan struct{} // closed when PendingAuth transitions to false
+	// AuthQueueWaiting is true while this conn is blocked on the per-window
+	// password-prompt lock (another conn is actively prompting). UX-1.6.
+	AuthQueueWaiting bool
+	CachedPassword   *string // cached password for reconnect (in-memory only)
+	LastConnectTryAt int64   // UnixMilli of last Connect() attempt (cooldown guard)
+	LastErrorCode    string  // error code from last failed Connect() (e.g., "auth-failed")
 
 	// SuppressAutoReconnect is a sticky "do not auto-reconnect" flag. Set by
 	// user-initiated Disconnect (Close), Stop auto-retry (PauseAutoReconnect),
@@ -208,21 +217,32 @@ func (conn *SSHConn) ClearReconnectState() {
 	conn.WithLock(func() {
 		conn.ReconnectAttempt = 0
 		conn.ReconnectNextAttempt = 0
-		conn.ReconnectError = ""
+		// UX-1.1: keep last reconnect error after give-up so GaveUpOverlay can
+		// show "Last error: …". Clear it once give-up is reset or a new attempt arms.
+		if !conn.ReconnectGaveUp {
+			conn.ReconnectError = ""
+		}
 	})
 }
 
 // SetReconnectGaveUp marks the scheduler as having given up with the given reason.
 // UX-1.1: persisted state so the frontend can show contextual copy.
-func (conn *SSHConn) SetReconnectGaveUp(gaveUp bool, reason string) {
+// When lastError is non-empty it is stored as ReconnectError (survives ClearReconnectState).
+func (conn *SSHConn) SetReconnectGaveUp(gaveUp bool, reason string, lastError string) {
 	conn.WithLock(func() {
 		conn.ReconnectGaveUp = gaveUp
 		conn.ReconnectStopReason = reason
+		if lastError != "" {
+			conn.ReconnectError = lastError
+		} else if gaveUp && conn.ReconnectError == "" && conn.Error != "" {
+			// Fall back to the last connect error when no scheduler error was recorded.
+			conn.ReconnectError = conn.Error
+		}
 	})
 	conn.FireConnChangeEvent()
 }
 
-// ClearReconnectGaveUp resets gave-up state (called on explicit Reconnect).
+// ClearReconnectGaveUp resets gave-up state (called on explicit Reconnect / successful Connect).
 func (conn *SSHConn) ClearReconnectGaveUp() {
 	conn.WithLock(func() {
 		conn.ReconnectGaveUp = false
@@ -254,9 +274,9 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 	// - And SuppressAutoReconnect is not set (user Disconnect / Stop retry / cancel)
 	canAutoReconnect := conn.canAutoReconnectLocked()
 	return wshrpc.ConnStatus{
-		Status:                        conn.Status,
-		Connected:                     conn.Status == Status_Connected,
-		Connection:                    conn.Opts.String(),
+		Status:     conn.Status,
+		Connected:  conn.Status == Status_Connected,
+		Connection: conn.Opts.String(),
 		// ConnectCount is persisted across restarts; LastConnectTime is session-scoped.
 		// Either signal means this host has been used and belongs in ConnList.
 		HasConnected:                  (conn.LastConnectTime > 0 || conn.ConnectCount > 0),
@@ -280,6 +300,7 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 		ForwardingRules:               forwardingRules,
 		CanAutoReconnect:              canAutoReconnect,
 		SuppressAutoReconnect:         conn.SuppressAutoReconnect,
+		AuthQueueWaiting:              conn.AuthQueueWaiting,
 	}
 }
 
@@ -328,7 +349,13 @@ func (conn *SSHConn) CloseInvoluntary() error {
 func (conn *SSHConn) closeInternal(clearPassword bool) error {
 	conn.lifecycleLock.Lock()
 	defer conn.lifecycleLock.Unlock()
+	conn.closeWithLifecycleLock(clearPassword)
+	return nil
+}
 
+// closeWithLifecycleLock performs disconnect assuming lifecycleLock is held.
+// Used by closeInternal and ForceReconnect (close+connect under one lock).
+func (conn *SSHConn) closeWithLifecycleLock(clearPassword bool) {
 	conn.WithLock(func() {
 		if conn.Status == Status_Connected || conn.Status == Status_Connecting {
 			// if status is init, disconnected, or error don't change it
@@ -357,7 +384,6 @@ func (conn *SSHConn) closeInternal(clearPassword bool) error {
 		OnUserSuppressAutoReconnect(conn.GetName())
 	}
 	conn.closeInternal_withlifecyclelock(nil)
-	return nil
 }
 
 // IsSuppressAutoReconnect reports whether auto-reconnect paths must no-op.
@@ -1111,11 +1137,79 @@ func (conn *SSHConn) WaitForConnect(ctx context.Context) error {
 	}
 }
 
+// ForceReconnect performs an involuntary close (preserves password cache) then
+// Connect under a single lifecycleLock hold. Used by stalled "Reconnect Now"
+// (UX-1.3) so a healthy-looking but stalled connection can be healed without
+// ConnDisconnect clearing credentials.
+//
+// Holding the lock across close+connect closes the race where CloseInvoluntary
+// fires ConnChange → scheduler AttemptReconnect acquires lifecycleLock before
+// the user's Force Connect (which then hits "already connecting/connected").
+// Concurrent Force calls serialize on the same lock; a second call that finds
+// the conn already healthy after the first finishes is a no-op (double-click).
+func (conn *SSHConn) ForceReconnect(ctx context.Context, connFlags *wconfig.ConnKeywords) error {
+	conn.lifecycleLock.Lock()
+	defer conn.lifecycleLock.Unlock()
+
+	status := conn.GetStatus()
+	health := conn.GetConnHealthStatus()
+
+	// Double-click / serialized second Force after a successful heal: do not
+	// tear down a just-reconnected healthy session. Stall path is Connected+Stalled.
+	if status == Status_Connected && health != ConnHealthStatus_Stalled {
+		conn.Infof(ctx, "ForceReconnect: already connected (health=%q), no-op\n", health)
+		return nil
+	}
+
+	if status == Status_Connected || status == Status_Connecting {
+		conn.Infof(ctx, "ForceReconnect: involuntary close while status=%q health=%q (preserve password cache)\n", status, health)
+		conn.closeWithLifecycleLock(false /* clearPassword */)
+	}
+	return conn.connectWithLifecycleLock(ctx, connFlags)
+}
+
+// SetAuthQueueWaiting marks whether this connection is blocked waiting for the
+// per-window auth prompt lock (UX-1.6 "Waiting to sign in…").
+func (conn *SSHConn) SetAuthQueueWaiting(waiting bool) {
+	changed := false
+	conn.WithLock(func() {
+		if conn.AuthQueueWaiting != waiting {
+			conn.AuthQueueWaiting = waiting
+			changed = true
+		}
+	})
+	if changed {
+		conn.FireConnChangeEvent()
+	}
+}
+
+// SetAuthQueueWaitingByName looks up a connection by name and sets AuthQueueWaiting.
+// Safe no-op when the name is empty/local/unknown (used from userinput package).
+func SetAuthQueueWaitingByName(connName string, waiting bool) {
+	if connName == "" || IsLocalConnName(connName) {
+		return
+	}
+	connOpts, err := remote.ParseOpts(connName)
+	if err != nil {
+		return
+	}
+	conn := MaybeGetConn(connOpts)
+	if conn == nil {
+		return
+	}
+	conn.SetAuthQueueWaiting(waiting)
+}
+
 // does not return an error since that error is stored inside of SSHConn
 func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeywords) error {
 	conn.lifecycleLock.Lock()
 	defer conn.lifecycleLock.Unlock()
+	return conn.connectWithLifecycleLock(ctx, connFlags)
+}
 
+// connectWithLifecycleLock performs Connect assuming lifecycleLock is held.
+// Callers: Connect and ForceReconnect (close+connect under one lock).
+func (conn *SSHConn) connectWithLifecycleLock(ctx context.Context, connFlags *wconfig.ConnKeywords) error {
 	blocklogger.Infof(ctx, "\n")
 	var connectAllowed bool
 	conn.WithLock(func() {
@@ -1128,6 +1222,10 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 			// Auto paths (EnsureConnection, AttemptReconnect) must check
 			// SuppressAutoReconnect before calling Connect so they no-op.
 			conn.SuppressAutoReconnect = false
+			// Clear stale give-up state at the start of any Connect so a manual
+			// retry does not keep old max-duration / refused copy if it fails again.
+			conn.ReconnectGaveUp = false
+			conn.ReconnectStopReason = ""
 			connectAllowed = true
 		}
 	})
@@ -1235,6 +1333,11 @@ func (conn *SSHConn) Connect(ctx context.Context, connFlags *wconfig.ConnKeyword
 			conn.LastConnectTime = time.Now().UnixMilli()
 			connName = conn.GetName()
 			conn.LastErrorCode = "" // clear error code on success
+			// Any successful connect clears give-up (manual, scheduler, Ensure).
+			conn.ReconnectGaveUp = false
+			conn.ReconnectStopReason = ""
+			conn.ReconnectError = ""
+			conn.AuthQueueWaiting = false
 			// authPromptState is set in connectInternal before we get here.
 			interactivePromptUsed = conn.authPromptState.Load() == authPromptUsed
 			if conn.ActiveConnNum == 0 {
@@ -1379,11 +1482,11 @@ func (conn *SSHConn) requestPasswordRePrompt() {
 			ResponseType: "text",
 			// UX-1.4: Add "Incorrect password" feedback so the user knows why
 			// they're being re-prompted (auth-failed triggered this path).
-			QueryText:   fmt.Sprintf("Incorrect password — please try again.\n\nPassword for connection  \n%s\n\nPassword:", conn.GetName()),
-			Markdown:    true,
-			Title:       "Password Authentication",
-			PromptType:  "password",
-			ConnName:    conn.GetName(),
+			QueryText:  fmt.Sprintf("Incorrect password — please try again.\n\nPassword for connection  \n%s\n\nPassword:", conn.GetName()),
+			Markdown:   true,
+			Title:      "Password Authentication",
+			PromptType: "password",
+			ConnName:   conn.GetName(),
 		}
 		response, err := userinput.GetUserInput(ctx, request)
 		if err != nil {
@@ -2568,7 +2671,25 @@ func AttemptReconnect(ctx context.Context, connName string) error {
 	if status == Status_Connected {
 		return nil
 	}
-	return conn.Connect(ctx, &wconfig.ConnKeywords{})
+	// Another path (ForceReconnect, EnsureConnection) may already be connecting;
+	// wait for it instead of racing Connect and treating "already connecting" as failure.
+	if status == Status_Connecting {
+		return conn.WaitForConnect(ctx)
+	}
+	err = conn.Connect(ctx, &wconfig.ConnKeywords{})
+	if err == nil {
+		return nil
+	}
+	// Lost the lifecycleLock race to ForceReconnect/another Connect: treat an
+	// in-flight or completed peer connect as success for the scheduler.
+	status = conn.GetStatus()
+	if status == Status_Connected {
+		return nil
+	}
+	if status == Status_Connecting {
+		return conn.WaitForConnect(ctx)
+	}
+	return err
 }
 
 // IsSuppressAutoReconnectByName returns true if the named connection has the

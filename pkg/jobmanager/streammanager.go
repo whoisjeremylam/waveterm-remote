@@ -75,9 +75,9 @@ type StreamManager struct {
 	drainGen     int64    // generation counter: incremented on disconnect to kill old drain goroutines
 
 	// UX-1.7: drain progress tracking for catch-up indicator
-	DrainActive          bool
-	DrainTotalBytes      int64
-	DrainRemainingBytes  int64
+	DrainActive         bool
+	DrainTotalBytes     int64
+	DrainRemainingBytes int64
 }
 
 // SetJobId sets the job ID for disk file path generation. Must be called before
@@ -207,6 +207,20 @@ func (sm *StreamManager) GetStreamId() string {
 	sm.lock.Lock()
 	defer sm.lock.Unlock()
 	return sm.streamId
+}
+
+// GetDrainProgress returns UX-1.7 catch-up counters. When remaining hits 0,
+// DrainActive is cleared so callers stop showing the catch-up indicator even
+// if the drain goroutine is still watching for live output.
+func (sm *StreamManager) GetDrainProgress() (active bool, total int64, remaining int64) {
+	sm.lock.Lock()
+	defer sm.lock.Unlock()
+	if sm.DrainActive && sm.DrainRemainingBytes <= 0 {
+		sm.DrainActive = false
+		sm.DrainTotalBytes = 0
+		sm.DrainRemainingBytes = 0
+	}
+	return sm.DrainActive, sm.DrainTotalBytes, sm.DrainRemainingBytes
 }
 
 // GetStreamDoneInfo returns whether the stream is done and the error if there was one.
@@ -554,8 +568,19 @@ func (sm *StreamManager) drainDiskToCirBuf(myGen int64) {
 				if sm.drainGen == myGen {
 					sm.diskReadPos += int64(nw)
 					// UX-1.7: update remaining bytes for catch-up indicator
-					if sm.diskEndSeq-sm.diskReadPos < sm.DrainRemainingBytes {
-						sm.DrainRemainingBytes = sm.diskEndSeq - sm.diskReadPos
+					remaining := sm.diskEndSeq - sm.diskReadPos
+					if remaining < 0 {
+						remaining = 0
+					}
+					if remaining < sm.DrainRemainingBytes {
+						sm.DrainRemainingBytes = remaining
+					}
+					// Clear active once caught up so UI does not linger while
+					// the goroutine waits for a terminal event / more disk data.
+					if sm.DrainRemainingBytes <= 0 && sm.DrainActive {
+						sm.DrainActive = false
+						sm.DrainTotalBytes = 0
+						sm.DrainRemainingBytes = 0
 					}
 				}
 				sm.drainCond.Signal()

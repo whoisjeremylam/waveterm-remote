@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/wavetermdev/waveterm/pkg/blocklogger"
 	"github.com/wavetermdev/waveterm/pkg/genconn"
-	"github.com/wavetermdev/waveterm/pkg/util/utilfn"
 	"github.com/wavetermdev/waveterm/pkg/wps"
 	"github.com/wavetermdev/waveterm/pkg/wstore"
 )
@@ -31,21 +30,26 @@ type UserInputProvider interface {
 }
 
 type UserInputRequest struct {
-	RequestId    string `json:"requestid"`
-	QueryText    string `json:"querytext"`
-	ResponseType string `json:"responsetype"`
-	Title        string `json:"title"`
-	Markdown     bool   `json:"markdown"`
-	TimeoutMs    int    `json:"timeoutms"`
-	CheckBoxMsg  string `json:"checkboxmsg"`
-	PublicText   bool   `json:"publictext"`
-	OkLabel      string `json:"oklabel,omitempty"`
-	CancelLabel  string `json:"cancellabel,omitempty"`
-	ConnName     string `json:"connname,omitempty"`
-	PromptType   string `json:"prompttype,omitempty"`   // "password", "confirm", etc.
-	QueuePosition int   `json:"queueposition,omitempty"` // UX-1.6: 1-based position in prompt queue
-	QueueTotal    int   `json:"queuetotal,omitempty"`    // UX-1.6: total queued prompts for this window
+	RequestId     string `json:"requestid"`
+	QueryText     string `json:"querytext"`
+	ResponseType  string `json:"responsetype"`
+	Title         string `json:"title"`
+	Markdown      bool   `json:"markdown"`
+	TimeoutMs     int    `json:"timeoutms"`
+	CheckBoxMsg   string `json:"checkboxmsg"`
+	PublicText    bool   `json:"publictext"`
+	OkLabel       string `json:"oklabel,omitempty"`
+	CancelLabel   string `json:"cancellabel,omitempty"`
+	ConnName      string `json:"connname,omitempty"`
+	PromptType    string `json:"prompttype,omitempty"`    // "password", "confirm", etc.
+	QueuePosition int    `json:"queueposition,omitempty"` // UX-1.6: 1-based position in prompt queue
+	QueueTotal    int    `json:"queuetotal,omitempty"`    // UX-1.6: total queued prompts for this window
 }
+
+// OnAuthQueueWait is invoked when an SSH auth prompt starts/stops waiting on
+// the per-window prompt lock. conncontroller registers this to surface
+// "Waiting to sign in…" on blocked connections (UX-1.6). Nil-safe.
+var OnAuthQueueWait func(connName string, waiting bool)
 
 type UserInputResponse struct {
 	Type         string `json:"type"`
@@ -109,6 +113,28 @@ func popWindowPromptWaiter(windowId string, connName string) {
 	if len(windowPromptWaiters[windowId]) == 0 {
 		delete(windowPromptWaiters, windowId)
 	}
+}
+
+// queuePosForConn returns 1-based position and total for connName in the window
+// waiter list. Returns (0, 0) if not found.
+func queuePosForConn(windowId string, connName string) (pos int, total int) {
+	windowPromptWaitersMu.Lock()
+	defer windowPromptWaitersMu.Unlock()
+	waiters := windowPromptWaiters[windowId]
+	total = len(waiters)
+	for i, name := range waiters {
+		if name == connName {
+			return i + 1, total
+		}
+	}
+	return 0, total
+}
+
+func notifyAuthQueueWait(connName string, waiting bool) {
+	if connName == "" || OnAuthQueueWait == nil {
+		return
+	}
+	OnAuthQueueWait(connName, waiting)
 }
 
 // acquireWindowPromptLock returns (and lazily creates) the per-window mutex
@@ -290,7 +316,8 @@ func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputR
 	id, uiCh := MainUserInputHandler.registerChannel(request.ConnName, isAuth)
 	defer MainUserInputHandler.unregisterChannel(id)
 	request.RequestId = id
-	request.TimeoutMs = int(utilfn.TimeoutFromContext(ctx, 30*time.Second).Milliseconds())
+	// TimeoutMs is set after the queue lock is held so the UI countdown reflects
+	// the actual prompt wait, not queue wait (UX-1.6).
 
 	log.Printf("[PW-PROMPT] GetUserInput: connName=%q requestId=%q promptType=%q", request.ConnName, request.RequestId, request.PromptType)
 
@@ -325,22 +352,56 @@ func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputR
 	//
 	// UX-1.6: Track queue position so the frontend can show "Signing in to
 	// host A (1 of N)" when multiple connections need auth on one window.
+	// Queue wait is decoupled from the prompt/handshake timeout: we wait for
+	// the lock under the parent ctx only (no short 60s timer), then start a
+	// fresh prompt timeout after the lock is held.
 	var windowPromptLock *sync.Mutex
-	var queueTotal int
-	if isSSHAuthPrompt(request.PromptType) && len(scopes) >= 1 {
-		windowId := scopes[0]
+	var windowId string
+	if isAuth && len(scopes) >= 1 {
+		windowId = scopes[0]
 		windowPromptLock = acquireWindowPromptLock(windowId)
-		// Register this connName as a waiter (position includes itself)
-		queueTotal = pushWindowPromptWaiter(windowId, request.ConnName)
-		request.QueuePosition = queueTotal
-		request.QueueTotal = queueTotal
-		windowPromptLock.Lock()
+		pushWindowPromptWaiter(windowId, request.ConnName)
+
+		// Only surface "Waiting to sign in…" when the lock is contended.
+		// TryLock success → sole/first prompter; never flash a false wait state.
+		if !windowPromptLock.TryLock() {
+			notifyAuthQueueWait(request.ConnName, true)
+			// Acquire lock without coupling to handshake/prompt deadline. Only
+			// abort queue wait on explicit cancel (Stop / AbortConnect), not on
+			// parent deadline — that deadline was for dial/prompt, not queue.
+			if err := waitForWindowPromptLock(ctx, windowPromptLock); err != nil {
+				popWindowPromptWaiter(windowId, request.ConnName)
+				notifyAuthQueueWait(request.ConnName, false)
+				return nil, err
+			}
+			// Now holding the lock — no longer "waiting to sign in".
+			notifyAuthQueueWait(request.ConnName, false)
+		}
+
+		// Fresh position after lock (earlier waiters may have finished).
+		pos, total := queuePosForConn(windowId, request.ConnName)
+		if pos == 0 {
+			// Should not happen; treat as sole active prompt.
+			pos, total = 1, 1
+		}
+		request.QueuePosition = pos
+		request.QueueTotal = total
 		defer func() {
 			windowPromptLock.Unlock()
 			popWindowPromptWaiter(windowId, request.ConnName)
 		}()
-		log.Printf("[PW-PROMPT] acquired window prompt lock for window=%q connName=%q requestId=%q queuePos=%d/%d", windowId, request.ConnName, request.RequestId, queueTotal, queueTotal)
+		log.Printf("[PW-PROMPT] acquired window prompt lock for window=%q connName=%q requestId=%q queuePos=%d/%d", windowId, request.ConnName, request.RequestId, pos, total)
 	}
+
+	// Prompt timeout starts only after queue lock (or immediately if no queue).
+	// Fresh 60s timer — not remaining parent deadline (queue wait may have
+	// consumed most of it). Parent cancel still aborts the prompt wait.
+	const promptWait = 60 * time.Second
+	promptCtx, promptCancel := context.WithTimeout(context.Background(), promptWait)
+	defer promptCancel()
+	stopPromptWatch := watchContextCanceled(ctx, promptCancel)
+	defer stopPromptWatch()
+	request.TimeoutMs = int(promptWait.Milliseconds())
 
 	MainUserInputHandler.sendRequestToFrontend(request, scopes)
 
@@ -349,12 +410,12 @@ func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputR
 	select {
 	case resp := <-uiCh:
 		response = resp
-	case <-ctx.Done():
+	case <-promptCtx.Done():
 		// Do NOT use "Canceled by the user" here — that string is reserved for
 		// explicit UI Cancel / CancelAllAuthPrompts. Parent/scheduler context
 		// cancel must not sticky-suppress auto-reconnect.
 		if errors.Is(ctx.Err(), context.Canceled) {
-			return nil, fmt.Errorf("input wait canceled: %w", ctx.Err())
+			return nil, fmt.Errorf("input wait canceled: %w", context.Canceled)
 		}
 		return nil, fmt.Errorf("timed out waiting for user input")
 	}
@@ -364,6 +425,62 @@ func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputR
 	}
 
 	return response, err
+}
+
+// waitForWindowPromptLock blocks until mu is locked or ctx is explicitly
+// canceled. Parent deadlines are ignored so multi-conn queue wait does not
+// fail with a premature handshake timeout (UX-1.6).
+func waitForWindowPromptLock(ctx context.Context, mu *sync.Mutex) error {
+	lockAcquired := make(chan struct{})
+	go func() {
+		mu.Lock()
+		close(lockAcquired)
+	}()
+
+	// Poll: lock acquired, or parent canceled (ignore deadline).
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-lockAcquired:
+			return nil
+		case <-ticker.C:
+			if errors.Is(ctx.Err(), context.Canceled) {
+				go func() {
+					<-lockAcquired
+					mu.Unlock()
+				}()
+				return fmt.Errorf("input wait canceled: %w", context.Canceled)
+			}
+		}
+	}
+}
+
+// watchContextCanceled calls onCancel when parent is explicitly canceled
+// (not on deadline). Returns a stop function.
+func watchContextCanceled(ctx context.Context, onCancel context.CancelFunc) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if errors.Is(ctx.Err(), context.Canceled) {
+					onCancel()
+					return
+				}
+				if ctx.Err() != nil {
+					// deadline exceeded — ignore for cancel propagation
+					// keep watching in case a later cancel is chained
+					continue
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 func GetUserInput(ctx context.Context, request *UserInputRequest) (*UserInputResponse, error) {
