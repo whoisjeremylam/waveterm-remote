@@ -5,6 +5,7 @@ package jobcontroller
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
 	"github.com/wavetermdev/waveterm/pkg/streamclient"
 	"github.com/wavetermdev/waveterm/pkg/util/ds"
+	"github.com/wavetermdev/waveterm/pkg/utilds"
 	"github.com/wavetermdev/waveterm/pkg/waveobj"
 	"github.com/wavetermdev/waveterm/pkg/wps"
 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
@@ -985,6 +987,71 @@ func TestStartConnectionReconnectScheduler_DedupSharedWithOnConnectionDown(t *te
 	t.Fatalf("scheduler entry still set after 2s — goroutine did not clean up")
 }
 
+// TestSchedulerAgentUnavailable_OnAuthFailed (UX-2.5): the reconnect scheduler
+// surfaces a clear "SSH agent may be unavailable" message on conn.Error when a
+// reconnect attempt fails with auth-failed on a connection whose last
+// successful handshake used no interactive prompt (agent/key-based). The
+// message must NOT be set for permanent host-key/known_hosts errors (their own
+// error copy is the source of truth) or for password-based connections.
+func TestSchedulerAgentUnavailable_OnAuthFailed(t *testing.T) {
+	makeConn := func(host string, agentBased bool) (*conncontroller.SSHConn, string) {
+		opts := &remote.SSHOpts{SSHHost: host, SSHUser: "u", SSHPort: "2222"}
+		conn := conncontroller.GetConn(opts)
+		conn.Status = conncontroller.Status_Disconnected
+		if agentBased {
+			conncontroller.ForceAuthPromptNoneForTest(conn)
+		} else {
+			conncontroller.ForceAuthPromptUsedForTest(conn)
+		}
+		return conn, conn.GetName()
+	}
+
+	t.Run("auth-failed on agent-based conn sets agent message", func(t *testing.T) {
+		conn, connName := makeConn("ux25-agent-host", true)
+		action := classifySchedulerAttemptError(connName, fmt.Errorf("unable to authenticate"), true)
+		if !action.stop || action.gaveUpReason != "auth-failed" {
+			t.Fatalf("expected stop with auth-failed gave-up, got %+v", action)
+		}
+		if conn.Error != agentUnavailableErrorMsg {
+			t.Fatalf("expected agent-unavailable message on conn.Error, got %q", conn.Error)
+		}
+	})
+
+	t.Run("auth-failed on password-based conn does not set agent message", func(t *testing.T) {
+		conn, connName := makeConn("ux25-password-host", false)
+		action := classifySchedulerAttemptError(connName, fmt.Errorf("unable to authenticate"), false)
+		if !action.stop || action.gaveUpReason != "auth-failed" {
+			t.Fatalf("expected stop with auth-failed gave-up, got %+v", action)
+		}
+		if conn.Error != "" {
+			t.Fatalf("expected no agent message for password-based conn, got %q", conn.Error)
+		}
+	})
+
+	t.Run("permanent host-key error never sets agent message", func(t *testing.T) {
+		conn, connName := makeConn("ux25-hostkey-host", true)
+		hostKeyErr := utilds.Errorf(remote.ConnErrCode_HostKeyChanged, "host key changed")
+		action := classifySchedulerAttemptError(connName, hostKeyErr, true)
+		if !action.stop {
+			t.Fatalf("expected permanent error to stop scheduler, got %+v", action)
+		}
+		if action.gaveUpReason != "" {
+			t.Fatalf("expected no gave-up reason for permanent error, got %q", action.gaveUpReason)
+		}
+		if conn.Error != "" {
+			t.Fatalf("expected no agent message on permanent error, got %q", conn.Error)
+		}
+	})
+
+	t.Run("transient dial error keeps retrying", func(t *testing.T) {
+		_, connName := makeConn("ux25-dial-host", true)
+		action := classifySchedulerAttemptError(connName, fmt.Errorf("connection reset"), true)
+		if action.stop {
+			t.Fatalf("expected transient dial error to keep retrying, got %+v", action)
+		}
+	})
+}
+
 // mockStreamRpc is a minimal StreamRpcInterface for testing runOutputLoop without a real RPC.
 type mockStreamRpc struct{}
 
@@ -1128,4 +1195,113 @@ func TestRestartStreamingClosesPrevReader(t *testing.T) {
 	if err2 != io.ErrClosedPipe {
 		t.Fatalf("expected reader2.Read() to return io.ErrClosedPipe (closed), got %v", err2)
 	}
+}
+
+// TestRunOutputLoopAppendsBufferedDataOnSupersession verifies the dropped-bytes
+// fix: when runOutputLoop reads data from the stream at the moment the stream is
+// superseded, it must append/account for those bytes BEFORE breaking. Previously
+// the supersession check ran before the append and the bytes were silently
+// dropped, leaving a hole in the term file (missing ESC bytes -> corrupted output).
+//
+// The test simulates the exact race: mark the stream as superseded FIRST, then
+// deliver data. The loop is blocked on Read, so it consumes the data before ever
+// reaching the supersession check. Without the fix, totalBytes would stay 0 (data
+// dropped); with the fix, the bytes are accounted before the loop breaks.
+func TestRunOutputLoopAppendsBufferedDataOnSupersession(t *testing.T) {
+	jobId := "test-job-supersession-append"
+	oldStreamId := "old-stream-id"
+	newStreamId := "new-stream-id"
+	testData := []byte("buffered-bytes")
+
+	// Reset global state.
+	jobStreamIds.Delete(jobId)
+	jobReaders.Delete(jobId)
+	jobStreamHealth.Delete(jobId)
+
+	broker := streamclient.NewBroker(&mockStreamRpc{})
+	reader, meta := broker.CreateStreamReader("reader-route", "writer-route", 4096)
+	jobStreamIds.Set(jobId, oldStreamId)
+	jobReaders.Set(jobId, reader)
+
+	loopDone := make(chan struct{})
+	go func() {
+		defer func() {
+			panichandler.PanicHandler("test:runOutputLoop", recover())
+			close(loopDone)
+		}()
+		runOutputLoop(context.Background(), jobId, oldStreamId, reader)
+	}()
+
+	// Wait for the loop to mark itself active (confirms it's blocked on Read).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if health, ok := jobStreamHealth.GetEx(jobId); ok && health.active && health.streamId == oldStreamId {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if health, ok := jobStreamHealth.GetEx(jobId); !ok || !health.active || health.streamId != oldStreamId {
+		t.Fatalf("runOutputLoop did not start: health=%v ok=%v", health, ok)
+	}
+
+	// Simulate restartStreaming: update jobStreamIds to the new streamId FIRST
+	// (so the supersession check in the old loop will fire), then deliver data
+	// to the old reader. The loop consumes the data and must append it before
+	// breaking on the supersession check.
+	jobStreamIds.Set(jobId, newStreamId)
+	reader.RecvData(wshrpc.CommandStreamData{
+		Id:     meta.Id,
+		Seq:    0,
+		Data64: base64.StdEncoding.EncodeToString(testData),
+	})
+
+	select {
+	case <-loopDone:
+		// Success — loop exited via supersession.
+	case <-time.After(2 * time.Second):
+		t.Fatalf("runOutputLoop did not exit after supersession + data delivery — goroutine leaked")
+	}
+
+	// The consumed bytes must have been accounted for before the break. (Note:
+	// the actual WaveFS append is a no-op here because these tests don't init
+	// the filestore DB; the accounting via jobStreamHealth.totalBytes is the
+	// observable ordering guarantee of the fix.)
+	health, ok := jobStreamHealth.GetEx(jobId)
+	if !ok {
+		t.Fatalf("jobStreamHealth entry missing after loop exit")
+	}
+	if health.active {
+		t.Fatalf("expected health.active == false after loop exit, got %v (streamId=%s)", health.active, health.streamId)
+	}
+	if health.streamId != oldStreamId {
+		t.Fatalf("expected health.streamId == %q (old), got %q", oldStreamId, health.streamId)
+	}
+	if health.totalBytes != int64(len(testData)) {
+		t.Fatalf("expected health.totalBytes == %d (bytes read before supersession must be accounted), got %d", len(testData), health.totalBytes)
+	}
+}
+
+// TestWaitForStreamLoopExit verifies the bounded wait used by restartStreaming to
+// ensure the old runOutputLoop has finished appending before the new stream seq is
+// computed. It must return immediately when there is no active loop (or the active
+// loop belongs to a different stream) and return once a matching loop exits.
+func TestWaitForStreamLoopExit(t *testing.T) {
+	jobId := "test-job-wait-stream"
+	jobStreamHealth.Delete(jobId)
+
+	// No active loop → returns immediately (does not block).
+	waitForStreamLoopExit(jobId, "stream-1", 500*time.Millisecond)
+
+	// Active loop with a DIFFERENT streamId → returns immediately (already superseded).
+	jobStreamHealth.Set(jobId, streamHealthInfo{active: true, streamId: "stream-other"})
+	waitForStreamLoopExit(jobId, "stream-2", 500*time.Millisecond)
+
+	// Active loop with matching streamId → returns once the loop exits.
+	jobStreamHealth.Set(jobId, streamHealthInfo{active: true, streamId: "stream-3"})
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		jobStreamHealth.Set(jobId, streamHealthInfo{active: false, streamId: "stream-3"})
+	}()
+	waitForStreamLoopExit(jobId, "stream-3", 2*time.Second)
+	// If the helper never returned, the test would time out — reaching here is success.
 }

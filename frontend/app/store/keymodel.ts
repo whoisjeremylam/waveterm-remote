@@ -10,12 +10,15 @@ import {
     getAllBlockComponentModels,
     getApi,
     getBlockComponentModel,
+    getBlockMetaKeyAtom,
     getFocusedBlockId,
     getSettingsKeyAtom,
-    globalStore,    refocusNode,
+    globalStore,
+    refocusNode,
     replaceBlock,
     WOS,
 } from "@/app/store/global";
+import { UserInputService } from "@/app/store/services";
 import { getActiveTabModel } from "@/app/store/tab-model";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { deleteLayoutModelForTab, getLayoutModelForStaticTab, NavigateDirection } from "@/layout/index";
@@ -416,6 +419,35 @@ function countTermBlocks(): number {
     return count;
 }
 
+function dismissFocusedUserInputPrompt(): boolean {
+    const blockId = getFocusedBlockInStaticTab();
+    if (!blockId) {
+        return false;
+    }
+    const connName = globalStore.get(getBlockMetaKeyAtom(blockId, "connection")) as string;
+    if (!connName) {
+        return false;
+    }
+    const promptEntry = globalStore.get(modalsModel.activeUserInputPromptsAtom)[connName];
+    if (!promptEntry || modalsModel.isUserInputPromptDismissedForTab(connName, blockId)) {
+        // Phantom prompt or intentionally hidden for this tab — let ESC reach the terminal
+        return false;
+    }
+    const requestid = promptEntry.props?.requestid;
+    if (requestid) {
+        fireAndForget(() =>
+            UserInputService.SendUserInputResponse({
+                type: "userinputresp",
+                requestid,
+                errormsg: "Canceled by the user",
+                connname: connName,
+            })
+        );
+    }
+    modalsModel.dismissUserInputPrompt(connName);
+    return true;
+}
+
 function registerGlobalKeys() {
     globalKeyMap.set("Cmd:]", () => {
         switchTab(1);
@@ -628,8 +660,10 @@ function registerGlobalKeys() {
     }
     globalKeyMap.set("Cmd:f", activateSearch);
     globalKeyMap.set("Escape", () => {
-        if (modalsModel.hasOpenModals()) {
-            modalsModel.popModal();
+        if (modalsModel.popModal()) {
+            return true;
+        }
+        if (dismissFocusedUserInputPrompt()) {
             return true;
         }
         if (deactivateSearch()) {

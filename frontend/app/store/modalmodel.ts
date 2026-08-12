@@ -24,13 +24,15 @@ class ModalsModel {
         globalStore.set(this.modalsAtom, [...modals, { displayName, props }]);
     };
 
-    popModal = (callback?: () => void) => {
+    popModal = (callback?: () => void): boolean => {
         const modals = globalStore.get(this.modalsAtom);
         if (modals.length > 0) {
             const updatedModals = modals.slice(0, -1);
             globalStore.set(this.modalsAtom, updatedModals);
             if (callback) callback();
+            return true;
         }
+        return false;
     };
 
     hasOpenModals(): boolean {
@@ -59,6 +61,20 @@ class ModalsModel {
             delete next[connName];
             return next;
         });
+
+        // Auto-expire stale prompts: the backend GetUserInput times out after
+        // `timeoutms` and never notifies the frontend, so mirror that timeout
+        // here. Without this, a stale prompt stays registered forever, which
+        // makes hasOpenModals() true and swallows the ESC key globally.
+        const timeoutMs = props?.timeoutms;
+        if (typeof timeoutMs === "number" && timeoutMs > 0) {
+            setTimeout(() => {
+                const current = globalStore.get(this.activeUserInputPromptsAtom)[connName];
+                if (current && current.props?.requestid === props.requestid) {
+                    this.dismissUserInputPrompt(connName);
+                }
+            }, timeoutMs + 1000);
+        }
     }
 
     dismissUserInputPrompt(connName: string) {

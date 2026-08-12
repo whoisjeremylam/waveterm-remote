@@ -18,9 +18,10 @@ jobs:
 
             - name: Install Go
               run: |
+                  rm -rf go "golang-${{ env.GO_VERSION }}"
                   curl -sL "https://go.dev/dl/go${{ env.GO_VERSION }}.darwin-arm64.tar.gz" | tar -xzf - -C .
-                  mv go golang-${{ env.GO_VERSION }}
-                  echo "module golang" > golang-${{ env.GO_VERSION }}/go.mod
+                  mv go "golang-${{ env.GO_VERSION }}"
+                  echo "module golang" > "golang-${{ env.GO_VERSION }}/go.mod"
 
             - name: Install Zig
               run: |

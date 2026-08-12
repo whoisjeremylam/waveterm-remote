@@ -192,6 +192,19 @@ func (r *Reader) UpdateNextSeq(newSeq int64) {
 	r.nextSeq = newSeq
 }
 
+// DrainBuffered returns any data currently buffered but not yet read, and clears
+// the buffer. It does not block and does not wait for more data. This is used
+// when a stream reader is superseded/closed so that bytes already received (and
+// ACKed to the sender) are not lost — they would otherwise create a hole in the
+// consumer's output file (missing ESC bytes -> corrupted terminal output).
+func (r *Reader) DrainBuffered() []byte {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	data := r.buffer
+	r.buffer = nil
+	return data
+}
+
 func (r *Reader) Close() error {
 	r.lock.Lock()
 	defer r.lock.Unlock()

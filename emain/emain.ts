@@ -322,8 +322,26 @@ async function appMain() {
             fireAndForget(createNewWaveWindow);
         }
     });
+    // Sleep/wake detection across platforms:
+    //
+    //   macOS: powerMonitor.on('resume') fires reliably after system sleep/wake.
+    //
+    //   Linux:  powerMonitor.on('resume') may fire depending on the desktop
+    //           environment (GNOME/KDE typically emit it; bare window managers
+    //           and certain Wayland compositors may not). As a fallback,
+    //           powerMonitor.on('unlock-screen') fires when the user unlocks
+    //           the session after suspend-to-RAM (logind tracks this reliably).
+    //
+    //   Windows: powerMonitor.on('resume') fires after modern standby / S3
+    //            sleep via WM_POWERBROADCAST. powerMonitor.on('unlock-screen')
+    //            fires on session unlock (Win+L / sleep→unlock).
+    //
+    // Additional coverage: the frontend VisibilityReconnectHandler
+    // (visibilityreconnect.tsx) runs on window focus and document visibility
+    // change, providing an app-level safety net on all platforms.
+    //
     electron.powerMonitor.on("resume", () => {
-        console.log("system resumed from sleep, notifying server");
+        console.log("system resumed from sleep, notifying server (powerMonitor resume)");
         fireAndForget(async () => {
             try {
                 await RpcApi.NotifySystemResumeCommand(ElectronWshClient, { noresponse: true });
@@ -332,6 +350,20 @@ async function appMain() {
             }
         });
     });
+    // Non-macOS fallback: 'unlock-screen' fires on session unlock (Linux/Windows).
+    // Redundant on macOS (where 'resume' covers it), but harmless.
+    if (unamePlatform !== "darwin") {
+        electron.powerMonitor.on("unlock-screen", () => {
+            console.log("system unlocked, notifying server (unlock-screen fallback)");
+            fireAndForget(async () => {
+                try {
+                    await RpcApi.NotifySystemResumeCommand(ElectronWshClient, { noresponse: true });
+                } catch (e) {
+                    console.log("error calling NotifySystemResumeCommand (unlock-screen)", e);
+                }
+            });
+        });
+    }
     const rawGlobalHotKey = launchSettings?.["app:globalhotkey"];
     if (rawGlobalHotKey) {
         registerGlobalHotkey(rawGlobalHotKey);

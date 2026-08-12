@@ -20,6 +20,8 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/remote"
 	"github.com/wavetermdev/waveterm/pkg/userinput"
 	"github.com/wavetermdev/waveterm/pkg/wconfig"
+	"github.com/wavetermdev/waveterm/pkg/wps"
+	"github.com/wavetermdev/waveterm/pkg/wshrpc"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -58,6 +60,83 @@ func makeTestMonitor(conn *SSHConn) *ConnMonitor {
 		Client:        &ssh.Client{}, // dummy client to satisfy non-nil check if needed
 		inputNotifyCh: make(chan int64, 1),
 	}
+}
+
+// makeUniqueTestConn creates a minimal SSHConn with a unique host, registered
+// in the controller map. Hysteresis tests use unique hosts so their connchange
+// event scopes never collide with other tests' connections in the global wps
+// pending-event buffer.
+func makeUniqueTestConn(host string, status string) *SSHConn {
+	conn := &SSHConn{
+		lock:             &sync.Mutex{},
+		lifecycleLock:    &sync.Mutex{},
+		Status:           status,
+		ConnHealthStatus: ConnHealthStatus_Good,
+		WshEnabled:       &atomic.Bool{},
+		Opts:             &remote.SSHOpts{SSHHost: host, SSHUser: "u", SSHPort: "2222"},
+	}
+	globalLock.Lock()
+	clientControllerMap[*conn.Opts] = conn
+	globalLock.Unlock()
+	return conn
+}
+
+// fakeBrokerClient records ConnChange events delivered through the wps broker,
+// letting tests observe what the frontend would receive.
+type fakeBrokerClient struct {
+	mu     sync.Mutex
+	events []wps.WaveEvent
+}
+
+func (f *fakeBrokerClient) SendEvent(routeId string, event wps.WaveEvent) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, event)
+}
+
+func (f *fakeBrokerClient) disconnectedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, ev := range f.events {
+		if status, ok := ev.Data.(wshrpc.ConnStatus); ok && status.Status == Status_Disconnected {
+			n++
+		}
+	}
+	return n
+}
+
+// observeConnEvents subscribes a fake broker client to ConnChange events for
+// the given connection and returns the observer plus a cleanup func that
+// restores the previous broker client.
+func observeConnEvents(t *testing.T, connName string) (*fakeBrokerClient, func()) {
+	t.Helper()
+	obs := &fakeBrokerClient{}
+	prevClient := wps.Broker.GetClient()
+	wps.Broker.SetClient(obs)
+	routeId := "test-route-" + connName
+	wps.Broker.Subscribe(routeId, wps.SubscriptionRequest{
+		Event:  wps.Event_ConnChange,
+		Scopes: []string{"connection:" + connName},
+	})
+	cleanup := func() {
+		wps.Broker.Unsubscribe(routeId, wps.Event_ConnChange)
+		wps.Broker.SetClient(prevClient)
+	}
+	return obs, cleanup
+}
+
+// waitForStatus polls until conn.Status reaches want or the deadline passes.
+func waitForStatus(t *testing.T, conn *SSHConn, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if conn.GetStatus() == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for status %q, got %q", want, conn.GetStatus())
 }
 
 // TestAttemptReconnectLocalConn verifies that local connections return nil immediately.
@@ -785,7 +864,8 @@ func TestStartPortForwarding_MalformedRule(t *testing.T) {
 
 	// Only the valid RemoteForward should have been attempted (but will fail
 	// because the mock client doesn't support Listen). The malformed rules
-	// should have been skipped.
+	// should have been skipped. UX-2.8: failed binds are tracked with an
+	// Error field so the frontend can surface them.
 	conn.lock.Lock()
 	localCount := len(conn.LocalForwardListeners)
 	remoteCount := len(conn.RemoteForwardListeners)
@@ -793,8 +873,15 @@ func TestStartPortForwarding_MalformedRule(t *testing.T) {
 	if localCount != 0 {
 		t.Fatalf("expected 0 LocalForwardListeners (all malformed), got %d", localCount)
 	}
-	if remoteCount != 0 {
-		t.Fatalf("expected 0 RemoteForwardListeners (mock client can't Listen), got %d", remoteCount)
+	if remoteCount != 1 {
+		t.Fatalf("expected 1 RemoteForwardListener (failed bind tracked with error), got %d", remoteCount)
+	}
+	// Verify the error is set on the failed rule
+	conn.lock.Lock()
+	rule := conn.RemoteForwardListeners[0]
+	conn.lock.Unlock()
+	if rule.Error == "" {
+		t.Fatal("expected Error field to be set on failed RemoteForwardListener")
 	}
 }
 
@@ -2138,6 +2225,229 @@ func TestCloseInvoluntary_DoesNotInvokeOnUserSuppressCallback(t *testing.T) {
 
 	if called {
 		t.Fatal("CloseInvoluntary must not invoke OnUserSuppressAutoReconnect")
+	}
+}
+
+// --- UX-2.1 hysteresis tests: no red overlay flash for brief flaps ---
+
+// TestShouldDelayDisconnectEvent verifies the hysteresis gate: involuntary
+// disconnects defer the disconnected event only when auto-reconnect is possible
+// and not suppressed. User-suppressed, interactive-auth, and permanent-error
+// connections report immediately. (UX-2.1)
+func TestShouldDelayDisconnectEvent(t *testing.T) {
+	t.Run("agent-based conn delays", func(t *testing.T) {
+		conn := makeTestConn(Status_Connected)
+		defer cleanupTestConn(conn)
+		conn.authPromptState.Store(authPromptNone)
+		if !conn.shouldDelayDisconnectEvent() {
+			t.Fatal("expected hysteresis for auto-reconnectable conn")
+		}
+	})
+
+	t.Run("suppressed conn never delays", func(t *testing.T) {
+		conn := makeTestConn(Status_Connected)
+		defer cleanupTestConn(conn)
+		conn.authPromptState.Store(authPromptNone)
+		conn.SetSuppressAutoReconnect(true)
+		if conn.shouldDelayDisconnectEvent() {
+			t.Fatal("expected no hysteresis when auto-reconnect suppressed")
+		}
+	})
+
+	t.Run("interactive-auth conn does not delay", func(t *testing.T) {
+		conn := makeTestConn(Status_Connected)
+		defer cleanupTestConn(conn)
+		conn.authPromptState.Store(authPromptUsed)
+		if conn.shouldDelayDisconnectEvent() {
+			t.Fatal("expected no hysteresis for interactive-auth conn without cached password")
+		}
+	})
+
+	t.Run("permanent host-key conn does not delay", func(t *testing.T) {
+		conn := makeTestConn(Status_Connected)
+		defer cleanupTestConn(conn)
+		conn.authPromptState.Store(authPromptNone)
+		conn.WithLock(func() { conn.LastErrorCode = remote.ConnErrCode_HostKeyChanged })
+		if conn.shouldDelayDisconnectEvent() {
+			t.Fatal("expected no hysteresis after permanent host-key error")
+		}
+	})
+}
+
+// TestCloseInvoluntary_Hysteresis_SuppressesEventOnReconnect verifies that an
+// involuntary disconnect on an auto-reconnectable connection does NOT publish a
+// disconnected connchange event when the connection re-establishes within the
+// hysteresis window. (UX-2.1)
+func TestCloseInvoluntary_Hysteresis_SuppressesEventOnReconnect(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	origHysteresis := ReconnectHysteresisDuration
+	ReconnectHysteresisDuration = 300 * time.Millisecond
+	defer func() { ReconnectHysteresisDuration = origHysteresis }()
+
+	conn := makeUniqueTestConn("hysuppress-host", Status_Connected)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptNone)
+
+	obs, unsubscribe := observeConnEvents(t, conn.GetName())
+	defer unsubscribe()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn.CloseInvoluntary()
+	}()
+
+	// Status flips to Disconnected synchronously even though the event is
+	// deferred to the hysteresis window.
+	waitForStatus(t, conn, Status_Disconnected)
+
+	// Simulate a reconnect within the hysteresis window.
+	clientB, _ := newMockSSHClient()
+	conn.WithLock(func() {
+		conn.Client = clientB
+		conn.Status = Status_Connected
+	})
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("closeInternal did not return")
+	}
+
+	// Wait past the hysteresis window so the deferred-decision goroutine runs.
+	time.Sleep(2 * ReconnectHysteresisDuration)
+	if obs.disconnectedCount() != 0 {
+		t.Fatalf("expected no disconnected event after reconnect within window, got %d", obs.disconnectedCount())
+	}
+	if conn.GetStatus() != Status_Connected {
+		t.Fatalf("expected Status=Connected, got %s", conn.GetStatus())
+	}
+}
+
+// TestCloseInvoluntary_Hysteresis_FiresDelayedEvent verifies that when no
+// reconnect happens during the window, the disconnected event is published
+// (delayed by the hysteresis duration) and the status is Disconnected. (UX-2.1)
+func TestCloseInvoluntary_Hysteresis_FiresDelayedEvent(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	origHysteresis := ReconnectHysteresisDuration
+	ReconnectHysteresisDuration = 100 * time.Millisecond
+	defer func() { ReconnectHysteresisDuration = origHysteresis }()
+
+	conn := makeUniqueTestConn("hydelay-host", Status_Connected)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptNone)
+
+	obs, unsubscribe := observeConnEvents(t, conn.GetName())
+	defer unsubscribe()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn.CloseInvoluntary()
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if obs.disconnectedCount() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if obs.disconnectedCount() != 1 {
+		t.Fatalf("expected exactly one delayed disconnected event, got %d", obs.disconnectedCount())
+	}
+	if conn.GetStatus() != Status_Disconnected {
+		t.Fatalf("expected Status=Disconnected, got %s", conn.GetStatus())
+	}
+	// Join the closeInternal goroutine so the deferred ReconnectHysteresisDuration
+	// restore is ordered after its read of the global (race-detector hygiene).
+	<-done
+}
+
+// TestClose_DeliversImmediateEvent verifies user-initiated Disconnect stays
+// immediate: Close() publishes the disconnected event synchronously (no
+// hysteresis) and sets the sticky suppress flag. (UX-2.1 constraint)
+func TestClose_DeliversImmediateEvent(t *testing.T) {
+	conn := makeUniqueTestConn("hyuserclose-host", Status_Connected)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptNone)
+
+	obs, unsubscribe := observeConnEvents(t, conn.GetName())
+	defer unsubscribe()
+
+	err := conn.Close()
+	if err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if obs.disconnectedCount() != 1 {
+		t.Fatalf("expected exactly one immediate disconnected event, got %d", obs.disconnectedCount())
+	}
+	if conn.GetStatus() != Status_Disconnected {
+		t.Fatalf("expected Status=Disconnected, got %s", conn.GetStatus())
+	}
+	if !conn.IsSuppressAutoReconnect() {
+		t.Fatal("expected SuppressAutoReconnect after user Close")
+	}
+}
+
+// TestWaitForDisconnect_Hysteresis_SuppressesEventOnReconnect verifies the
+// client-Wait disconnect path: when auto-reconnect is possible, the disconnect
+// event is deferred, and if a new connection is established within the window
+// the event is suppressed entirely (no disconnected flash). (UX-2.1)
+func TestWaitForDisconnect_Hysteresis_SuppressesEventOnReconnect(t *testing.T) {
+	reconnectTestMu.Lock()
+	defer reconnectTestMu.Unlock()
+	origHysteresis := ReconnectHysteresisDuration
+	ReconnectHysteresisDuration = 300 * time.Millisecond
+	defer func() { ReconnectHysteresisDuration = origHysteresis }()
+
+	conn := makeUniqueTestConn("hywait-host", Status_Connected)
+	defer cleanupTestConn(conn)
+	conn.authPromptState.Store(authPromptNone)
+
+	obs, unsubscribe := observeConnEvents(t, conn.GetName())
+	defer unsubscribe()
+
+	clientA, mockConnA := newMockSSHClient()
+	conn.WithLock(func() {
+		conn.Client = clientA
+	})
+
+	wfdDone := make(chan struct{})
+	go func() {
+		defer close(wfdDone)
+		conn.waitForDisconnect()
+	}()
+	runtime.Gosched()
+	time.Sleep(10 * time.Millisecond)
+
+	// Close the old client so Wait() returns; the hysteresis path flips status
+	// to Disconnected but must NOT publish the event yet.
+	mockConnA.Close()
+	waitForStatus(t, conn, Status_Disconnected)
+
+	// Simulate a reconnect within the hysteresis window.
+	clientB, _ := newMockSSHClient()
+	conn.WithLock(func() {
+		conn.Client = clientB
+		conn.Status = Status_Connected
+	})
+
+	select {
+	case <-wfdDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("waitForDisconnect did not finish")
+	}
+	// Wait past the window so the deferred-decision goroutine runs.
+	time.Sleep(2 * ReconnectHysteresisDuration)
+
+	if obs.disconnectedCount() != 0 {
+		t.Fatalf("expected no disconnected event after reconnect within window, got %d", obs.disconnectedCount())
+	}
+	if conn.GetStatus() != Status_Connected {
+		t.Fatalf("expected Status=Connected, got %s", conn.GetStatus())
 	}
 }
 

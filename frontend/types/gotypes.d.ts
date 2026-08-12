@@ -859,6 +859,7 @@ declare global {
         forwardingrules?: string[];
         canautoreconnect: boolean;
         suppressautoreconnect?: boolean;
+        flappingmode?: boolean;
         authqueuewaiting?: boolean;
     };
 

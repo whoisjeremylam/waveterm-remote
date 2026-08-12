@@ -13,6 +13,7 @@ import clsx from "clsx";
 import * as jotai from "jotai";
 import { OverlayScrollbarsComponent } from "overlayscrollbars-react";
 import * as React from "react";
+import { TermViewModel } from "@/view/term/term-model";
 import { BlockEnv } from "./blockenv";
 
 function formatElapsedTime(elapsedMs: number): string {
@@ -135,7 +136,7 @@ const StalledOverlay = React.memo(
         }, [connStatus.lastactivitybeforestalledtime]);
 
         return (
-            <div className={overlayShellClass} ref={overlayRefCallback}>
+            <div className={overlayShellClass} ref={overlayRefCallback} aria-live="polite">
                 <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i
                         className="fa-solid fa-triangle-exclamation text-warning text-base shrink-0"
@@ -219,7 +220,7 @@ const DisconnectedOverlay = React.memo(
         }, [connStatus.reconnectnextattempt, hasCountdown]);
 
         return (
-            <div className={overlayShellClass} ref={overlayRefCallback}>
+            <div className={overlayShellClass} ref={overlayRefCallback} aria-live="polite">
                 <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i
                         className={clsx(
@@ -305,7 +306,7 @@ const RetryingOverlay = React.memo(
         onStopAutoRetry?: () => void;
     }) => {
         return (
-            <div className={overlayShellClass} ref={overlayRefCallback}>
+            <div className={overlayShellClass} ref={overlayRefCallback} aria-live="polite">
                 <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i className="fa-solid fa-spinner fa-spin text-warning text-base shrink-0" title="Connecting"></i>
                     <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
@@ -349,7 +350,7 @@ const CountdownOverlay = React.memo(
         }, [connStatus.reconnectnextattempt]);
 
         return (
-            <div className={overlayShellClass} ref={overlayRefCallback}>
+            <div className={overlayShellClass} ref={overlayRefCallback} aria-live="polite">
                 <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
                     <i className="fa-solid fa-clock text-grey-text text-base shrink-0" title="Waiting to retry"></i>
                     <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
@@ -530,6 +531,11 @@ const GaveUpOverlay = React.memo(
                     <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
                         <div>{title} — "{connName}"</div>
                         {detail && <div className="text-[10px] text-white/70 mt-0.5">{detail}</div>}
+                        {/* UX-2.5: after sleep/resume an agent-based connection that
+                            failed auth surfaces a specific agent/keychain hint here. */}
+                        {stopReason === "auth-failed" && connStatus.error && (
+                            <div className="text-[10px] text-white/50 mt-0.5">{connStatus.error}</div>
+                        )}
                     </div>
                     <div className="flex-1 hidden @max-xxs:block"></div>
                     <Button
@@ -549,6 +555,36 @@ GaveUpOverlay.displayName = "GaveUpOverlay";
 
 /** How long job may stay "disconnected" after conn is up before showing "failed". */
 const JOB_RECONNECT_GRACE_MS = 20_000;
+
+const FlappingOverlay = React.memo(
+    ({
+        connName,
+        attempt,
+        overlayRefCallback,
+    }: {
+        connName: string;
+        attempt: number;
+        overlayRefCallback: (el: HTMLDivElement | null) => void;
+    }) => {
+        return (
+            <div
+                className="@container absolute top-[calc(var(--header-height)+6px)] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden rounded-md bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] shadow-lg opacity-90"
+                ref={overlayRefCallback}
+                aria-live="polite"
+            >
+                <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
+                    <i className="fa-solid fa-spinner fa-spin text-warning text-base shrink-0" title="Network unstable"></i>
+                    <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
+                        Network unstable — retrying…
+                        {attempt > 0 && <span className="text-white/70"> (attempt {attempt})</span>}
+                    </div>
+                    <div className="flex-1 hidden @max-xxs:block"></div>
+                </div>
+            </div>
+        );
+    }
+);
+FlappingOverlay.displayName = "FlappingOverlay";
 
 export const ConnStatusOverlay = React.memo(
     ({
@@ -780,15 +816,27 @@ export const ConnStatusOverlay = React.memo(
         // Only show retry/countdown overlays if auto-reconnect is possible
         // (password cached or no interactive auth required) and not suppressed
         const canAutoReconnect = connStatus.canautoreconnect && !connStatus.suppressautoreconnect;
+        const isFlapping = connStatus.flappingmode === true;
         const showRetrying =
-            canAutoReconnect && connStatus.status == "connecting" && (connStatus.reconnectattempt ?? 0) > 0;
+            !isFlapping &&
+            canAutoReconnect &&
+            connStatus.status == "connecting" &&
+            (connStatus.reconnectattempt ?? 0) > 0;
         const showCountdown =
-            canAutoReconnect && connStatus.status == "disconnected" && (connStatus.reconnectnextattempt ?? 0) > 0;
+            !isFlapping &&
+            canAutoReconnect &&
+            connStatus.status == "disconnected" &&
+            (connStatus.reconnectnextattempt ?? 0) > 0;
+        // UX-2.1: while auto-reconnect is actively engaged (canautoreconnect and
+        // not suppressed), the reconnect scheduler owns the disconnected state —
+        // Retrying/Countdown/GaveUp overlays carry the chrome, so the red
+        // "Disconnected" overlay must not flash for brief Wi-Fi flaps.
+        const autoRetryEngaged = canAutoReconnect;
         // Disconnected-style overlay: plain disconnect, permanent host-key, or
         // suppress-on-error (password Cancel / Stop / permanent) so users see
         // "Auto-retry stopped — click Reconnect" instead of a raw error shell.
         const showDisconnected =
-            (connStatus.status == "disconnected" && !connStatus.connected) ||
+            (connStatus.status == "disconnected" && !connStatus.connected && !autoRetryEngaged) ||
             !!permanentErrorTitle(connStatus.errorcode) ||
             (!!connStatus.suppressautoreconnect &&
                 (connStatus.status == "error" || connStatus.status == "disconnected"));
@@ -844,7 +892,13 @@ export const ConnStatusOverlay = React.memo(
             !showDisconnected &&
             !showAuthQueueWaiting &&
             !showDrainCatchUp &&
-            (isLayoutMode || connStatus.status == "connected" || connModalOpen)
+            (isLayoutMode ||
+                connStatus.status == "connected" ||
+                connModalOpen ||
+                // UX-2.1: auto-retry is engaged but the first countdown/retry
+                // event hasn't arrived yet — keep the overlay hidden so a brief
+                // flap never flashes disconnected chrome.
+                (autoRetryEngaged && connStatus.status == "disconnected"))
         ) {
             return null;
         }
@@ -884,6 +938,16 @@ export const ConnStatusOverlay = React.memo(
                         <div className="flex-1 hidden @max-xxs:block"></div>
                     </div>
                 </div>
+            );
+        }
+
+        if (isFlapping) {
+            return (
+                <FlappingOverlay
+                    connName={connName}
+                    attempt={connStatus.reconnectattempt ?? 0}
+                    overlayRefCallback={overlayRefCallback}
+                />
             );
         }
 

@@ -1,7 +1,7 @@
 // Copyright 2025, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 describe("ModalsModel - user input prompt methods", () => {
     let modalsModel: any;
@@ -13,10 +13,10 @@ describe("ModalsModel - user input prompt methods", () => {
 
         vi.doMock("./jotaiStore", () => ({
             globalStore: {
-                get: (atom: any) => mockStore.get(atom),
+                get: (atom: any) => mockStore.get(atom) ?? atom.init,
                 set: (atom: any, value: any) => {
                     if (typeof value === "function") {
-                        const current = mockStore.get(atom);
+                        const current = mockStore.get(atom) ?? atom.init;
                         mockStore.set(atom, value(current));
                     } else {
                         mockStore.set(atom, value);
@@ -104,6 +104,59 @@ describe("ModalsModel - user input prompt methods", () => {
 
             const value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
             expect(value).toEqual({});
+        });
+    });
+
+    describe("popModal", () => {
+        it("returns true when a modal is popped", () => {
+            modalsModel.pushModal("SomeModal", {});
+
+            const popped = modalsModel.popModal();
+
+            expect(popped).toBe(true);
+            expect(mockStore.get(modalsModel.modalsAtom)).toEqual([]);
+        });
+
+        it("returns false when the modal stack is empty", () => {
+            const popped = modalsModel.popModal();
+
+            expect(popped).toBe(false);
+        });
+    });
+
+    describe("upsertUserInputPrompt auto-expiry", () => {
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+
+        it("auto-dismisses a prompt after timeoutms + 1000", () => {
+            vi.useFakeTimers();
+            modalsModel.upsertUserInputPrompt("user@host", "UserInputPrompt", { requestid: "123", timeoutms: 1000 });
+
+            let value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
+            expect(value["user@host"]).toBeDefined();
+
+            // Not yet expired (timer fires at timeoutms + 1000 = 2000)
+            vi.advanceTimersByTime(1999);
+            value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
+            expect(value["user@host"]).toBeDefined();
+
+            vi.advanceTimersByTime(1);
+            value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
+            expect(value["user@host"]).toBeUndefined();
+        });
+
+        it("stale timer does not dismiss a newer prompt with a different requestid", () => {
+            vi.useFakeTimers();
+            modalsModel.upsertUserInputPrompt("user@host", "UserInputPrompt", { requestid: "old", timeoutms: 1000 });
+            // Newer prompt for the same conn supersedes the old one before its timer fires
+            modalsModel.upsertUserInputPrompt("user@host", "UserInputPrompt", { requestid: "new" });
+
+            vi.advanceTimersByTime(5000);
+
+            const value = mockStore.get(modalsModel.activeUserInputPromptsAtom);
+            expect(value["user@host"]).toBeDefined();
+            expect(value["user@host"].props.requestid).toBe("new");
         });
     });
 });
