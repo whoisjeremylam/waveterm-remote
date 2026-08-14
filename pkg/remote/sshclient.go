@@ -1002,9 +1002,73 @@ func createClientConfig(connCtx context.Context, sshKeywords *wconfig.ConnKeywor
 	}, nil
 }
 
+// HandshakeDeadlineExtender re-arms the deadline of an in-flight SSH handshake.
+// UX-1.6 residual: time spent queued behind another password prompt must not
+// consume the user's typing budget once this connection finally gets to prompt.
+type HandshakeDeadlineExtender func(d time.Duration)
+
+// handshakeExtenders maps a connection name to the function that can extend its
+// active handshake deadline. Populated for the duration of a handshake and cleared
+// when it finishes. Consulted via ExtendActiveHandshakeDeadline when a serialized
+// password/passphrase/kbd-interactive prompt acquires the per-window prompt lock.
+var handshakeExtenders sync.Map // map[string]HandshakeDeadlineExtender
+
+// ExtendActiveHandshakeDeadline re-arms the handshake deadline for connName, if a
+// handshake is currently in flight for it. No-op otherwise (silent reconnects with
+// cached credentials never prompt, so they never call this).
+func ExtendActiveHandshakeDeadline(connName string, d time.Duration) {
+	if connName == "" {
+		return
+	}
+	if v, ok := handshakeExtenders.Load(connName); ok {
+		if ext, ok := v.(HandshakeDeadlineExtender); ok {
+			ext(d)
+		}
+	}
+}
+
+// registerHandshakeExtender stores ext for connName and returns an unregister func.
+// Returns a no-op when connName is empty (no prompt can fire without a conn name).
+func registerHandshakeExtender(connName string, ext HandshakeDeadlineExtender) func() {
+	if connName == "" {
+		return func() {}
+	}
+	handshakeExtenders.Store(connName, ext)
+	return func() { handshakeExtenders.Delete(connName) }
+}
+
+// newConnDeadlineExtender re-arms the deadline on a real net.Conn (direct TCP path).
+func newConnDeadlineExtender(conn net.Conn) HandshakeDeadlineExtender {
+	return func(d time.Duration) {
+		conn.SetDeadline(time.Now().Add(d))
+	}
+}
+
+// newTimerDeadlineExtender re-arms a time.Timer (proxy jump path, where chanConn
+// does not support SetDeadline). The Stop/drain/Reset dance makes it safe to call
+// from the handshake goroutine while the outer select reads timer.C.
+func newTimerDeadlineExtender(timer *time.Timer) HandshakeDeadlineExtender {
+	return func(d time.Duration) {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(d)
+	}
+}
+
 func connectInternal(ctx context.Context, networkAddr string, clientConfig *ssh.ClientConfig, currentClient *ssh.Client) (*ssh.Client, error) {
 	var clientConn net.Conn
 	var err error
+	// Connection name keys the handshake-deadline extender so a serialized prompt
+	// can re-arm this handshake's deadline (UX-1.6 residual). It matches the
+	// ConnName carried on the prompt request (same ctx source).
+	connName := ""
+	if cd := genconn.GetConnData(ctx); cd != nil {
+		connName = cd.GetConnName()
+	}
 	if currentClient == nil {
 		d := net.Dialer{Timeout: clientConfig.Timeout}
 		dialStart := time.Now()
@@ -1064,6 +1128,9 @@ func connectInternal(ctx context.Context, networkAddr string, clientConfig *ssh.
 			clientConn.SetDeadline(time.Now().Add(DefaultConnectionTimeout))
 		}
 
+		unregister := registerHandshakeExtender(connName, newConnDeadlineExtender(clientConn))
+		defer unregister()
+
 		handshakeStart := time.Now()
 		c, chans, reqs, err := ssh.NewClientConn(clientConn, networkAddr, clientConfig)
 		clientConn.SetDeadline(time.Time{}) // clear deadline after handshake
@@ -1110,6 +1177,11 @@ func connectInternal(ctx context.Context, networkAddr string, clientConfig *ssh.
 			timeout = DefaultConnectionTimeout
 		}
 
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		unregister := registerHandshakeExtender(connName, newTimerDeadlineExtender(timer))
+		defer unregister()
+
 		select {
 		case result := <-resultCh:
 			handshakeDur := time.Since(handshakeStart)
@@ -1120,7 +1192,7 @@ func connectInternal(ctx context.Context, networkAddr string, clientConfig *ssh.
 			} else {
 				log.Printf("[conndebug] ssh handshake (proxy) %s: succeeded in %v", networkAddr, handshakeDur)
 			}
-		case <-time.After(timeout):
+		case <-timer.C:
 			handshakeDur := time.Since(handshakeStart)
 			log.Printf("[conndebug] ssh handshake (proxy) %s: timed out after %v (timeout=%v)", networkAddr, handshakeDur, timeout)
 			clientConn.Close()

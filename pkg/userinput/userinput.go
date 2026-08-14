@@ -51,6 +51,13 @@ type UserInputRequest struct {
 // "Waiting to sign in…" on blocked connections (UX-1.6). Nil-safe.
 var OnAuthQueueWait func(connName string, waiting bool)
 
+// OnPromptShown is invoked once a serialized SSH auth prompt has actually
+// acquired the per-window prompt lock (it is now showing, no longer queued).
+// conncontroller registers this to re-arm the SSH handshake deadline (UX-1.6
+// residual). Nil-safe. promptTimeout is the fresh prompt window so the transport
+// deadline stays aligned with the prompt timeout.
+var OnPromptShown func(connName string, promptTimeout time.Duration)
+
 type UserInputResponse struct {
 	Type         string `json:"type"`
 	RequestId    string `json:"requestid"`
@@ -397,6 +404,14 @@ func (p *FrontendProvider) GetUserInput(ctx context.Context, request *UserInputR
 	// Fresh 60s timer — not remaining parent deadline (queue wait may have
 	// consumed most of it). Parent cancel still aborts the prompt wait.
 	const promptWait = 60 * time.Second
+
+	// UX-1.6 residual: now that we are actually prompting (not queued behind
+	// another prompt), re-arm the SSH handshake deadline so the time spent in
+	// the queue did not consume this connection's typing budget.
+	if isAuth && request.ConnName != "" && OnPromptShown != nil {
+		OnPromptShown(request.ConnName, promptWait)
+	}
+
 	promptCtx, promptCancel := context.WithTimeout(context.Background(), promptWait)
 	defer promptCancel()
 	stopPromptWatch := watchContextCanceled(ctx, promptCancel)
