@@ -14,7 +14,7 @@ Most developer terminals assume code is installed, built, and tested locally. Th
 
 ## Active Specs
 
-- [[specs/reconnection-ux-backlog.md]] — **P0 code + user retest done on `feat/reconnect-ux-p0`**; ready to merge; P1 clarity next
+- [[specs/reconnection-ux-backlog.md]] — **P0 + P1 + most of P2 merged**; remaining is UX-3.2 QA matrix + spec hygiene
 - [[specs/reconnection.md]] — Implementation log (through stale hung-dial soft-cancel / password-cache hardening)
 - [[specs/newtab-connect-dropdown.md]] — Implemented; ≥2-char auto-select; block-header is filter-free switcher
 - [[specs/portforwarding.md]] — SSH port forwarding (`LocalForward` / `RemoteForward`) — landed earlier
@@ -24,9 +24,9 @@ Most developer terminals assume code is installed, built, and tested locally. Th
 
 ## Current branch / handoff
 
-- **Branch:** `feat/reconnect-ux-p0` (worktree `../waveterm-remote-reconnect-ux-p0`)
-- **Next:** push → PR → merge to `main` → then P1 from reconnection UX backlog
-- **Todos:** [[todos.md]] — see **Current focus** at top (P0 retest matrix complete)
+- **Branch:** `odds-and-ends` (reconnection UX P0/P1/P2 already merged into `main`/`odds-and-ends`)
+- **Next:** run the UX-3.2 QA matrix (Q1–Q17) to sign off reconnection as production-ready; reconcile `reconnection.md` "current behavior"
+- **Todos:** [[todos.md]] — see the 2026-08-14 status note at top
 
 ## Context & Decisions
 

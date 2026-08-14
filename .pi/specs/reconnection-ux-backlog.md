@@ -1,11 +1,38 @@
 # Reconnection UX Backlog
 
-> Status: **P0 code + user retest complete on `feat/reconnect-ux-p0`** (ready to push/PR/merge)  
-> Created: 2026-07-24 · Updated: 2026-07-25  
+> Status: **P0 + P1 + most of P2 implemented and merged.** Remaining: UX-3.x QA + spec hygiene.  
+> Created: 2026-07-24 · Updated: 2026-08-14  
 > Design reference: [[reconnection-design.md]]  
 > Implementation reference: [[reconnection.md]]  
 > Related: [[visibility-driven-reconnect.md]], [[reconnect-ui-overlay.md]], [[disk-backed-stream-history.md]], [[newtab-connect-dropdown.md]]  
 > Branch: `feat/reconnect-ux-p0` (worktree `waveterm-remote-reconnect-ux-p0`)
+
+## Status update — 2026-08-14 (doc reconciliation)
+
+> This doc was last edited 2026-07-25 while P0 was the "current focus". The code has since
+> moved well past it: **P0, all of P1 (UX-1.1–1.8), and most of P2 (UX-2.1–2.8) have landed and
+> been merged.** The checkboxes below are historical; this banner is the authoritative status.
+
+- **P0** — merged via `feat/reconnect-ux-p0` (PRs #40/#41/#42) and follow-ups.
+- **P1 (UX-1.1–1.8)** — all implemented. Commit `f62a6305` ("P1 UX clarity") + `e7b9438e` ("P1 follow-ups"):
+  - 1.1 `GaveUpOverlay` + `ReconnectGaveUp`/`ReconnectError`/`ReconnectStopReason` on `ConnStatus`
+  - 1.2 "Sign in required" hint in `DisconnectedOverlay`
+  - 1.3 `StalledOverlay` heal-first (Reconnect Now primary / Disconnect secondary)
+  - 1.4 "Incorrect password — please try again" re-prompt (`requestPasswordRePrompt`)
+  - 1.5 `JobSessionOverlay` "gone" mode + "Start new durable session"
+  - 1.6 queue "(1 of N)" + `AuthQueueWaiting` + per-window prompt lock
+  - 1.7 `DrainCatchUpOverlay` + `DrainActive`/`DrainTotalBytes`/`DrainRemainingBytes`
+  - 1.8 prompt-type icons + "Key passphrase" title / `PromptType: passphrase`
+- **P2** — implemented except the soft-network-readiness-gates item:
+  - 2.1 hysteresis (`f70c4df8`), 2.2 flap-stable (`3bbbec44`), 2.3 visibility expand (`203a7852`),
+    2.4 Linux/Win resume parity (`61a787b4`), 2.5 agent-after-sleep (`654061a5`), 2.6 a11y (`679f6a5d`),
+    2.7 backoff (`58f76103`), 2.8 port-forward badge (`daae7038`)
+  - **Deferred (by design):** UX-2.8 "soft network readiness gates before auto TCP dial" — still backlog-only.
+- **Remaining (P3):**
+  - UX-3.1 doc reconciliation (this banner is the start; `reconnection.md` "current behavior" still needs reconciling)
+  - UX-3.2 scenario QA matrix Q1–Q17 — **coded but not yet user-verified/recorded**
+  - UX-3.3 diagnostics panel — not implemented
+  - Residual UX-1.6 handshake-deadline edge (see note under UX-1.6)
 
 ## Session handoff (post-compact)
 
@@ -227,8 +254,8 @@ Backend reconnection (scheduler, `CloseInvoluntary`, visibility-driven `ConnEnsu
 
 **Scope:**
 
-- [ ] Persist last give-up reason on `ConnStatus` (or keep last `ReconnectError` + `ReconnectGaveUp: true` + attempt count)
-- [ ] Copy examples:
+- [x] Persist last give-up reason on `ConnStatus` (or keep last `ReconnectError` + `ReconnectGaveUp: true` + attempt count)
+- [x] Copy examples:
   - "Auto-retry paused after 15 minutes. Last error: … Will try again when the network returns or you click Reconnect."
   - "SSH refused the connection. Auto-retry paused. Will try again when you return or the service is back."
 
@@ -242,9 +269,9 @@ Backend reconnection (scheduler, `CloseInvoluntary`, visibility-driven `ConnEnsu
 
 **Scope:**
 
-- [ ] When `!CanAutoReconnect` and status disconnected/error (and not suppress):  
+- [x] When `!CanAutoReconnect` and status disconnected/error (and not suppress):  
   "Sign-in required — click Reconnect or focus this tab to enter credentials."
-- [ ] Do not show fake countdown
+- [x] Do not show fake countdown
 
 **Acceptance:** Interactive vs autonomous states are visually distinct.
 
@@ -256,9 +283,9 @@ Backend reconnection (scheduler, `CloseInvoluntary`, visibility-driven `ConnEnsu
 
 **Scope:**
 
-- [ ] Copy: "Connection stalled (no activity for Ns). Recovering…"
-- [ ] Primary: **Reconnect now** (force involuntary close + reconnect) or wait for auto
-- [ ] Secondary: Disconnect (explicit, clears auth)
+- [x] Copy: "Connection stalled (no activity for Ns). Recovering…"
+- [x] Primary: **Reconnect now** (force involuntary close + reconnect) or wait for auto
+- [x] Secondary: Disconnect (explicit, clears auth)
 
 **Acceptance:** Primary path preserves cache and recovers; Disconnect remains available but secondary.
 
@@ -268,8 +295,8 @@ Backend reconnection (scheduler, `CloseInvoluntary`, visibility-driven `ConnEnsu
 
 **Scope:**
 
-- [ ] On `auth-failed`, prompt re-shows with field cleared and explicit "Incorrect password" (or server message if safe)
-- [ ] Do not show only a generic conn error behind a blank prompt
+- [x] On `auth-failed`, prompt re-shows with field cleared and explicit "Incorrect password" (or server message if safe)
+- [x] Do not show only a generic conn error behind a blank prompt
 
 **Acceptance:** User knows the credential was rejected, not that the network died.
 
@@ -279,9 +306,9 @@ Backend reconnection (scheduler, `CloseInvoluntary`, visibility-driven `ConnEnsu
 
 **Scope:**
 
-- [ ] Distinct copy for remote reboot / job manager gone vs temporary disconnect
-- [ ] CTA: **Start new durable session** (same connection, new job) vs Reconnect host only
-- [ ] Optional note: tmux sessions on remote may still exist (point to future tmux restore work)
+- [x] Distinct copy for remote reboot / job manager gone vs temporary disconnect
+- [x] CTA: **Start new durable session** (same connection, new job) vs Reconnect host only
+- [ ] Optional note: tmux sessions on remote may still exist (point to future tmux restore work) — **not done (optional)**
 
 **Acceptance:** Weekly server-reboot story has a clear one-click path to a working shell.
 
@@ -293,11 +320,13 @@ Backend reconnection (scheduler, `CloseInvoluntary`, visibility-driven `ConnEnsu
 
 **Scope:**
 
-- [ ] When multiple conns need auth on one window: show queue indicator ("Signing in to host A (1 of 3)…")
-- [ ] Waiting conns: "Waiting to sign in…" not a premature dial failure if caused by queue wait
-- [ ] Raise or decouple handshake timeout from queue wait (backend), or re-queue failed-waiting conns
+- [x] When multiple conns need auth on one window: show queue indicator ("Signing in to host A (1 of 3)…")
+- [x] Waiting conns: "Waiting to sign in…" not a premature dial failure if caused by queue wait
+- [~] Raise or decouple handshake timeout from queue wait (backend), or re-queue failed-waiting conns — queue wait is decoupled (see note below), but a residual net.Conn handshake-deadline edge remains
 
 **Acceptance:** Multi-host tab after wake never looks randomly broken after the first password succeeds.
+
+**Residual gap (2026-08-14):** The *prompt-level* queue wait is decoupled — `waitForWindowPromptLock` in `pkg/userinput/userinput.go` ignores parent deadlines (only aborts on explicit cancel), and a fresh 60s prompt timeout starts after the lock is held. However, the SSH handshake's `net.Conn` deadline (set in `ConnectToClient` in `pkg/remote/sshclient.go` to `max(ctx.Deadline, now+5s)`) is fixed at dial time and keeps ticking through the queue wait. With N password hosts reconnecting together, a late-queued connection can hit its handshake deadline while waiting its turn, so its auth write fails when it finally submits. Impact: a retryable path-error (no cache clear, no wrong re-prompt), i.e. thrash/UX noise, not data loss. Fix options: (a) refresh the `net.Conn` deadline when the prompt lock is acquired, or (b) give prompt-requiring dials a generous handshake budget up front, or (c) explicitly re-queue failed-waiting conns after the queue drains.
 
 ---
 
@@ -307,9 +336,9 @@ Backend reconnection (scheduler, `CloseInvoluntary`, visibility-driven `ConnEnsu
 
 **Scope:**
 
-- [ ] Brief overlay or status: "Catching up on output from while disconnected…"
-- [ ] Optional scrollback gap marker (if not already user-visible)
-- [ ] Consider rate-limit / chunked write to xterm for very large drains (perf)
+- [x] Brief overlay or status: "Catching up on output from while disconnected…"
+- [ ] Optional scrollback gap marker (if not already user-visible) — **not done (optional)**
+- [ ] Consider rate-limit / chunked write to xterm for very large drains (perf) — **not done (optional)**
 
 **Acceptance:** User understands burst after reconnect; no multi-second silent freeze.
 
@@ -319,8 +348,8 @@ Backend reconnection (scheduler, `CloseInvoluntary`, visibility-driven `ConnEnsu
 
 **Scope:**
 
-- [ ] Key passphrase prompts say "Key passphrase" (not "Password") when `PassphrasePrompted` path is used
-- [ ] Keyboard-interactive uses server-provided prompts when available
+- [x] Key passphrase prompts say "Key passphrase" (not "Password") when `PassphrasePrompted` path is used
+- [x] Keyboard-interactive uses server-provided prompts when available
 
 **Acceptance:** Auth method matches UI language.
 
@@ -330,8 +359,8 @@ Backend reconnection (scheduler, `CloseInvoluntary`, visibility-driven `ConnEnsu
 
 ### UX-2.1 — Overlay hysteresis for brief blips
 
-- [ ] Delay full disconnect chrome ~1–2s when `CanAutoReconnect` (backend may still disconnect immediately)
-- [ ] Or: subtle badge first, full overlay after threshold
+- [x] Delay full disconnect chrome ~1–2s when `CanAutoReconnect` (backend may still disconnect immediately)
+- [x] Or: subtle badge first, full overlay after threshold  (flat-time delay implemented; urgency-weighted variant is design-discussion only)
 
 **Acceptance:** Sub-second Wi‑Fi flap does not flash red overlay if healed in time.
 
@@ -398,7 +427,7 @@ on keystroke (or other engagement) while disconnected:
 
 ### UX-2.2 — Flap-stable overlay chrome
 
-- [ ] If ≥N attempts within 30s, hold single "Network unstable — retrying…" state instead of cycling three overlays
+- [x] If ≥N attempts within 30s, hold single "Network unstable — retrying…" state instead of cycling three overlays
 
 **Acceptance:** Flapping network does not strobe UI.
 
@@ -460,8 +489,8 @@ on keystroke (or other engagement) while disconnected:
 
 ### UX-2.3 — Visibility triggers expansion
 
-- [ ] Add `document.visibilitychange` → visible as reconnect trigger (in addition to `window` focus)
-- [ ] On visibility scan, include connections from **all** block views on the tab (term + preview + SCM + process), not only `view === "term"`
+- [x] Add `document.visibilitychange` → visible as reconnect trigger (in addition to `window` focus)
+- [x] On visibility scan, include connections from **all** block views on the tab (term + preview + SCM + process), not only `view === "term"`
 
 **Acceptance:** SCM-only focus on a tab can heal the shared connection; sleep resume with app front is reliable across platforms.
 
@@ -469,9 +498,9 @@ on keystroke (or other engagement) while disconnected:
 
 ### UX-2.4 — Linux / Windows resume parity
 
-- [ ] Validate `powerMonitor` resume (or equivalent) on Linux and Windows
-- [ ] Document platform gaps; add fallbacks (visibility + stall) where resume is missing
-- [ ] Manual QA matrix per OS
+- [x] Validate `powerMonitor` resume (or equivalent) on Linux and Windows
+- [x] Document platform gaps; add fallbacks (visibility + stall) where resume is missing
+- [~] Manual QA matrix per OS — part of UX-3.2, not yet run/recorded
 
 **Acceptance:** Sleep/wake story documented and acceptable on each supported OS.
 
@@ -479,8 +508,8 @@ on keystroke (or other engagement) while disconnected:
 
 ### UX-2.5 — Agent / ssh-agent after sleep
 
-- [ ] Detect agent failure after prior `authPromptNone` (agent was used)
-- [ ] Surface "SSH agent unavailable — unlock keychain or restart agent" rather than opaque auth-failed loop
+- [x] Detect agent failure after prior `authPromptNone` (agent was used)
+- [x] Surface "SSH agent unavailable — unlock keychain or restart agent" rather than opaque auth-failed loop
 
 **Acceptance:** macOS keychain lock after sleep is understandable.
 
@@ -488,16 +517,16 @@ on keystroke (or other engagement) while disconnected:
 
 ### UX-2.6 — Accessibility
 
-- [ ] `aria-live` polite region for conn status changes
-- [ ] Focus management: password prompt receives focus; Cancel/Reconnect reachable by keyboard
-- [ ] Do not trap focus incorrectly across multi-prompt queue
+- [x] `aria-live` polite region for conn status changes
+- [x] Focus management: password prompt receives focus; Cancel/Reconnect reachable by keyboard
+- [x] Do not trap focus incorrectly across multi-prompt queue
 
 ---
 
 ### UX-2.7 — Battery / multi-host background backoff
 
-- [ ] When many hosts retry in background, stagger attempts
-- [ ] Optional longer interval on battery (if detectable)
+- [x] When many hosts retry in background, stagger attempts
+- [ ] Optional longer interval on battery (if detectable) — **not done (optional)**
 
 **Acceptance:** 10 durable hosts offline do not hammer the network every 3s forever within the silent cap.
 
@@ -505,8 +534,8 @@ on keystroke (or other engagement) while disconnected:
 
 ### UX-2.8 — Port-forward status after reconnect
 
-- [ ] Confirm forwards re-establish on reconnect (existing port-forward work)
-- [ ] Surface forward bind failures on reconnect in badge/tooltip
+- [x] Confirm forwards re-establish on reconnect (existing port-forward work)
+- [x] Surface forward bind failures on reconnect in badge/tooltip
 
 **Acceptance:** Remote-dev ports either work after heal or show a clear error.
 

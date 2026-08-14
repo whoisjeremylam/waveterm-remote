@@ -1,5 +1,9 @@
 # Active Tasks
 
+## Status note (2026-08-14)
+
+Reconnection UX **P0, P1 (UX-1.1–1.8), and most of P2 (UX-2.1–2.8)** are implemented and merged (commits `f62a6305`, `e7b9438e`, `f70c4df8`…`daae7038`). The "Current focus" section below is historical — it predates the P1/P2 land. See [[specs/reconnection-ux-backlog.md]] for the reconciled per-item status. Remaining: UX-3.2 QA matrix (Q1–Q17) not yet run, UX-3.1 doc reconciliation, UX-3.3 diagnostics panel.
+
 ## Current focus (2026-07-24) — `feat/reconnect-ux-p0`
 
 **Branch:** `feat/reconnect-ux-p0` (worktree: `../waveterm-remote-reconnect-ux-p0`)  
@@ -355,7 +359,7 @@ Full VS Code SCM diff view feature analysis done on `~/project/vscode`. Source f
 
 Spec: [[.pi/specs/reconnection-ux-backlog.md]] · Branch: `feat/reconnect-ux-p0`
 
-Backend + **P0 product loop** implemented on the feature branch (see **Current focus** at top). Remaining is P1 clarity + optional polish.
+Backend + **P0 + P1 + most of P2** implemented and merged (see [[specs/reconnection-ux-backlog.md]] status banner). Remaining is UX-3.2 QA matrix + optional polish.
 
 **P0 — Trust & recovery** (code + user retest on `feat/reconnect-ux-p0`; ready to merge)
 - [x] UX-0.1 Sticky suppress after user Disconnect
@@ -368,17 +372,17 @@ Backend + **P0 product loop** implemented on the feature branch (see **Current f
 - [x] New-tab typeahead polish (≥2-char auto-select; Cmd-T toggle)
 - [x] Block-header connection switcher (no type filter; frecency order)
 
-**P1 — Clarity** (see full spec for acceptance criteria) — **next after merge**
-- [ ] UX-1.1 Post-give-up / early-stop overlay copy
-- [ ] UX-1.2 Interactive-auth idle overlay
-- [ ] UX-1.3 Stalled overlay heal-first actions
-- [ ] UX-1.4 Wrong-password prompt feedback
-- [ ] UX-1.5 Session gone CTA polish (basic CTA already in job overlay)
-- [ ] UX-1.6 Multi-connection password queue UX (serialization done; queue UX polish optional)
-- [ ] UX-1.7 Disk drain / catch-up indicator
-- [ ] UX-1.8 Passphrase vs password prompt strings
+**P1 — Clarity** (see full spec for acceptance criteria) — **implemented + merged 2026-07-25** (`f62a6305`, `e7b9438e`)
+- [x] UX-1.1 Post-give-up / early-stop overlay copy
+- [x] UX-1.2 Interactive-auth idle overlay
+- [x] UX-1.3 Stalled overlay heal-first actions
+- [x] UX-1.4 Wrong-password prompt feedback
+- [x] UX-1.5 Session gone CTA polish (basic CTA already in job overlay)
+- [x] UX-1.6 Multi-connection password queue UX (serialization + queue indicator + timeout decouple)
+- [x] UX-1.7 Disk drain / catch-up indicator
+- [x] UX-1.8 Passphrase vs password prompt strings
 
-**Ship gate (updated):** P0 code + user retest complete → push/PR/merge. P1 not required for first land of P0.
+**Ship gate (updated):** P0 + P1 landed. Remaining gate is UX-3.2 QA matrix (Q1–Q17) sign-off, not more P1 scope.
 
 ### Agent Orchestration API
 
