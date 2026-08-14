@@ -417,6 +417,7 @@ Backend + **P0 + P1 + most of P2** implemented and merged (see [[specs/reconnect
 
 ### UX Improvements
 
+- [ ] **Duplicate session from tab context menu** — right-click a tab → "Duplicate Session" → new tab with a fresh shell on the same connection + cwd (planned 2026-08-14; spec: [[.pi/specs/duplicate-session.md]])
 - **New block default connection** — Currently clicking '+' defaults to local; for remote-first workflow, should default to SSH/remote or at least not require manual switching
 - **SSH config as source of truth** — Connection management currently pushes users to JSON/settings UI instead of naturally leveraging `~/.ssh/config` as the primary management interface
 
