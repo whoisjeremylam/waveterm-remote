@@ -101,9 +101,9 @@ does not fail its first handshake while queued.
 
 ## Part D — Spec hygiene (UX-3.1)
 
-- [ ] Reconcile `reconnection.md` "current behavior" constants (15m silent cap,
+- [x] Reconcile `reconnection.md` "current behavior" constants (15m silent cap,
       early-terminate rules) with the merged code.
-- [ ] Fix the decision tree in `reconnection.md` that still claims a tab-switch gap.
-- [ ] Mark Known Gaps G1–G6 fixed/open accurately; archive the superseded
+- [x] Fix the decision tree in `reconnection.md` that still claims a tab-switch gap.
+- [x] Mark Known Gaps G1–G6 fixed/open accurately; archive the superseded
       `HasConnected` heuristic notes.
-- [ ] UX-3.3 diagnostics panel (last-N attempts per conn) — decide go/no-go.
+- [ ] UX-3.3 diagnostics panel (last-N attempts per conn) — decide go/no-go. *(open — not started)*

@@ -29,7 +29,7 @@
     2.7 backoff (`58f76103`), 2.8 port-forward badge (`daae7038`)
   - **Deferred (by design):** UX-2.8 "soft network readiness gates before auto TCP dial" — still backlog-only.
 - **Remaining (P3):**
-  - UX-3.1 doc reconciliation (this banner is the start; `reconnection.md` "current behavior" still needs reconciling)
+  - UX-3.1 doc reconciliation — **done 2026-08-14** (see `reconnection.md` reconciliation note)
   - UX-3.2 scenario QA matrix Q1–Q17 — **coded but not yet user-verified/recorded**
   - UX-3.3 diagnostics panel — not implemented
   - Residual UX-1.6 handshake-deadline edge (see note under UX-1.6)
@@ -545,10 +545,10 @@ on keystroke (or other engagement) while disconnected:
 
 ### UX-3.1 — Reconcile reconnection.md "current behavior"
 
-- [ ] Update constants table (15m silent, early terminate rules)
-- [ ] Fix decision tree still claiming tab-switch GAP
-- [ ] Mark Known Gaps G1–G6 fixed/open accurately
-- [ ] Archive superseded heuristic (`HasConnected`) notes into a changelog section
+- [x] Update constants table (15m silent, early terminate rules)
+- [x] Fix decision tree still claiming tab-switch GAP
+- [x] Mark Known Gaps G1–G6 fixed/open accurately
+- [x] Archive superseded heuristic (`HasConnected`) notes into a changelog section  (already superseded in-place by the `authPromptState`/`CanReconnectWithoutPrompt` model; nothing further to archive)
 
 ---
 
