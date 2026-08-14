@@ -178,8 +178,8 @@ export const ReviewMode = memo(({ model, onExit }: ReviewModeProps) => {
                     />
                 </div>
 
-                {/* Scrollable diff sections */}
-                <div className="flex-1 overflow-y-auto min-h-0">
+                {/* Scrollable diff sections (focusable so space/PageUp/PageDown scroll) */}
+                <div className="flex-1 overflow-y-auto min-h-0" tabIndex={0}>
                     {files.map((file, index) => (
                         <FileDiffSection
                             key={file.path}
