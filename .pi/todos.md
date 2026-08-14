@@ -1,5 +1,11 @@
 # Active Tasks
 
+## ⚠️ Open action — manual QA (Jeremy)
+
+- [ ] **Run the reconnection UX-3.2 QA matrix (Q1–Q17)** — these are manual tests that must be done on a real machine with real SSH hosts (network flaps, sleep/wake, VPN, remote reboots + visual UI checks cannot be automated). Steps + expected results: [[specs/reconnection-p1-p2-verification.md]].
+  - Recommended order: quick scenarios first (Q1–Q3, Q9–Q11, Q14), then password-cache paths (Q4, Q5), then the heavy infra ones (Q6–Q8, Q12, Q13, Q15–Q17) when a Linux box / VPN / rebootable server is handy.
+  - Record Pass/Fail in the matrix (Part B of the checklist) and pair with the agent on any failure.
+
 ## Status note (2026-08-14)
 
 Reconnection UX **P0, P1 (UX-1.1–1.8), and most of P2 (UX-2.1–2.8)** are implemented and merged (commits `f62a6305`, `e7b9438e`, `f70c4df8`…`daae7038`). The "Current focus" section below is historical — it predates the P1/P2 land. See [[specs/reconnection-ux-backlog.md]] for the reconciled per-item status. Remaining: UX-3.2 QA matrix (Q1–Q17) not yet run, UX-3.1 doc reconciliation, UX-3.3 diagnostics panel.

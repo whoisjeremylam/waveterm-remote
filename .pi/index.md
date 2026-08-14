@@ -25,8 +25,9 @@ Most developer terminals assume code is installed, built, and tested locally. Th
 ## Current branch / handoff
 
 - **Branch:** `odds-and-ends` (reconnection UX P0/P1/P2 already merged into `main`/`odds-and-ends`)
-- **Next:** run the UX-3.2 QA matrix (Q1–Q17) to sign off reconnection as production-ready; reconcile `reconnection.md` "current behavior"
-- **Todos:** [[todos.md]] — see the 2026-08-14 status note at top
+- **⚠️ ACTION (Jeremy):** run the reconnection UX-3.2 QA matrix (Q1–Q17) — manual tests, see [[specs/reconnection-p1-p2-verification.md]] for steps/expected results and [[todos.md]] for the recommended order
+- **Next (agent):** reconcile `reconnection.md` "current behavior"; then SCM widget P1–P3 or wsh Agent API
+- **Todos:** [[todos.md]] — see the "Open action — manual QA" section at top
 
 ## Context & Decisions
 
