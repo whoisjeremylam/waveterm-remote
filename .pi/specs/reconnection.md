@@ -1,7 +1,9 @@
 # SSH Reconnection Strategies — Design Reference
 
-> Last updated: 2026-07-17
+> Last updated: 2026-08-14 (UX-3.1 reconciliation)
 > Covers: auto-reconnect scheduler, password buffer, tab triggers, error classification, auth-prompt tracking
+
+> **2026-08-14 reconciliation (UX-3.1):** constants table updated with the 15m silent cap; decision-tree tab-switch GAP removed (fixed via `VisibilityReconnectHandler`); Known Gaps G1–G6 marked resolved; the superseded `HasConnected` heuristic was already replaced by the `authPromptState`/`CanReconnectWithoutPrompt` model below (nothing further to archive here).
 
 ## Overview
 
@@ -20,10 +22,11 @@ Eligibility is determined by `CanReconnectWithoutPrompt` (see [Auto-Reconnect El
 
 | Variable | File | Value | Purpose |
 |----------|------|-------|---------|
-| `ConnReconnectInterval` | `jobcontroller.go:122` | 5s | Normal scheduler retry interval |
-| `ConnReconnectAggressiveInterval` | `jobcontroller.go:124` | 3s | Aggressive mode (network unreachable) |
-| `ConnReconnectMaxDuration` | `jobcontroller.go:123` | 5 min | Scheduler gives up after this |
-| `ConnReconnectAggressiveDuration` | `jobcontroller.go:125` | 2 min | Aggressive window, extended on each net error |
+| `ConnReconnectInterval` | `jobcontroller.go:185` | 5s | Normal scheduler retry interval |
+| `ConnReconnectAggressiveInterval` | `jobcontroller.go:188` | 3s | Aggressive mode (network unreachable) |
+| `ConnReconnectMaxDuration` | `jobcontroller.go:186` | 5 min | Scheduler cap for interactive-attempt connections (defensive; they rarely reach the scheduler) |
+| `ConnReconnectMaxDurationSilent` | `jobcontroller.go:187` | 15 min | Scheduler cap for silently-reconnectable connections (key-based / cached password) |
+| `ConnReconnectAggressiveDuration` | `jobcontroller.go:189` | 2 min | Aggressive window, extended on each net error |
 | `ConnReconnectCooldown` (scheduler connect timeout) | `jobcontroller.go:816` | 5s | Timeout per `AttemptReconnect` call |
 | `AutoReconnectCooldown` | `jobcontroller.go:121` | 30s | Cooldown for job route reconnect |
 | `userInputTimeout` (password prompt) | `sshclient.go:442` | 60s | Max time user has to enter password |
@@ -326,8 +329,8 @@ connected   max 5 min   no durable jobs
    │    │ NO      │  (init, disconnected, or other error)
    │    │         ▼
    │    │    SKIP scheduler. Connection stays in current state.
-   │    │    User must manually click [Reconnect] or block remount triggers ConnEnsureCommand.
-   │    │    ▸ GAP: tab switch does NOT trigger reconnect (see Phase 8)
+   │    │    User must manually click [Reconnect], block remount triggers ConnEnsureCommand,
+   │    │    or tab switch / window focus triggers VisibilityReconnectHandler (Phase 2I).
    │    │
    └────┴────┘
 ```
@@ -343,7 +346,7 @@ connected   max 5 min   no durable jobs
 | `unknown` | Unclassified errors | ✅ (if autonomous) | Dismiss prompt |
 | `user-cancelled` | User clicked Cancel on prompt | ❌ | Prompt dismissed, connection stays in error |
 
-> **Note**: Timeout errors currently classified as `dial-error` (sshclient.go:194-195) cause the frontend to dismiss the prompt on `connchange`. Phase 3A fixes this by not dismissing on non-auth errors.
+> **Note**: The prompt is dismissed only on successful connect. `auth-failed` keeps it visible (per-tab dismissed state is reset so all tabs re-show it); non-auth errors (timeout, dial-error) also keep it visible — the password buffer is independent of connection lifecycle. (Earlier builds dismissed on non-auth `connchange`; fixed in the `global.ts` connchange handler.)
 
 ---
 
@@ -389,16 +392,16 @@ connected   max 5 min   no durable jobs
 
 ---
 
-## Known Gaps (to be addressed)
+## Known Gaps (all resolved — kept for history)
 
-| # | Gap | Priority | Plan Phase |
-|---|-----|----------|------------|
-| G1 | No tab-switch trigger for disconnected connections | High | Fixed 2026-07-23 — `VisibilityReconnectHandler` (see Phase 2I below) |
-| G2 | Auth-failed leaves prompt permanently dismissed (no re-prompt without manual Reconnect) | Critical | Phase 6.5 |
-| G3 | Password lost when context timeout kills parent goroutine before user responds | High | Phase 2A |
-| G4 | `connchange` events not buffered — late windows miss dismissals | High | Phase 5 |
-| G5 | Scheduler 5s timeout propagates to password callback (60s→5s) | High | Phase 2B-2C |
-| G6 | ConnName lost when `context.Background()` decoupled from connection context (Phase 2 broke ConnName injection) | High | Phase 2D (fixed 2026-06-27) |
+| # | Gap | Priority | Status |
+|---|-----|----------|--------|
+| G1 | No tab-switch trigger for disconnected connections | High | ✅ Fixed 2026-07-23 — `VisibilityReconnectHandler` (Phase 2I) |
+| G2 | Auth-failed leaves prompt permanently dismissed (no re-prompt without manual Reconnect) | Critical | ✅ Fixed — `requestPasswordRePrompt` re-prompts on credential rejection (UX-1.4) |
+| G3 | Password lost when context timeout kills parent goroutine before user responds | High | ✅ Fixed — decoupled 120s `requestPasswordRePrompt` context (Phase 2A) |
+| G4 | `connchange` events not buffered — late windows miss dismissals | High | ✅ Fixed — `PendingEvents` buffer + `PendingEventTTL` in `wps.go` (Phase 5) |
+| G5 | Scheduler 5s timeout propagates to password callback (60s→5s) | High | ✅ Fixed — Phase 2B-2C decoupling; queue-wait + handshake-deadline re-arm follow-on (UX-1.6) |
+| G6 | ConnName lost when `context.Background()` decoupled from connection context (Phase 2 broke ConnName injection) | High | ✅ Fixed 2026-06-27 (Phase 2D) |
 
 ---
 
@@ -874,7 +877,7 @@ All three paths are idempotent: `ClientDisconnected` checks `if !sm.connected { 
 
 ## Phase 2N — Reconnection UX P0 + password/suppress hardening (2026-07-24)
 
-**Branch:** `feat/reconnect-ux-p0` (not yet merged to main at time of writing).
+**Branch:** `feat/reconnect-ux-p0` — merged (P0 via PRs #40/#41/#42, plus P1 `f62a6305`/`e7b9438e` and P2 follow-ups).
 
 ### Product (UX-0.1 … UX-0.5)
 

@@ -2,6 +2,10 @@ package streamclient
 
 import (
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -145,11 +149,52 @@ func (b *Broker) processRecvWork(item workItem) {
 	}
 }
 
+// goroutineDumpLock and lastGoroutineDumpAt rate-limit full goroutine stack dumps
+// triggered when an ACK send times out (the signature of a wedged output stream).
+// The dump captures the blocked goroutines at the exact moment the wedge begins,
+// so it doesn't rely on the user noticing the freeze in time.
+var (
+	goroutineDumpLock   sync.Mutex
+	lastGoroutineDumpAt time.Time
+)
+
+// dumpGoroutinesOnce writes a full goroutine stack dump (equivalent to the pprof
+// goroutine endpoint) to a timestamped file in os.TempDir(). It is rate-limited to
+// once per 10 minutes so intermittent ACK timeouts don't flood the filesystem.
+func dumpGoroutinesOnce() {
+	goroutineDumpLock.Lock()
+	defer goroutineDumpLock.Unlock()
+	if time.Since(lastGoroutineDumpAt) < 10*time.Minute {
+		return
+	}
+	lastGoroutineDumpAt = time.Now()
+
+	buf := make([]byte, 1024*1024)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, len(buf)*2)
+	}
+
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("waveterm-goroutine-dump-%s.txt", time.Now().Format("20060102-150405")))
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		log.Printf("[streamclient] dumpGoroutinesOnce: failed to write goroutine dump: %v", err)
+		return
+	}
+	log.Printf("[streamclient] dumpGoroutinesOnce: wrote goroutine dump to %s (%d bytes)", path, len(buf))
+}
+
 func (b *Broker) processSendAck(ackPk wshrpc.CommandStreamAckData) {
 	b.lock.Lock()
 	route, ok := b.writerRoutes[ackPk.Id]
 	b.lock.Unlock()
 	if !ok {
+		// A missing writer route means the ACK is silently dropped, which can
+		// wedge the remote StreamManager's flow-control window.
+		log.Printf("[streamclient] processSendAck: no writer route for stream %s, dropping ACK seq=%d", ackPk.Id, ackPk.Seq)
 		return
 	}
 
@@ -157,7 +202,12 @@ func (b *Broker) processSendAck(ackPk wshrpc.CommandStreamAckData) {
 		Route:      route,
 		NoResponse: true,
 	}
-	b.rpcClient.StreamDataAckCommand(ackPk, opts)
+	if err := b.rpcClient.StreamDataAckCommand(ackPk, opts); err != nil {
+		log.Printf("[streamclient] processSendAck: error sending ACK for stream %s seq=%d: %v", ackPk.Id, ackPk.Seq, err)
+		// Capture the full goroutine state at the moment the ACK path blocks so
+		// the wedge can be diagnosed without a manual pprof grab.
+		dumpGoroutinesOnce()
+	}
 
 	if ackPk.Fin || ackPk.Cancel {
 		b.cleanupReader(ackPk.Id)

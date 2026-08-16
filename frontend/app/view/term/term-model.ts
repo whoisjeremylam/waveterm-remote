@@ -115,7 +115,7 @@ export class TermViewModel implements ViewModel {
             const blockData = get(this.blockAtom);
             const termMode = get(this.termMode);
             if (termMode == "vdom") {
-                return "Wave App";
+                return "RemoteTerm";
             }
             if (blockData?.meta?.controller == "cmd") {
                 return "";
@@ -1184,6 +1184,10 @@ export class TermViewModel implements ViewModel {
         advancedSubmenu.push({
             label: "Force Restart Controller",
             click: () => fireAndForget(() => this.forceRestartController()),
+        });
+        advancedSubmenu.push({
+            label: "Reconnect Stream",
+            click: () => fireAndForget(() => RpcApi.BlockRestartStreamCommand(TabRpcClient, this.blockId)),
         });
         const isClearOnStart = blockData?.meta?.["cmd:clearonstart"];
         advancedSubmenu.push({

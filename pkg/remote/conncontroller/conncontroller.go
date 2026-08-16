@@ -114,6 +114,13 @@ func init() {
 	// UX-1.6: surface "Waiting to sign in…" while blocked on the password queue.
 	// Registered here to avoid userinput → conncontroller import cycle.
 	userinput.OnAuthQueueWait = SetAuthQueueWaitingByName
+
+	// UX-1.6 residual: re-arm the SSH handshake deadline once a serialized prompt
+	// actually acquires the lock (queued time must not eat the typing budget).
+	// Registered here (same cycle-avoidance rationale as OnAuthQueueWait).
+	userinput.OnPromptShown = func(connName string, promptTimeout time.Duration) {
+		remote.ExtendActiveHandshakeDeadline(connName, promptTimeout)
+	}
 }
 
 type SSHConn struct {
@@ -724,10 +731,14 @@ func (conn *SSHConn) closeInternal_withlifecyclelock(expectedClient *ssh.Client)
 			oldMonitor.Close()
 		}
 		for _, rule := range oldLocalForwardListeners {
-			rule.Listener.Close()
+			if rule.Listener != nil {
+				rule.Listener.Close()
+			}
 		}
 		for _, rule := range oldRemoteForwardListeners {
-			rule.Listener.Close()
+			if rule.Listener != nil {
+				rule.Listener.Close()
+			}
 		}
 	}()
 }

@@ -1,0 +1,96 @@
+name: Build Linux (CI)
+on:
+    push:
+        branches:
+            - "**"
+    workflow_dispatch:
+
+env:
+    GO_VERSION: "1.26.2"
+    NODE_VERSION: 22
+    NODE_OPTIONS: --max-old-space-size=4096
+
+jobs:
+    build:
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    # amd64 build runs on a standard GitHub-hosted x64 runner
+                    - goarch: amd64
+                      zigarch: x86_64
+                      runner: ubuntu-latest
+                    # arm64 build runs on a GitHub-hosted arm64 Linux runner
+                    # (available for public repos; see https://github.com/actions/runner-images)
+                    - goarch: arm64
+                      zigarch: aarch64
+                      runner: ubuntu-24.04-arm
+        runs-on: ${{ matrix.runner }}
+        steps:
+            - uses: actions/checkout@v6
+
+            # Linux packaging deps for deb + AppImage.
+            # - fpm: deb packaging (electron-builder with USE_SYSTEM_FPM)
+            # - libarchive-tools / libopenjp2-tools: electron-builder image/archive tooling
+            # (rpm, squashfs-tools, snapcraft, lxd are NOT needed since we only build deb + AppImage)
+            - name: Install Linux build dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install --no-install-recommends -y libarchive-tools libopenjp2-tools
+                  sudo gem install fpm
+
+            # Install Go locally (into golang-<version>/ with a throwaway go.mod so `go mod tidy`
+            # does not scan the Go toolchain dir). Path matches Taskfile var GO_DIR.
+            - name: Install Go
+              run: |
+                  rm -rf go "golang-${{ env.GO_VERSION }}"
+                  curl -sL "https://go.dev/dl/go${{ env.GO_VERSION }}.linux-${{ matrix.goarch }}.tar.gz" | tar -xzf - -C .
+                  mv go "golang-${{ env.GO_VERSION }}"
+                  echo "module golang" > "golang-${{ env.GO_VERSION }}/go.mod"
+
+            # Install Zig (used as the CGO cross-compiler for the Go backend, pinning glibc to 2.28)
+            - name: Install Zig
+              run: |
+                  curl -sL "https://ziglang.org/download/0.14.0/zig-linux-${{ matrix.zigarch }}-0.14.0.tar.xz" | tar -xJf -
+                  mv zig-linux-${{ matrix.zigarch }}-0.14.0 zig-0.14.0
+
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install Task
+              uses: arduino/setup-task@v2
+              with:
+                  version: 3.x
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+            # Force git deps to HTTPS so npm ci resolves non-interactively on a fresh runner
+            - name: Force git deps to HTTPS
+              run: |
+                  git config --global url.https://github.com/.insteadof ssh://git@github.com/
+                  git config --global url.https://github.com/.insteadof git@github.com:
+
+            - name: Install deps
+              run: npm ci --no-audit --no-fund
+              env:
+                  GIT_ASKPASS: "echo"
+                  GIT_TERMINAL_PROMPT: "0"
+
+            # Build only deb + AppImage (override electron-builder's configured linux target list
+            # via CLI so electron-builder.config.cjs stays upstream-mergeable).
+            - name: Build
+              run: task package -- --linux deb AppImage
+              env:
+                  USE_SYSTEM_FPM: true
+
+            - name: Sanitize branch name
+              id: sanitize
+              run: echo "branch=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
+
+            - name: Upload artifacts
+              uses: actions/upload-artifact@v5
+              with:
+                  name: linux-build-${{ matrix.goarch }}-${{ steps.sanitize.outputs.branch }}
+                  path: make/

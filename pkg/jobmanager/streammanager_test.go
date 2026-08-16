@@ -497,10 +497,10 @@ func TestClientConnectedBoundsWithDisk(t *testing.T) {
 	sm.Close()
 }
 
-func TestClientConnectedBoundsBeyondDisk(t *testing.T) {
+func TestClientConnectedClampsClientSeqBeyondStreamEnd(t *testing.T) {
 	sm := MakeStreamManager()
 
-	// Set up disk state
+	// Set up disk state with 50 bytes of stream history
 	tmpDir := t.TempDir()
 	diskPath := tmpDir + "/test.stream"
 	f, err := os.Create(diskPath)
@@ -515,11 +515,35 @@ func TestClientConnectedBoundsBeyondDisk(t *testing.T) {
 
 	tw := &testWriter{}
 
-	// clientSeq beyond disk range should fail
-	_, err = sm.ClientConnected("1", tw, CwndSize, 100)
-	if err == nil {
-		t.Fatal("ClientConnected with clientSeq beyond disk range should fail")
+	// clientSeq ahead of stream end is clamped to the authoritative end, not rejected.
+	serverSeq, err := sm.ClientConnected("1", tw, CwndSize, 100)
+	if err != nil {
+		t.Fatalf("ClientConnected with clientSeq beyond stream end should clamp, got error: %v", err)
 	}
+	if serverSeq != 50 {
+		t.Errorf("Expected serverSeq=50 (clamped), got %d", serverSeq)
+	}
+	sm.Close()
+}
+
+func TestClientConnectedClampsClientSeqBeyondCirBuf(t *testing.T) {
+	sm := MakeStreamManager()
+
+	// Feed data into the CirBuf (no disk): TotalSize becomes len(data).
+	data := []byte("hello")
+	sm.handleReadData(data)
+
+	tw := &testWriter{}
+
+	// clientSeq (100) ahead of stream end (5) should clamp to 5, not fail.
+	serverSeq, err := sm.ClientConnected("1", tw, CwndSize, 100)
+	if err != nil {
+		t.Fatalf("ClientConnected with clientSeq beyond CirBuf end should clamp, got error: %v", err)
+	}
+	if serverSeq != 5 {
+		t.Errorf("Expected serverSeq=5 (clamped), got %d", serverSeq)
+	}
+	sm.Close()
 }
 
 func TestDrainCompletionCleansUpDisk(t *testing.T) {

@@ -154,6 +154,12 @@ export const FileDiffSection = memo(({ model, file, index, isCollapsed, onToggle
         fontFamily: "Hack",
         minimap: { enabled: false },
         wordWrap: "off" as const,
+        // Review-mode editors are auto-height (sized to fit content), so they have
+        // no internal scroll. Without this, Monaco consumes wheel events even when
+        // it can't scroll, which blocks the outer overflow-y-auto container from
+        // scrolling the stacked files. Let the wheel bubble when there's nothing to
+        // scroll internally.
+        scrollbar: { alwaysConsumeMouseWheel: false },
     }), [viewMode]);
 
     const stageLabel = file.untracked ? "Stage" : (isStaged ? "Unstage" : "Stage");

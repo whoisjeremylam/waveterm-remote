@@ -66,6 +66,12 @@ export class RpcApiType {
         return client.wshRpcCall("blockinfo", data, opts);
     }
 
+    // command "blockrestartstream" [call]
+    BlockRestartStreamCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "blockrestartstream", data, opts);
+        return client.wshRpcCall("blockrestartstream", data, opts);
+    }
+
     // command "blockjobstatus" [call]
     BlockJobStatusCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<BlockJobStatusData> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "blockjobstatus", data, opts);

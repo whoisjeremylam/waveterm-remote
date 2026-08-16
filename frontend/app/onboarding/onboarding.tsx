@@ -54,7 +54,7 @@ const InitPage = ({
                 <div className={`${isCompact ? "" : "mb-2.5"} flex justify-center`}>
                     <Logo />
                 </div>
-                <div className="text-center text-[25px] font-normal text-foreground">Welcome to Wave Terminal</div>
+                <div className="text-center text-[25px] font-normal text-foreground">Welcome to RemoteTerm</div>
             </header>
             <OverlayScrollbarsComponent
                 className="flex-1 overflow-y-auto min-h-0"

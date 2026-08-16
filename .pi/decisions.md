@@ -588,3 +588,19 @@ Gates are soft (delay/retry, user Connect can bypass). They do not prove the SSH
 **Files:** `pkg/remote/conncontroller/conncontroller.go`, `pkg/userinput/userinput.go`, `frontend/app/tab/visibilityreconnect.tsx`, unit tests in `conncontroller_test.go` / `userinput_test.go`.
 
 **Not changed:** global dial timeout stays 60s for slow networks; soft-cancel is attention-driven (Ensure on focus/heartbeat), not a shorter hard dial timeout.
+
+## 2026-08-16: Reconnect Stream recovery RPC + stream-wedge instrumentation
+
+**Context:** A terminal block can appear "connected" while its output stream is wedged — a flow-control/ACK deadlock or seq drift between the remote `StreamManager` and the backend `Reader`. Input keeps working, the SSH connection stays healthy (keepalives pass), and a frontend tab reload can't help because no new bytes reach the WaveFS term file. The existing `JobControllerReconnectJobCommand` can't recover it either, since `doReconnectJob` skips jobs it considers "already connected".
+
+**Decision:**
+
+1. Add `blockrestartstream` RPC (`BlockRestartStreamCommand(blockId)`) that calls `restartStreaming` directly for the block's job, bypassing the "already connected" guard. This re-handshakes seq/ACK and starts a fresh output loop without reconnecting SSH or killing the durable shell.
+2. Surface it in the term block **Advanced** context menu as **"Reconnect Stream"**.
+3. Add low-noise instrumentation to localize the wedge:
+   - remote `StreamManager`: `stallWatchdog` (logs full flow-control state when unacked data has no ACK for >10s) plus rate-limited `RecvAck` rejection logs (`stale` / `seq-behind-head` / `ack-exceeds-sent`).
+   - backend `streamclient`: rate-limited seq-anomaly logs (dropped / out-of-order packets) and `processSendAck` route-missing / send-error logs.
+
+**Files:** `pkg/jobcontroller/jobcontroller.go`, `pkg/jobmanager/streammanager.go`, `pkg/streamclient/streamreader.go`, `pkg/streamclient/streambroker.go`, `pkg/wshrpc/{wshrpctypes,wshserver,wshclient}`, `frontend/app/store/wshclientapi.ts`, `frontend/app/view/term/term-model.ts`.
+
+**Open:** root cause not yet identified; the instrumentation is intended to capture the exact stuck state on the next occurrence (likely seq drift or an ACK deadlock in the durable-shell stream path).
