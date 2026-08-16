@@ -604,3 +604,17 @@ Gates are soft (delay/retry, user Connect can bypass). They do not prove the SSH
 **Files:** `pkg/jobcontroller/jobcontroller.go`, `pkg/jobmanager/streammanager.go`, `pkg/streamclient/streamreader.go`, `pkg/streamclient/streambroker.go`, `pkg/wshrpc/{wshrpctypes,wshserver,wshclient}`, `frontend/app/store/wshclientapi.ts`, `frontend/app/view/term/term-model.ts`.
 
 **Open:** root cause not yet identified; the instrumentation is intended to capture the exact stuck state on the next occurrence (likely seq drift or an ACK deadlock in the durable-shell stream path).
+
+## 2026-08-16: Files-widget transfer transport — application-layer tar.gz, SSH compression deferred
+
+**Context:** The files widget (preview block in directory mode) transfers files over the WSH RPC protocol, which is JSON text; binary payloads are base64-encoded (`Data64`). The whole-file write/upload path carries a 32 MB cap and ships the entire file as one base64 blob in a single RPC; there is no progress, cancel, or recursive (directory) transfer. We considered enabling SSH channel compression to reclaim base64's ~33% overhead. `golang.org/x/crypto/ssh` (vendored via `local_crypto_patch/contents`) does not implement compression — `supportedCompressions = []string{compressionNone}` — so SSH compression would require implementing the `zlib@openssh.com` codec in the local crypto patch, and it taxes every byte on the connection (terminal traffic included) and gives no benefit on already-compressed files.
+
+**Decision:**
+
+1. **Application-layer compression only.** Use tar.gz streaming on the transfer path for recursive (directory) transfers and bulk multi-file transfers. This compresses only where it helps, doubles as the recursive-transfer mechanism, and leaves the SSH layer untouched.
+2. **Do not implement SSH channel compression** (`zlib@openssh.com`) for now. Revisit only if profile data shows base64 overhead on non-archive (single-file) transfers is the bottleneck after window/chunk tuning.
+3. **Stream-broker transport for all transfers.** Move upload/write off the whole-file base64 RPC onto the existing stream broker (chunked, ACK flow-controlled, no total-size limit). Progress and cancellation derive from `Writer.GetAckState()` / `Writer.GetCanceledChan()`.
+4. **Transparency requirement:** archive/bulk transfers must be surfaced distinctly from single-file transfers (phase: preparing → transferring → extracting, with file count and totals) so users do not expect scp-style per-file appearance.
+5. **Hybrid archive strategy:** pre-archive to a temp tar.gz above a size threshold (determinate progress bar for large trees), stream-compress on the fly below it (faster start, indeterminate bar). Threshold TBD.
+
+**Files:** (new) `.pi/specs/files-widget-transfer-engine.md`; code changes tracked there.
