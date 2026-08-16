@@ -30,20 +30,21 @@ type UserInputProvider interface {
 }
 
 type UserInputRequest struct {
-	RequestId     string `json:"requestid"`
-	QueryText     string `json:"querytext"`
-	ResponseType  string `json:"responsetype"`
-	Title         string `json:"title"`
-	Markdown      bool   `json:"markdown"`
-	TimeoutMs     int    `json:"timeoutms"`
-	CheckBoxMsg   string `json:"checkboxmsg"`
-	PublicText    bool   `json:"publictext"`
-	OkLabel       string `json:"oklabel,omitempty"`
-	CancelLabel   string `json:"cancellabel,omitempty"`
-	ConnName      string `json:"connname,omitempty"`
-	PromptType    string `json:"prompttype,omitempty"`    // "password", "confirm", etc.
-	QueuePosition int    `json:"queueposition,omitempty"` // UX-1.6: 1-based position in prompt queue
-	QueueTotal    int    `json:"queuetotal,omitempty"`    // UX-1.6: total queued prompts for this window
+	RequestId     string   `json:"requestid"`
+	QueryText     string   `json:"querytext"`
+	ResponseType  string   `json:"responsetype"`
+	Title         string   `json:"title"`
+	Markdown      bool     `json:"markdown"`
+	TimeoutMs     int      `json:"timeoutms"`
+	CheckBoxMsg   string   `json:"checkboxmsg"`
+	PublicText    bool     `json:"publictext"`
+	OkLabel       string   `json:"oklabel,omitempty"`
+	CancelLabel   string   `json:"cancellabel,omitempty"`
+	ConnName      string   `json:"connname,omitempty"`
+	PromptType    string   `json:"prompttype,omitempty"`    // "password", "confirm", etc.
+	Options       []string `json:"options,omitempty"`       // N-option prompt choices (responsetype == "options")
+	QueuePosition int      `json:"queueposition,omitempty"` // UX-1.6: 1-based position in prompt queue
+	QueueTotal    int      `json:"queuetotal,omitempty"`    // UX-1.6: total queued prompts for this window
 }
 
 // OnAuthQueueWait is invoked when an SSH auth prompt starts/stops waiting on

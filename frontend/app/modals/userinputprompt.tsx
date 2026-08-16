@@ -74,6 +74,21 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
         [userInputRequest, handleDismiss]
     );
 
+    const handleSendOption = useCallback(
+        (option: string) => {
+            fireAndForget(() =>
+                UserInputService.SendUserInputResponse({
+                    type: "userinputresp",
+                    requestid: userInputRequest.requestid,
+                    text: option,
+                    connname: connName,
+                })
+            );
+            handleDismiss();
+        },
+        [userInputRequest, handleDismiss, connName]
+    );
+
     const handleSubmit = useCallback(() => {
         switch (userInputRequest.responsetype) {
             case "text":
@@ -81,6 +96,9 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
                 break;
             case "confirm":
                 handleSendConfirm(true);
+                break;
+            case "options":
+                // Options are selected by direct click; Enter has no default action.
                 break;
         }
     }, [handleSendConfirm, handleSendText, userInputRequest.responsetype]);
@@ -107,7 +125,7 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
     }, [userInputRequest.markdown, userInputRequest.querytext]);
 
     const inputBox = useMemo(() => {
-        if (userInputRequest.responsetype === "confirm") {
+        if (userInputRequest.responsetype === "confirm" || userInputRequest.responsetype === "options") {
             return <></>;
         }
         return (
@@ -144,9 +162,25 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
         );
     }, []);
 
+    const optionsBox = useMemo(() => {
+        if (userInputRequest.responsetype !== "options") {
+            return <></>;
+        }
+        return (
+            <div className="flex flex-col gap-1.5">
+                {(userInputRequest.options ?? []).map((option, idx) => (
+                    <Button key={`${option}-${idx}`} className="grey" onClick={() => handleSendOption(option)}>
+                        {option}
+                    </Button>
+                ))}
+            </div>
+        );
+    }, [userInputRequest.responsetype, userInputRequest.options, handleSendOption]);
+
     const handleNegativeResponse = useCallback(() => {
         switch (userInputRequest.responsetype) {
             case "text":
+            case "options":
                 handleSendErrResponse();
                 break;
             case "confirm":
@@ -186,16 +220,19 @@ const UserInputPrompt = (userInputRequest: UserInputPromptProps) => {
                 <div className="userinput-prompt-body">
                     {queryText}
                     {inputBox}
+                    {optionsBox}
                     {optionalCheckbox}
                 </div>
-                <div className="userinput-prompt-footer">
-                    <Button className="grey ghost" onClick={handleNegativeResponse}>
-                        {userInputRequest.cancellabel || "Cancel"}
-                    </Button>
-                    <Button onClick={() => handleSubmit()}>
-                        {userInputRequest.oklabel || "Ok"}
-                    </Button>
-                </div>
+                {userInputRequest.responsetype !== "options" && (
+                    <div className="userinput-prompt-footer">
+                        <Button className="grey ghost" onClick={handleNegativeResponse}>
+                            {userInputRequest.cancellabel || "Cancel"}
+                        </Button>
+                        <Button onClick={() => handleSubmit()}>
+                            {userInputRequest.oklabel || "Ok"}
+                        </Button>
+                    </div>
+                )}
             </div>
         </div>
     );

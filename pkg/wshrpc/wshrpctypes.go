@@ -46,6 +46,7 @@ type WshRpcInterface interface {
 	GetJwtPublicKeyCommand(ctx context.Context) (string, error) // (special) gets the public JWT signing key
 
 	MessageCommand(ctx context.Context, data CommandMessageData) error
+	PromptCommand(ctx context.Context, data CommandPromptData) (string, error)
 	GetMetaCommand(ctx context.Context, data CommandGetMetaData) (waveobj.MetaMapType, error)
 	SetMetaCommand(ctx context.Context, data CommandSetMetaData) error
 	ControllerInputCommand(ctx context.Context, data CommandBlockInputData) error
@@ -267,6 +268,12 @@ type CommandDisposeData struct {
 
 type CommandMessageData struct {
 	Message string `json:"message"`
+}
+
+type CommandPromptData struct {
+	Question string   `json:"question"`
+	Options  []string `json:"options,omitempty"`
+	Title    string   `json:"title,omitempty"`
 }
 
 type CommandGetMetaData struct {

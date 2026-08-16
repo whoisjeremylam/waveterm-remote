@@ -34,6 +34,7 @@ import (
 	"github.com/wavetermdev/waveterm/pkg/remote/fileshare/wshfs"
 	"github.com/wavetermdev/waveterm/pkg/secretstore"
 	"github.com/wavetermdev/waveterm/pkg/suggestion"
+	"github.com/wavetermdev/waveterm/pkg/userinput"
 	"github.com/wavetermdev/waveterm/pkg/util/envutil"
 	"github.com/wavetermdev/waveterm/pkg/util/shellutil"
 	"github.com/wavetermdev/waveterm/pkg/util/utilfn"
@@ -88,6 +89,49 @@ func (ws *WshServer) TestMultiArgCommand(ctx context.Context, arg1 string, arg2 
 func (ws *WshServer) MessageCommand(ctx context.Context, data wshrpc.CommandMessageData) error {
 	log.Printf("MESSAGE: %s\n", data.Message)
 	return nil
+}
+
+// buildPromptRequest builds the userinput.UserInputRequest for the `wsh prompt`
+// RPC. Pure function kept separate for testability. When options is empty the
+// prompt is a free-text input; otherwise it becomes an N-option picker.
+func buildPromptRequest(question string, title string, options []string) *userinput.UserInputRequest {
+	if title == "" {
+		title = "Wave Terminal"
+	}
+	request := &userinput.UserInputRequest{
+		QueryText:    question,
+		Title:        title,
+		ResponseType: "text",
+		Markdown:     false,
+		PublicText:   true,
+		PromptType:   "confirm",
+	}
+	if len(options) > 0 {
+		request.ResponseType = "options"
+		request.Options = options
+	}
+	return request
+}
+
+// PromptCommand asks the user a question via a UI modal and blocks until the
+// user answers (or cancels/times out), returning the answer. PromptType is
+// "confirm" (not an SSH auth prompt) so the request is not serialized per-window.
+func (ws *WshServer) PromptCommand(ctx context.Context, data wshrpc.CommandPromptData) (string, error) {
+	defer func() {
+		panichandler.PanicHandler("PromptCommand", recover())
+	}()
+	request := buildPromptRequest(data.Question, data.Title, data.Options)
+	response, err := userinput.GetUserInput(ctx, request)
+	if err != nil {
+		return "", err
+	}
+	if response == nil {
+		return "", fmt.Errorf("no response received for prompt")
+	}
+	if response.ErrorMsg != "" {
+		return "", fmt.Errorf("%s", response.ErrorMsg)
+	}
+	return response.Text, nil
 }
 
 // for testing

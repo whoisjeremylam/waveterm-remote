@@ -704,6 +704,12 @@ func PathCommand(w *wshutil.WshRpc, data wshrpc.PathCommandData, opts *wshrpc.Rp
 	return resp, err
 }
 
+// command "prompt", wshserver.PromptCommand
+func PromptCommand(w *wshutil.WshRpc, data wshrpc.CommandPromptData, opts *wshrpc.RpcOpts) (string, error) {
+	resp, err := sendRpcRequestCallHelper[string](w, "prompt", data, opts)
+	return resp, err
+}
+
 // command "publishapp", wshserver.PublishAppCommand
 func PublishAppCommand(w *wshutil.WshRpc, data wshrpc.CommandPublishAppData, opts *wshrpc.RpcOpts) (*wshrpc.CommandPublishAppRtnData, error) {
 	resp, err := sendRpcRequestCallHelper[*wshrpc.CommandPublishAppRtnData](w, "publishapp", data, opts)

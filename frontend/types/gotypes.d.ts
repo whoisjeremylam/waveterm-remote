@@ -522,6 +522,13 @@ declare global {
         message: string;
     };
 
+    // wshrpc.CommandPromptData
+    type CommandPromptData = {
+        question: string;
+        options?: string[];
+        title?: string;
+    };
+
     // wshrpc.CommandPublishAppData
     type CommandPublishAppData = {
         appid: string;
@@ -1641,6 +1648,7 @@ declare global {
         cancellabel?: string;
         connname?: string;
         prompttype?: string;
+        options?: string[];
         queueposition?: number;
         queuetotal?: number;
     };

@@ -708,6 +708,12 @@ export class RpcApiType {
         return client.wshRpcCall("path", data, opts);
     }
 
+    // command "prompt" [call]
+    PromptCommand(client: WshClient, data: CommandPromptData, opts?: RpcOpts): Promise<string> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "prompt", data, opts);
+        return client.wshRpcCall("prompt", data, opts);
+    }
+
     // command "publishapp" [call]
     PublishAppCommand(client: WshClient, data: CommandPublishAppData, opts?: RpcOpts): Promise<CommandPublishAppRtnData> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "publishapp", data, opts);
