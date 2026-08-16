@@ -433,6 +433,49 @@ func TestDirectionToTargetAction(t *testing.T) {
 	}
 }
 
+func TestValidateSelectAddressing(t *testing.T) {
+	tests := []struct {
+		name          string
+		leftOf        string
+		rightOf       string
+		aboveOf       string
+		belowOf       string
+		positional    string
+		wantDirection string
+		wantBaseRef   string
+		wantErr       bool
+	}{
+		{name: "no addressing form is valid (defaults to this)"},
+		{name: "positional only", positional: "block:abc"},
+		{name: "left-of only", leftOf: "block:abc", wantDirection: "left", wantBaseRef: "block:abc"},
+		{name: "right-of only", rightOf: "block:abc", wantDirection: "right", wantBaseRef: "block:abc"},
+		{name: "above only", aboveOf: "block:abc", wantDirection: "above", wantBaseRef: "block:abc"},
+		{name: "below only", belowOf: "block:abc", wantDirection: "below", wantBaseRef: "block:abc"},
+		{name: "right-of and left-of conflict", rightOf: "b1", leftOf: "b2", wantErr: true},
+		{name: "right-of and above conflict", rightOf: "b1", aboveOf: "b2", wantErr: true},
+		{name: "right-of and positional conflict", rightOf: "b1", positional: "b2", wantErr: true},
+		{name: "left-of and positional conflict", leftOf: "b1", positional: "b2", wantErr: true},
+		{name: "all four conflict", leftOf: "a", rightOf: "b", aboveOf: "c", belowOf: "d", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotDir, gotRef, err := validateSelectAddressing(tt.leftOf, tt.rightOf, tt.aboveOf, tt.belowOf, tt.positional)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateSelectAddressing(%q,%q,%q,%q,%q) error = %v, wantErr %v",
+					tt.leftOf, tt.rightOf, tt.aboveOf, tt.belowOf, tt.positional, err, tt.wantErr)
+				return
+			}
+			if err != nil {
+				return
+			}
+			if gotDir != tt.wantDirection || gotRef != tt.wantBaseRef {
+				t.Errorf("validateSelectAddressing(...) = (%q, %q), want (%q, %q)", gotDir, gotRef, tt.wantDirection, tt.wantBaseRef)
+			}
+		})
+	}
+}
+
 func TestValidateSplitPair(t *testing.T) {
 	tests := []struct {
 		name       string

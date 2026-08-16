@@ -93,6 +93,14 @@ declare global {
         meta?: MetaType;
     };
 
+    // wshrpc.BlockGeometry
+    type BlockGeometry = {
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+    };
+
     // wshrpc.BlockInfoData
     type BlockInfoData = {
         blockid: string;
@@ -125,6 +133,10 @@ declare global {
         tabid: string;
         blockid: string;
         meta: MetaType;
+        index?: number;
+        geometry?: BlockGeometry;
+        focused?: boolean;
+        magnified?: boolean;
     };
 
     // wshrpc.BlocksListRequest
@@ -628,6 +640,12 @@ declare global {
         appid: string;
         fromfilename: string;
         tofilename: string;
+    };
+
+    // wshrpc.CommandResolveDirectionalData
+    type CommandResolveDirectionalData = {
+        blockid: string;
+        direction: string;
     };
 
     // wshrpc.CommandResolveIdsData

@@ -947,18 +947,30 @@ func (ws *WshServer) BlocksListCommand(
 			if err != nil {
 				return nil, err
 			}
+			layoutInfo, layoutErr := wcore.ComputeBlockGeometry(ctx, tabID)
+			if layoutErr != nil {
+				log.Printf("error computing block geometry for tab %s: %v", tabID, layoutErr)
+				layoutInfo = nil
+			}
 			for _, blkID := range tab.BlockIds {
 				blk, err := wstore.DBMustGet[*waveobj.Block](ctx, blkID)
 				if err != nil {
 					return nil, err
 				}
-				results = append(results, wshrpc.BlocksListEntry{
+				entry := wshrpc.BlocksListEntry{
 					WindowId:    windowId,
 					WorkspaceId: wsID,
 					TabId:       tabID,
 					BlockId:     blkID,
 					Meta:        blk.Meta,
-				})
+				}
+				if layoutInfo != nil {
+					entry.Index = layoutInfo.Index[blkID]
+					entry.Geometry = layoutInfo.Geometry[blkID]
+					entry.Focused = layoutInfo.Focused[blkID]
+					entry.Magnified = layoutInfo.Magnified[blkID]
+				}
+				results = append(results, entry)
 			}
 		}
 	}
@@ -1513,4 +1525,41 @@ func (ws *WshServer) BlockReadTermFileCommand(ctx context.Context, blockId strin
 		return "", fmt.Errorf("error reading block term file: %w", err)
 	}
 	return string(data), nil
+}
+
+// ResolveDirectionalCommand returns the block geometrically adjacent to
+// data.BlockId in data.Direction (left/right/above/below). Geometry is computed
+// server-side from the tab's layout tree, so directional addressing is exact
+// rather than derived from a client's estimate of block positions.
+func (ws *WshServer) ResolveDirectionalCommand(ctx context.Context, data wshrpc.CommandResolveDirectionalData) (*waveobj.ORef, error) {
+	switch data.Direction {
+	case "left", "right", "above", "below":
+	default:
+		return nil, fmt.Errorf("invalid direction %q (must be one of: left, right, above, below)", data.Direction)
+	}
+	if data.BlockId == "" {
+		return nil, fmt.Errorf("blockid is required")
+	}
+
+	tabId, err := wstore.DBFindTabForBlockId(ctx, data.BlockId)
+	if err != nil {
+		return nil, fmt.Errorf("error finding tab for block: %w", err)
+	}
+	if tabId == "" {
+		return nil, fmt.Errorf("no tab found for block %s", data.BlockId)
+	}
+
+	info, err := wcore.ComputeBlockGeometry(ctx, tabId)
+	if err != nil {
+		return nil, fmt.Errorf("computing block geometry: %w", err)
+	}
+	if info.Geometry[data.BlockId] == nil {
+		return nil, fmt.Errorf("no geometry for block %s", data.BlockId)
+	}
+
+	targetId := wcore.FindBlockInDirection(info.Geometry, data.BlockId, data.Direction)
+	if targetId == "" {
+		return nil, fmt.Errorf("no block %s of block %s", data.Direction, data.BlockId)
+	}
+	return &waveobj.ORef{OType: waveobj.OType_Block, OID: targetId}, nil
 }

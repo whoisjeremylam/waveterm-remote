@@ -852,6 +852,12 @@ export class RpcApiType {
         return client.wshRpcCall("renameappfile", data, opts);
     }
 
+    // command "resolvedirectional" [call]
+    ResolveDirectionalCommand(client: WshClient, data: CommandResolveDirectionalData, opts?: RpcOpts): Promise<ORef> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "resolvedirectional", data, opts);
+        return client.wshRpcCall("resolvedirectional", data, opts);
+    }
+
     // command "resolveids" [call]
     ResolveIdsCommand(client: WshClient, data: CommandResolveIdsData, opts?: RpcOpts): Promise<CommandResolveIdsRtnData> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "resolveids", data, opts);

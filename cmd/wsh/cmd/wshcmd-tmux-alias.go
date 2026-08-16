@@ -108,6 +108,7 @@ func init() {
 	addCaptureFlags(capturePaneCmd)
 	addSendKeysFlags(sendKeysCmd)
 	addSplitFlags(splitPaneCmd)
+	addDirectionalFlags(selectPaneCmd)
 	addKillFlags(killPaneCmd)
 	addBlockListFlags(listPanesCmd)
 

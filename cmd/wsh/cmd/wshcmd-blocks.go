@@ -28,11 +28,18 @@ var (
 
 // BlockDetails represents the information about a block returned by the list command
 type BlockDetails struct {
-	BlockId     string              `json:"blockid"`     // Unique identifier for the block
-	WorkspaceId string              `json:"workspaceid"` // ID of the workspace containing the block
-	TabId       string              `json:"tabid"`       // ID of the tab containing the block
-	View        string              `json:"view"`        // Canonical view type (term, web, preview, edit, sysinfo)
-	Meta        waveobj.MetaMapType `json:"meta"`        // Block metadata including view type
+	BlockId     string                `json:"blockid"`     // Unique identifier for the block
+	Id          string                `json:"id"`          // Canonical block reference ("block:" + blockid)
+	WorkspaceId string                `json:"workspaceid"` // ID of the workspace containing the block
+	TabId       string                `json:"tabid"`       // ID of the tab containing the block
+	View        string                `json:"view"`        // Canonical view type (term, web, preview, edit, sysinfo)
+	Connection  string                `json:"connection,omitempty"`
+	Title       string                `json:"title,omitempty"`
+	Index       int                   `json:"index,omitempty"`
+	Geometry    *wshrpc.BlockGeometry `json:"geometry,omitempty"`
+	Focused     bool                  `json:"focused,omitempty"`
+	Magnified   bool                  `json:"magnified,omitempty"`
+	Meta        waveobj.MetaMapType   `json:"meta"` // Block metadata including view type
 }
 
 // blocksListCmd represents the 'blocks list' command
@@ -183,9 +190,16 @@ func blocksListRun(cmd *cobra.Command, args []string) error {
 			v := b.Meta.GetString(waveobj.MetaKey_View, "")
 			allBlocks = append(allBlocks, BlockDetails{
 				BlockId:     b.BlockId,
+				Id:          "block:" + b.BlockId,
 				WorkspaceId: b.WorkspaceId,
 				TabId:       b.TabId,
 				View:        v,
+				Connection:  b.Meta.GetString(waveobj.MetaKey_Connection, ""),
+				Title:       b.Meta.GetString(waveobj.MetaKey_FrameTitle, ""),
+				Index:       b.Index,
+				Geometry:    b.Geometry,
+				Focused:     b.Focused,
+				Magnified:   b.Magnified,
 				Meta:        b.Meta,
 			})
 		}

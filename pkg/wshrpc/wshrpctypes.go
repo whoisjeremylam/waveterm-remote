@@ -166,6 +166,7 @@ type WshRpcInterface interface {
 	// block focus
 	SetBlockFocusCommand(ctx context.Context, blockId string) error
 	GetFocusedBlockDataCommand(ctx context.Context) (*FocusedBlockData, error)
+	ResolveDirectionalCommand(ctx context.Context, data CommandResolveDirectionalData) (*waveobj.ORef, error)
 
 	// rtinfo
 	GetRTInfoCommand(ctx context.Context, data CommandGetRTInfoData) (*waveobj.ObjRTInfo, error)
@@ -284,6 +285,13 @@ type CommandResolveIdsData struct {
 
 type CommandResolveIdsRtnData struct {
 	ResolvedIds map[string]waveobj.ORef `json:"resolvedids"`
+}
+
+// CommandResolveDirectionalData resolves the block geometrically adjacent to
+// BlockId in the given Direction ("left", "right", "above", or "below").
+type CommandResolveDirectionalData struct {
+	BlockId   string `json:"blockid"`
+	Direction string `json:"direction"` // "left", "right", "above", "below"
 }
 
 type CommandCreateBlockData struct {
@@ -453,7 +461,7 @@ type ConnStatus struct {
 	// password Cancel, or permanent handshake failure. Auto paths no-op until
 	// explicit Reconnect (UX-0.1, UX-0.4, UX-0.5).
 	SuppressAutoReconnect bool `json:"suppressautoreconnect,omitempty"`
-	FlappingMode   bool `json:"flappingmode,omitempty"` // true when ≥3 reconnect attempts in last 30s (UX-2.2)
+	FlappingMode          bool `json:"flappingmode,omitempty"` // true when ≥3 reconnect attempts in last 30s (UX-2.2)
 	// AuthQueueWaiting is true while this connection is blocked on the per-window
 	// password prompt lock waiting for another conn to finish signing in (UX-1.6).
 	AuthQueueWaiting bool `json:"authqueuewaiting,omitempty"`
@@ -517,12 +525,25 @@ type BlocksListRequest struct {
 	WorkspaceId string `json:"workspaceid,omitempty"`
 }
 
+// BlockGeometry describes a block's position and size within its tab as
+// fractions of the tab's full extent (0..1), resolution-independent.
+type BlockGeometry struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
+}
+
 type BlocksListEntry struct {
 	WindowId    string              `json:"windowid"`
 	WorkspaceId string              `json:"workspaceid"`
 	TabId       string              `json:"tabid"`
 	BlockId     string              `json:"blockid"`
 	Meta        waveobj.MetaMapType `json:"meta"`
+	Index       int                 `json:"index,omitempty"`
+	Geometry    *BlockGeometry      `json:"geometry,omitempty"`
+	Focused     bool                `json:"focused,omitempty"`
+	Magnified   bool                `json:"magnified,omitempty"`
 }
 
 type CommandCaptureBlockScreenshotData struct {

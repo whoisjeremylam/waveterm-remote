@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -75,7 +76,9 @@ func parseSimpleId(simpleId string) (discriminator string, value string, err err
 		return "uuid8", simpleId, nil
 	}
 
-	return "", "", fmt.Errorf("invalid simple id format: %s", simpleId)
+	// Unrecognized strings (spaces, hyphens, mixed case, etc.) fall back to
+	// title-substring addressing.
+	return "title", simpleId, nil
 }
 
 // Individual resolvers
@@ -247,7 +250,87 @@ func resolveView(ctx context.Context, data wshrpc.CommandResolveIdsData, value s
 			}
 		}
 	}
+	// Bare view-type strings that match no block fall back to title-substring
+	// addressing (e.g. `block capture "claude"`). Explicit instance numbers
+	// (e.g. `term:2`) must NOT fall back, so an out-of-range instance still
+	// reports the view error.
+	if count == 0 && matches[2] == "" {
+		titleRef, titleErr := resolveTitle(ctx, data, value)
+		if titleErr == nil {
+			return titleRef, nil
+		}
+		return nil, fmt.Errorf("could not find block of type %q (found 0); also %v", viewType, titleErr)
+	}
 	return nil, fmt.Errorf("could not find block %d of type %s (found %d)", instanceNum, viewType, count)
+}
+
+// matchBlockTitles returns the block ids whose title contains query as a
+// case-insensitive substring. An empty title never matches, and an empty query
+// never matches. The returned ids are sorted by block id for deterministic
+// error messages. It returns an error when zero or more than one block matches.
+func matchBlockTitles(titles map[string]string, query string) ([]string, error) {
+	if query == "" {
+		return nil, fmt.Errorf("no block found with title containing %q", query)
+	}
+	var matches []string
+	for blockId, title := range titles {
+		if title == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(title), strings.ToLower(query)) {
+			matches = append(matches, blockId)
+		}
+	}
+	sort.Strings(matches)
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no block found with title containing %q", query)
+	case 1:
+		return matches, nil
+	default:
+		var sb strings.Builder
+		for i, blockId := range matches {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(blockId)
+			if title := titles[blockId]; title != "" {
+				sb.WriteString(" (")
+				sb.WriteString(title)
+				sb.WriteString(")")
+			}
+		}
+		return nil, fmt.Errorf("ambiguous: %d blocks match title %q: %s", len(matches), query, sb.String())
+	}
+}
+
+// resolveTitle resolves a block reference by case-insensitive title substring
+// within the current tab (found via data.BlockId).
+func resolveTitle(ctx context.Context, data wshrpc.CommandResolveIdsData, value string) (*waveobj.ORef, error) {
+	if data.BlockId == "" {
+		return nil, fmt.Errorf("no blockid in request")
+	}
+	tabId, err := wstore.DBFindTabForBlockId(ctx, data.BlockId)
+	if err != nil {
+		return nil, fmt.Errorf("error finding tab for blockid %s: %w", data.BlockId, err)
+	}
+	tab, err := wstore.DBMustGet[*waveobj.Tab](ctx, tabId)
+	if err != nil {
+		return nil, fmt.Errorf("error retrieving tab %s: %w", tabId, err)
+	}
+	titles := make(map[string]string, len(tab.BlockIds))
+	for _, blockId := range tab.BlockIds {
+		block, err := wstore.DBMustGet[*waveobj.Block](ctx, blockId)
+		if err != nil {
+			continue
+		}
+		titles[blockId] = block.Meta.GetString(waveobj.MetaKey_FrameTitle, "")
+	}
+	matches, err := matchBlockTitles(titles, value)
+	if err != nil {
+		return nil, err
+	}
+	return &waveobj.ORef{OType: waveobj.OType_Block, OID: matches[0]}, nil
 }
 
 func resolveUUID(ctx context.Context, value string) (*waveobj.ORef, error) {
@@ -273,6 +356,8 @@ func resolveSimpleId(ctx context.Context, data wshrpc.CommandResolveIdsData, sim
 		return resolveView(ctx, data, value)
 	case "uuid", "uuid8":
 		return resolveUUID(ctx, value)
+	case "title":
+		return resolveTitle(ctx, data, value)
 	default:
 		return nil, fmt.Errorf("unknown discriminator: %s", discriminator)
 	}

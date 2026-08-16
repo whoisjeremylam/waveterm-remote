@@ -846,6 +846,12 @@ func RenameAppFileCommand(w *wshutil.WshRpc, data wshrpc.CommandRenameAppFileDat
 	return err
 }
 
+// command "resolvedirectional", wshserver.ResolveDirectionalCommand
+func ResolveDirectionalCommand(w *wshutil.WshRpc, data wshrpc.CommandResolveDirectionalData, opts *wshrpc.RpcOpts) (*waveobj.ORef, error) {
+	resp, err := sendRpcRequestCallHelper[*waveobj.ORef](w, "resolvedirectional", data, opts)
+	return resp, err
+}
+
 // command "resolveids", wshserver.ResolveIdsCommand
 func ResolveIdsCommand(w *wshutil.WshRpc, data wshrpc.CommandResolveIdsData, opts *wshrpc.RpcOpts) (wshrpc.CommandResolveIdsRtnData, error) {
 	resp, err := sendRpcRequestCallHelper[wshrpc.CommandResolveIdsRtnData](w, "resolveids", data, opts)
