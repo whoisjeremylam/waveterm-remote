@@ -1647,6 +1647,60 @@ func handleAppendJobFile(ctx context.Context, jobId string, fileName string, dat
 	return nil
 }
 
+// reconcileClientAheadSeq computes the reconciliation when the server reports a
+// stream seq behind the client's current position (the client's term file ran
+// ahead of the server stream). Returns the new seq, new totalGap, and whether the
+// term file must be truncated to newSeq.
+func reconcileClientAheadSeq(currentSeq, totalGap, serverSeq int64) (newSeq, newTotalGap int64, needsTruncate bool) {
+	fileSize := currentSeq - totalGap
+	if serverSeq < fileSize {
+		// The term file itself is longer than the server stream — phantom bytes at
+		// the tail must be dropped.
+		return serverSeq, 0, true
+	}
+	// The server end is within the gap region (the file is fine; totalGap was
+	// over-counted). Just shrink the gap, no truncate needed.
+	return serverSeq, serverSeq - fileSize, false
+}
+
+// truncateJobFile truncates the job's term file (and its attached block mirror)
+// to size bytes and publishes truncate events so the frontend clears the terminal
+// before the stream replays. Used when the client term file ran ahead of the server
+// stream and must be reconciled to the server's authoritative end.
+func truncateJobFile(ctx context.Context, jobId string, size int64) error {
+	_, data, err := filestore.WFS.ReadAt(ctx, jobId, JobOutputFileName, 0, size)
+	if err != nil {
+		return fmt.Errorf("error reading term file for truncate: %w", err)
+	}
+	if err := filestore.WFS.WriteFile(ctx, jobId, JobOutputFileName, data); err != nil {
+		return fmt.Errorf("error truncating job term file: %w", err)
+	}
+
+	job, jerr := wstore.DBGet[*waveobj.Job](ctx, jobId)
+	if jerr == nil && job != nil && job.AttachedBlockId != "" {
+		if _, bdata, berr := filestore.WFS.ReadAt(ctx, job.AttachedBlockId, JobOutputFileName, 0, size); berr == nil {
+			if werr := filestore.WFS.WriteFile(ctx, job.AttachedBlockId, JobOutputFileName, bdata); werr != nil {
+				log.Printf("[job:%s] error truncating block mirror term file: %v", jobId, werr)
+			}
+		}
+	}
+
+	// Publish truncate events so the frontend clears the terminal before replay.
+	wps.Broker.Publish(wps.WaveEvent{
+		Event:  wps.Event_BlockFile,
+		Scopes: []string{waveobj.MakeORef(waveobj.OType_Job, jobId).String()},
+		Data:   &wps.WSFileEventData{ZoneId: jobId, FileName: JobOutputFileName, FileOp: wps.FileOp_Truncate},
+	})
+	if job != nil && job.AttachedBlockId != "" {
+		wps.Broker.Publish(wps.WaveEvent{
+			Event:  wps.Event_BlockFile,
+			Scopes: []string{waveobj.MakeORef(waveobj.OType_Block, job.AttachedBlockId).String()},
+			Data:   &wps.WSFileEventData{ZoneId: job.AttachedBlockId, FileName: JobOutputFileName, FileOp: wps.FileOp_Truncate},
+		})
+	}
+	return nil
+}
+
 func runOutputLoop(ctx context.Context, jobId string, streamId string, reader *streamclient.Reader) {
 	defer reader.Close()
 	defer func() {
@@ -2317,6 +2371,26 @@ func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rt
 			resetTerminalState(ctx, job.AttachedBlockId)
 			writeMutedMessageToTerminal(job.AttachedBlockId, fmt.Sprintf("[stream gap: %d bytes lost - terminal state reset]", gap))
 		}
+	} else if rtnData.Seq < currentSeq {
+		// Client's term file ran ahead of the server stream (phantom bytes from a
+		// seq-tracking drift). Reconcile to the server's authoritative end.
+		origSeq := currentSeq
+		newSeq, newTotalGap, needsTruncate := reconcileClientAheadSeq(currentSeq, totalGap, rtnData.Seq)
+		if needsTruncate {
+			if terr := truncateJobFile(ctx, jobId, newSeq); terr != nil {
+				log.Printf("[job:%s] error truncating term file to %d: %v", jobId, newSeq, terr)
+			}
+		}
+		totalGap = newTotalGap
+		currentSeq = newSeq
+		reader.UpdateNextSeq(currentSeq)
+		metaErr := filestore.WFS.WriteMeta(ctx, jobId, JobOutputFileName, wshrpc.FileMeta{
+			MetaKey_TotalGap: totalGap,
+		}, true)
+		if metaErr != nil {
+			log.Printf("[job:%s] error updating totalgap metadata: %v", jobId, metaErr)
+		}
+		log.Printf("[job:%s] client seq was ahead of server (client=%d server=%d), reconciled to seq=%d totalGap=%d", jobId, origSeq, rtnData.Seq, currentSeq, totalGap)
 	}
 
 	log.Printf("[job:%s] sending JobStartStreamCommand", jobId)

@@ -1305,3 +1305,67 @@ func TestWaitForStreamLoopExit(t *testing.T) {
 	waitForStreamLoopExit(jobId, "stream-3", 2*time.Second)
 	// If the helper never returned, the test would time out — reaching here is success.
 }
+
+func TestReconcileClientAheadSeq(t *testing.T) {
+	tests := []struct {
+		name         string
+		currentSeq   int64
+		totalGap     int64
+		serverSeq    int64
+		wantSeq      int64
+		wantGap      int64
+		wantTruncate bool
+	}{
+		{
+			name:         "file ahead, no gap (truncate)",
+			currentSeq:   100,
+			totalGap:     0,
+			serverSeq:    90,
+			wantSeq:      90,
+			wantGap:      0,
+			wantTruncate: true,
+		},
+		{
+			name:         "gap over-count, server within file range (no truncate)",
+			currentSeq:   100,
+			totalGap:     20,
+			serverSeq:    90,
+			wantSeq:      90,
+			wantGap:      10,
+			wantTruncate: false,
+		},
+		{
+			name:         "gap over-count, server just past file end (no truncate)",
+			currentSeq:   100,
+			totalGap:     10,
+			serverSeq:    95,
+			wantSeq:      95,
+			wantGap:      5,
+			wantTruncate: false,
+		},
+		{
+			name:         "reported log case (file ahead by 3824)",
+			currentSeq:   237404967,
+			totalGap:     0,
+			serverSeq:    237401143,
+			wantSeq:      237401143,
+			wantGap:      0,
+			wantTruncate: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotSeq, gotGap, gotTruncate := reconcileClientAheadSeq(tt.currentSeq, tt.totalGap, tt.serverSeq)
+			if gotSeq != tt.wantSeq {
+				t.Errorf("seq = %d, want %d", gotSeq, tt.wantSeq)
+			}
+			if gotGap != tt.wantGap {
+				t.Errorf("totalGap = %d, want %d", gotGap, tt.wantGap)
+			}
+			if gotTruncate != tt.wantTruncate {
+				t.Errorf("needsTruncate = %v, want %v", gotTruncate, tt.wantTruncate)
+			}
+		})
+	}
+}

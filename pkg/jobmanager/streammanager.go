@@ -173,8 +173,16 @@ func (sm *StreamManager) ClientConnected(streamId string, dataSender DataSender,
 	if sm.diskEndSeq > effectiveEnd {
 		effectiveEnd = sm.diskEndSeq
 	}
+	// If the client reports a seq ahead of our stream, don't hard-fail: the
+	// client's term file has phantom bytes from a seq-tracking drift (totalGap
+	// over-count, supersession double-append). Hard-failing here leaves the job
+	// "Connected without active stream" (invisible typing). Clamp to the server's
+	// authoritative end; the returned seq lets the client truncate its file (see
+	// restartStreaming's rtnData.Seq < currentSeq path).
 	if clientSeq > effectiveEnd {
-		return 0, fmt.Errorf("client seq %d beyond stream end %d", clientSeq, effectiveEnd)
+		log.Printf("ClientConnected: client seq %d ahead of stream end %d (headPos=%d bufSize=%d totalSize=%d diskEndSeq=%d) — clamping",
+			clientSeq, effectiveEnd, headPos, sm.buf.Size(), sm.buf.TotalSize(), sm.diskEndSeq)
+		clientSeq = effectiveEnd
 	}
 
 	if clientSeq > headPos {
