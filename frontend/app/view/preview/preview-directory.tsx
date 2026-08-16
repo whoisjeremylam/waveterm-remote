@@ -28,13 +28,13 @@ import clsx from "clsx";
 import { PrimitiveAtom, atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import { OverlayScrollbarsComponent, OverlayScrollbarsComponentRef } from "overlayscrollbars-react";
 import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useDrop } from "react-dnd";
 import { quote as shellQuote } from "shell-quote";
 import { debounce } from "throttle-debounce";
 import "./directorypreview.scss";
 import { EntryManagerOverlay, EntryManagerOverlayProps, EntryManagerType } from "./entry-manager";
 import {
     cleanMimetype,
+    decideNativeDropRoute,
     getBestUnit,
     getLastModifiedTime,
     getSortIcon,
@@ -755,42 +755,6 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         [model.refresh]
     );
 
-    const [, drop] = useDrop(
-        () => ({
-            accept: "FILE_ITEM", //a name of file drop type
-            canDrop: (_, monitor) => {
-                const dragItem = monitor.getItem<DraggedFile>();
-                // drop if not current dir is the parent directory of the dragged item
-                // requires absolute path
-                if (monitor.isOver({ shallow: false }) && dragItem.absParent !== dirPath) {
-                    return true;
-                }
-                return false;
-            },
-            drop: async (draggedFile: DraggedFile, monitor) => {
-                if (!monitor.didDrop()) {
-                    const timeoutYear = 31536000000; // one year
-                    const opts: FileCopyOpts = {
-                        timeout: timeoutYear,
-                    };
-                    const desturi = await model.formatRemoteUri(dirPath, globalStore.get);
-                    const data: CommandFileCopyData = {
-                        srcuri: draggedFile.uri,
-                        desturi,
-                        opts,
-                    };
-                    await handleDropCopy(data, draggedFile.isDir);
-                }
-            },
-            // TODO: mabe add a hover option?
-        }),
-        [dirPath, model.formatRemoteUri, model.refresh]
-    );
-
-    useEffect(() => {
-        drop(refs.reference);
-    }, [refs.reference]);
-
     const dismiss = useDismiss(context);
     const { getReferenceProps, getFloatingProps } = useInteractions([dismiss]);
 
@@ -863,13 +827,37 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             dragCounterRef.current = 0;
             setIsDragOver(false);
 
-            const files = Array.from(e.dataTransfer.files);
-            if (files.length === 0 || !dirPath) {
+            const dragSource = globalStore.get(model.dragSource);
+            const route = decideNativeDropRoute(dragSource, dirPath);
+            if (route === "inapp") {
+                // In-app copy: our own drag from the directory widget to a different dir.
+                try {
+                    const timeoutYear = 31536000000; // one year
+                    const opts: FileCopyOpts = { timeout: timeoutYear };
+                    const desturi = await model.formatRemoteUri(dirPath, globalStore.get);
+                    const data: CommandFileCopyData = {
+                        srcuri: dragSource.uri,
+                        desturi,
+                        opts,
+                    };
+                    await handleDropCopy(data, dragSource.isDir);
+                } finally {
+                    globalStore.set(model.dragSource, null);
+                }
                 return;
             }
-            await model.uploadFiles(files, dirPath);
+            if (route === "upload") {
+                const files = Array.from(e.dataTransfer.files);
+                if (files.length === 0) {
+                    return;
+                }
+                await model.uploadFiles(files, dirPath);
+                return;
+            }
+            // "reject": no-op (and clear any stale drag source for safety)
+            globalStore.set(model.dragSource, null);
         },
-        [dirPath, model]
+        [dirPath, model, handleDropCopy]
     );
 
     const handleFileContextMenu = useCallback(

@@ -8,6 +8,25 @@ import dayjs from "dayjs";
 import React from "react";
 import { type PreviewModel } from "./preview-model";
 
+export type NativeDropRoute = "inapp" | "upload" | "reject";
+
+// Decides how a native drop should be handled:
+//  - our own widget drag (dragSource set) to a different directory -> "inapp" (copy)
+//  - our own widget drag dropped back into its own parent directory -> "reject" (no-op)
+//  - no drag source (e.g. OS/Finder/Explorer files) -> "upload"
+export function decideNativeDropRoute(
+    dragSource: DraggedFile | null,
+    dirPath: string | null | undefined
+): NativeDropRoute {
+    if (dirPath == null) {
+        return "reject";
+    }
+    if (dragSource != null) {
+        return dragSource.absParent === dirPath ? "reject" : "inapp";
+    }
+    return "upload";
+}
+
 export const recursiveError = "recursive flag must be set for directory operations";
 export const overwriteError = "set overwrite flag to delete the existing file";
 export const mergeError = "set overwrite flag to delete the existing contents or set merge flag to merge the contents";
