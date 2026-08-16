@@ -12,8 +12,16 @@ import { RpcApi } from "../frontend/app/store/wshclientapi";
 import { getWebServerEndpoint } from "../frontend/util/endpoints";
 import * as keyutil from "../frontend/util/keyutil";
 import { fireAndForget, parseDataUrl } from "../frontend/util/util";
-import {    setWasActive,
-} from "./emain-activity";
+import {
+    buildStreamFileUrl,
+    cleanupAllTempDragFiles,
+    cleanupTempDragDir,
+    isDragDirRejected,
+    registerTempDragDir,
+    scheduleTempDragDirCleanup,
+    TEMP_DRAG_DIR_PREFIX,
+} from "./drag-temp-files";
+import { setWasActive } from "./emain-activity";
 import { createBuilderWindow, getAllBuilderWindows, getBuilderWindowByWebContentsId } from "./emain-builder";
 import { callWithOriginalXdgCurrentDesktopAsync, unamePlatform } from "./emain-platform";
 import { getWaveTabViewByWebContentsId } from "./emain-tabview";
@@ -187,6 +195,40 @@ function saveImageFileWithNativeDialog(
         });
 }
 
+async function startFileDrag(
+    sender: electron.WebContents,
+    payload: { remoteUri: string; fileName: string; isDir: boolean }
+): Promise<void> {
+    if (isDragDirRejected(payload.isDir)) {
+        console.log("start-file-drag: ignoring directory drag (not supported)", payload.remoteUri);
+        return;
+    }
+    let tempDir: string = null;
+    try {
+        tempDir = await fs.promises.mkdtemp(path.join(electronApp.getPath("temp"), TEMP_DRAG_DIR_PREFIX));
+        registerTempDragDir(tempDir);
+        const tempPath = path.join(tempDir, payload.fileName);
+        const result = await getUrlInSession(sender.session, buildStreamFileUrl(payload.remoteUri));
+        const writeStream = fs.createWriteStream(tempPath);
+        await new Promise<void>((resolve, reject) => {
+            writeStream.on("finish", () => resolve());
+            writeStream.on("error", (err) => reject(err));
+            result.stream.on("error", (err) => reject(err));
+            result.stream.pipe(writeStream);
+        });
+        const icon = await electronApp.getFileIcon(tempPath);
+        sender.startDrag({ file: tempPath, icon });
+        scheduleTempDragDirCleanup(tempDir);
+    } catch (err) {
+        console.error("start-file-drag failed:", err);
+        if (tempDir != null) {
+            await cleanupTempDragDir(tempDir).catch((cleanupErr) => {
+                console.error("start-file-drag: failed to clean up temp dir:", cleanupErr);
+            });
+        }
+    }
+}
+
 export function initIpcHandlers() {
     electron.ipcMain.on("open-external", (event, url) => {
         if (url && typeof url === "string") {
@@ -244,6 +286,14 @@ export function initIpcHandlers() {
         const streamingUrl =
             getWebServerEndpoint() + "/wave/stream-file/" + baseName + "?path=" + encodeURIComponent(payload.filePath);
         event.sender.downloadURL(streamingUrl);
+    });
+
+    electron.ipcMain.on("start-file-drag", (event, payload: { remoteUri: string; fileName: string; isDir: boolean }) => {
+        fireAndForget(() => startFileDrag(event.sender, payload));
+    });
+
+    electronApp.on("will-quit", () => {
+        fireAndForget(() => cleanupAllTempDragFiles());
     });
 
     electron.ipcMain.on("get-cursor-point", (event) => {
