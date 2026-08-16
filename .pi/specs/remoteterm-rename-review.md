@@ -68,17 +68,17 @@ Anything that matches upstream code and would cause merge conflicts if changed:
 Ordered by user-visibility. Each is a small, merge-friendly change.
 
 ### 3.1 Window & app chrome
-- [ ] `frontend/wave.ts` lines 40, 119, 187 — `document.title = "Wave Terminal"` → `"RemoteTerm"` (and tab-title variants)
-- [ ] `emain/emain-menu.ts:175` — `"About Wave Terminal"` → `"About RemoteTerm"`
-- [ ] `emain/emain.ts:163` — `"Are you sure you want to quit Wave Terminal?"` → `"…RemoteTerm?"`
-- [ ] `emain/emain-platform.ts:50-51,60` — ARM64 dialog text "Wave has detected…" / "Wave is running…" → "RemoteTerm…" (and the docs link, see 3.5)
+- [x] `frontend/wave.ts` lines 40, 119, 187 — `document.title = "Wave Terminal"` → `"RemoteTerm"` (and tab-title variants)
+- [x] `emain/emain-menu.ts:175` — `"About Wave Terminal"` → `"About RemoteTerm"`
+- [x] `emain/emain.ts:163` — `"Are you sure you want to quit Wave Terminal?"` → `"…RemoteTerm?"`
+- [x] `emain/emain-platform.ts:50-51` — ARM64 dialog text "Wave has detected…" / "Wave is running…" → "RemoteTerm…" (docs link left on `docs.waveterm.dev`, see 3.5)
 
 ### 3.2 About modal
-- [ ] `frontend/app/modals/about.tsx:30` — "Wave Terminal" → "RemoteTerm"
+- [x] `frontend/app/modals/about.tsx:30` — "Wave Terminal" → "RemoteTerm" (+ tagline "Open-Source AI-Integrated Terminal" → "Open-Source Remote-First Terminal")
 - [ ] `about.tsx:42,50,58,66` — update the GitHub/website/acknowledgements/sponsor links to the fork's repo (`whoisjeremylam/waveterm-remote`) and homepage (`remoteterm.dev` if/when stood up)
 
 ### 3.3 Onboarding & upgrade modals
-- [ ] `frontend/app/onboarding/onboarding.tsx:57` — "Welcome to Wave Terminal" → "Welcome to RemoteTerm"
+- [x] `frontend/app/onboarding/onboarding.tsx:57` — "Welcome to Wave Terminal" → "Welcome to RemoteTerm"
 - [ ] `onboarding.tsx:68,83,88` + `onboarding-starask.tsx` — GitHub star/links currently point to `wavetermdev/waveterm`. **Decision needed:** keep upstream star target (good citizenship) or redirect to fork repo. Recommend: keep the star link to upstream (it's genuinely upstream's project) but add a "fork by Jeremy Lam" credit line; don't pretend the fork is upstream.
 - [ ] All `onboarding-upgrade-v01xx.tsx` + `onboarding-upgrade-minor.tsx`: these describe **upstream Wave's** feature history (Wave AI, etc.). Since this fork has removed AI/telemetry, showing "Wave AI" upgrade pages is **incoherent for a RemoteTerm user**. Recommend: suppress or replace these upgrade modals entirely (see §5 onboarding audit). At minimum, strip "Wave AI" references.
 - [ ] `frontend/app/element/quicktips.tsx:160,196` — "Open Wave AI Panel" / "Focus Wave AI": these reference an AI feature the fork removed. Remove or repurpose these tips.

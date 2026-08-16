@@ -3,7 +3,7 @@
 	<picture>
 		<source media="(prefers-color-scheme: dark)" srcset="./assets/wave-dark.png">
 		<source media="(prefers-color-scheme: light)" srcset="./assets/wave-light.png">
-		<img alt="Wave Terminal Logo" src="./assets/wave-light.png" width="240">
+		<img alt="RemoteTerm Logo" src="./assets/wave-light.png" width="240">
 	</picture>
   </a>
   <br/>
@@ -11,7 +11,7 @@
 
 > **Fork:** This is a fork of [Wave Terminal](https://github.com/wavetermdev/waveterm) optimized for remote development workflows.
 
-# Wave Terminal
+# RemoteTerm
 
 <div align="center">
 
@@ -19,22 +19,23 @@
 
 </div>
 
-Wave is an open-source terminal for macOS, Linux, and Windows. No accounts required.
+RemoteTerm is an open-source terminal for macOS, Linux, and Windows. No accounts required.
 
-Wave supports durable SSH sessions that survive network interruptions and restarts, with automatic reconnection. Edit remote files with a built-in graphical editor and preview files inline without leaving the terminal.
+RemoteTerm supports durable SSH sessions that survive network interruptions and restarts, with automatic reconnection. Edit remote files with a built-in graphical editor and preview files inline without leaving the terminal.
 
-## Fork Notes
+## What's different
 
-This fork is optimized for remote development workflows with a focus on macOS.
+This fork is tuned for developers who work on remote machines, with the local app as a thin client.
 
-- **No telemetry** — All analytics, telemetry, and cloud data collection have been completely removed; no usage data is sent to external servers
-- **Local toolchain** — Go and Task are installed locally (not global), no system dependencies required
-- **macOS builds** — CI builds macOS `.dmg` via GitHub Actions (manual trigger)
-- **Bug fixes** — Fixed tmux mouse integration lost on durable SSH session reconnect (commit `01f5073d`, issue #2); fixed crash on tab close after SSH session exit (commit `0cd6489b`)
-- **Image rendering** — Inline image display via `@xterm/addon-image` supporting Sixel, iTerm2 (IIP), and Kitty protocols. Tools like `chafa`, `imgcat`, and pi-tui can render images directly in the terminal
-- **SSH port forwarding** — Local and remote port forwarding via SSH config (`LocalForward`/`RemoteForward`)
-- **Source control widget** — Visual git interface in the sidebar with staged/unstaged/untracked file lists, side-by-side Monaco diffs, stage/unstage files and hunks, commit, and push authentication. Works on any connected remote host via wsh RPC. Includes a directory dropdown to browse repos across connections.
-- **Planned changes** — Remote file paste (image/drag-drop for SSH sessions), SSH config as source of truth for connections
+**Sessions that heal themselves.** Durable SSH sessions survive network drops, laptop sleep/wake, VPN changes, and app restarts. When a connection drops it reconnects automatically.
+
+**Remote work feels local.** Inline images render right in the terminal (Sixel, iTerm2, Kitty). Copy-and-paste screenshots and drag-and-drop files into remote sessions. Review, stage, commit, and push changes on any connected host with the built-in source-control sidebar.
+
+**Your AI agents stay running.** Claude Code, Grok Build, OpenCode, and Pi work in the terminal — durable sessions survive disconnects, irrespective if your local machine is offline and inline images render their output.
+
+**Your SSH config is automatically detected.** `LocalForward` / `RemoteForward` from `~/.ssh/config` are applied automatically — no extra setup.
+
+**Private by default.** Zero telemetry, analytics, and cloud data collection. Always.
 
 ![WaveTerm Screenshot](./assets/wave-screenshot.webp)
 
