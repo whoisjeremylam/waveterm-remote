@@ -33,28 +33,33 @@ Three browser defects were reported:
   path at drag start, then call Electron `webContents.startDrag({ file, icon })`
   for a true native file drag. (Option (b) URL drag rejected — produces a
   `.webloc` shortcut, not a real file.)
-- **In-app vs OS drag disambiguation: modifier key.** Electron `startDrag` and
-  react-dnd cannot share the same plain drag gesture: `startDrag` replaces the
-  HTML5 drag, and it requires the file to exist locally at drag start, which
-  would force a wasteful pre-download for in-app move/copy (which is a
-  server-side operation needing no local bytes). Therefore:
-  - **Plain drag** = existing in-app move/copy (react-dnd, unchanged), keeping
-    the current `handleNativeDragEnd` download fallback for plain OS drops.
-  - **Option/Alt-drag** (Option on macOS, Alt on Win/Linux) = native OS export
-    via `startFileDrag` (pre-download to temp + `startDrag`).
-
-  This is flagged for user confirmation: if "plain drag = OS export" is
-  preferred instead, in-app move/copy must be re-implemented with native drag
-  events plus a drag-source registry (larger change, deferred).
+- **Native, no modifier.** `startDrag` is the sole drag-out path. Consequence:
+  react-dnd is removed from the directory view entirely; in-app move/copy is
+  re-implemented with native drag/drop handlers plus a **drag-source registry**
+  (a model atom recording the source URI at `dragstart`, cleared on
+  `dragend`/drop). Every drag pre-downloads the source to a temp file
+  (including in-app moves); that cost is accepted for v1 and mitigated by
+  progress + temp cleanup.
+- **Cross-platform.** `startDrag` is native on macOS/Windows/Linux; only the
+  "rubber band back" symptom is macOS-specific.
+- **Verification note:** confirm that a `startDrag`-initiated drag dropped back
+  into the same window fires DOM `dragenter`/`dragover`/`drop` (Electron
+  forwards native drags into the DOM — the existing OS-upload handlers already
+  rely on this). If it does not, in-app drop (Phase 3) needs a fallback; stop
+  and report rather than guessing.
 
 ## Build Order
 
 1. **Electron IPC for native file drag** — preload + `ElectronApi` type + a main
    handler that downloads a remote URI to a temp file and calls `startDrag`.
-2. **Frontend drag-out trigger** — modifier-detected `onDragStart` on the
-   directory table row that invokes `startFileDrag`; plain drag stays react-dnd.
-3. **Temp-file lifecycle & progress** — progress during pre-download (reuse the
-   block upload overlay) and temp-file cleanup on drop/cancel/app-quit.
+2. **Native drag-out trigger + drag-source registry** — replace the row's
+   react-dnd `useDrag` with a native `onDragStart` that records the source and
+   invokes `startFileDrag`.
+3. **Native in-app drop re-implementation** — replace the directory's react-dnd
+   `useDrop` with native handlers that route our own drags to move/copy while
+   preserving OS-file upload.
+4. **Temp-file lifecycle & progress** — progress during pre-download and
+   temp-file cleanup on drop/cancel/app-quit.
 
 ## Phase scope & test cases
 
@@ -78,23 +83,41 @@ Tests:
   temp file left behind.
 - Directory rejection: `isDir` request → handled without download/startDrag.
 
-### Phase 2 — Frontend drag-out trigger
+### Phase 2 — Native drag-out trigger + drag-source registry
 
 Scope:
-- `frontend/app/view/preview/preview-directory.tsx` `TableRow`: add a native
-  `onDragStart` that checks `event.altKey` (Option on macOS) and, when set,
-  calls `event.preventDefault()` + `getApi().startFileDrag(dragItem.uri, name,
-  isDir)`.
-- Leave react-dnd `useDrag` intact so plain drag still moves/copies in-app.
+- `frontend/app/view/preview/preview-directory.tsx` `TableRow`: remove the
+  react-dnd `useDrag`; add native `draggable` + `onDragStart` that:
+  - records the dragged item (`uri`, `name`, `isDir`, source dir) in a
+    model-scoped "drag source" atom (add to `PreviewModel`);
+  - calls `getApi().startFileDrag(uri, name, isDir)`.
+- Clear the drag-source atom on `dragend` (and on drop in Phase 3).
 
 Tests:
-- Option/Alt-drag on a file row → `startFileDrag` called with the correct URI;
-  the react-dnd drag is suppressed.
-- Plain drag on a file row → no `startFileDrag` call; react-dnd in-app drop
-  still moves/copies.
-- Option/Alt-drag on a directory row → rejected/disabled (Phase 1 rule).
+- Dragging a file row → `startFileDrag` called with the correct URI and the
+  drag-source atom is populated.
+- Drag ends without a drop → the drag-source atom is cleared.
 
-### Phase 3 — Temp-file lifecycle & progress
+### Phase 3 — Native in-app drop re-implementation
+
+Scope:
+- `frontend/app/view/preview/preview-directory.tsx` `DirectoryPreview`: remove
+  the react-dnd `useDrop`; extend the existing native
+  `handleNativeDragOver/Enter/Leave/Drop` handlers so a drop:
+  - routes to **in-app move/copy** (reuse `handleDropCopy`) when the
+    drag-source atom is set for this drag;
+  - routes to **OS-file upload** (existing `uploadFiles`) otherwise.
+- Preserve the existing `canDrop` guard (don't drop into the source's own
+  parent directory) and the drag-over visual (`isDragOver`).
+
+Tests:
+- Dragging a row onto a directory → `FileCopyCommand`/`FileMoveCommand` issued
+  and the directory refreshes (move/copy path).
+- Dragging a Finder/Explorer file into the widget → uploads (existing behavior
+  preserved).
+- Dropping into the source's own parent directory → rejected (no-op).
+
+### Phase 4 — Temp-file lifecycle & progress
 
 Scope:
 - During pre-download, drive the existing block upload overlay via
