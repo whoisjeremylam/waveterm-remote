@@ -4,6 +4,7 @@
 import { DirectoryDropdown } from "@/app/element/directorydropdown";
 import { ContextMenuModel } from "@/app/store/contextmenu";
 import { globalStore } from "@/app/store/jotaiStore";
+import { getApi } from "@/store/global";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { checkKeyPressed, isCharacterKeyEvent } from "@/util/keyutil";
@@ -27,7 +28,7 @@ import clsx from "clsx";
 import { PrimitiveAtom, atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import { OverlayScrollbarsComponent, OverlayScrollbarsComponentRef } from "overlayscrollbars-react";
 import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useDrag, useDrop } from "react-dnd";
+import { useDrop } from "react-dnd";
 import { quote as shellQuote } from "shell-quote";
 import { debounce } from "throttle-debounce";
 import "./directorypreview.scss";
@@ -515,35 +516,22 @@ function TableRow({ model, row, focusIndex, setFocusIndex, setSearch, idx, handl
         uri: formatRemoteUri(row.getValue("path") as string, connection),
         isDir: row.original.isdir,
     };
-    const [_, drag] = useDrag(
-        () => ({
-            type: "FILE_ITEM",
-            canDrag: true,
-            item: () => dragItem,
-        }),
-        [dragItem]
-    );
-
-    const handleNativeDragEnd = useCallback(
+    const handleDragStart = useCallback(
         (e: React.DragEvent) => {
-            if (e.dataTransfer.dropEffect === "none" && !dragItem.isDir) {
-                fireAndForget(() => model.downloadFile(dragItem.uri));
-            }
+            globalStore.set(model.dragSource, dragItem);
+            getApi().startFileDrag(dragItem.uri, dragItem.relName, dragItem.isDir);
         },
         [dragItem, model]
     );
-
-    const dragRef = useCallback(
-        (node: HTMLDivElement | null) => {
-            drag(node);
-        },
-        [drag]
-    );
+    const handleDragEnd = useCallback(() => {
+        globalStore.set(model.dragSource, null);
+    }, [model]);
 
     return (
         <div
             className={clsx("dir-table-body-row", { focused: focusIndex === idx })}
             data-rowindex={idx}
+            draggable
             onDoubleClick={() => {
                 const newFileName = row.getValue("path") as string;
                 model.goHistory(newFileName);
@@ -552,8 +540,8 @@ function TableRow({ model, row, focusIndex, setFocusIndex, setSearch, idx, handl
             }}
             onClick={() => setFocusIndex(idx)}
             onContextMenu={(e) => handleFileContextMenu(e, row.original)}
-            onDragEnd={handleNativeDragEnd}
-            ref={dragRef}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
         >
             {row.getVisibleCells().map((cell) => (
                 <div
