@@ -38,46 +38,46 @@ const AnySchema = `
 
 type SettingsType struct {
 	AppClear                      bool   `json:"app:*,omitempty"`
-	AppGlobalHotkey               string `json:"app:globalhotkey,omitempty"`
+	AppGlobalHotkey               string `json:"app:globalhotkey,omitempty" jsonschema:"description=Global hotkey to summon Wave" reload:"required"`
 	AppDismissArchitectureWarning bool   `json:"app:dismissarchitecturewarning,omitempty"`
 	AppDefaultNewBlock            string `json:"app:defaultnewblock,omitempty"`
 	AppShowOverlayBlockNums       *bool  `json:"app:showoverlayblocknums,omitempty"`
 	AppCtrlVPaste                 *bool  `json:"app:ctrlvpaste,omitempty"`
-	AppConfirmQuit                *bool  `json:"app:confirmquit,omitempty"`
+	AppConfirmQuit                *bool  `json:"app:confirmquit,omitempty" jsonschema:"description=Prompt for confirmation before quitting" reload:"required"`
 	AppDisableCtrlShiftArrows     bool   `json:"app:disablectrlshiftarrows,omitempty"`
 	AppDisableCtrlShiftDisplay    bool   `json:"app:disablectrlshiftdisplay,omitempty"`
 	AppFocusFollowsCursor         string `json:"app:focusfollowscursor,omitempty" jsonschema:"enum=off,enum=on,enum=term"`
-	AppTabBar                     string `json:"app:tabbar,omitempty" jsonschema:"enum=top,enum=left"`
+	AppTabBar                     string `json:"app:tabbar,omitempty" jsonschema:"enum=top,enum=left,description=Tab bar placement" reload:"required"`
 
 	FeatureWaveAppBuilder bool `json:"feature:waveappbuilder,omitempty"`
 
-	TermClear               bool     `json:"term:*,omitempty"`
-	TermFontSize            float64  `json:"term:fontsize,omitempty"`
-	TermFontFamily          string   `json:"term:fontfamily,omitempty"`
-	TermTheme               string   `json:"term:theme,omitempty"`
-	TermDisableWebGl        bool     `json:"term:disablewebgl,omitempty"`
-	TermLocalShellPath      string   `json:"term:localshellpath,omitempty"`
-	TermLocalShellOpts      []string `json:"term:localshellopts,omitempty"`
-	TermGitBashPath         string   `json:"term:gitbashpath,omitempty"`
-	TermScrollback          *int64   `json:"term:scrollback,omitempty"`
-	TermCopyOnSelect        *bool    `json:"term:copyonselect,omitempty"`
-	TermTransparency        *float64 `json:"term:transparency,omitempty"`
-	TermAllowBracketedPaste *bool    `json:"term:allowbracketedpaste,omitempty"`
-	TermShiftEnterNewline   *bool    `json:"term:shiftenternewline,omitempty"`
-	TermMacOptionIsMeta     *bool    `json:"term:macoptionismeta,omitempty"`
-	TermCursor              string   `json:"term:cursor,omitempty"`
-	TermCursorBlink         *bool    `json:"term:cursorblink,omitempty"`
-	TermBellSound           *bool    `json:"term:bellsound,omitempty"`
-	TermBellIndicator       *bool    `json:"term:bellindicator,omitempty"`
-	TermOsc52               string   `json:"term:osc52,omitempty" jsonschema:"enum=focus,enum=always"`
-	TermDurable                    *bool    `json:"term:durable,omitempty"`
-	TermShowSplitButtons           bool     `json:"term:showsplitbuttons,omitempty"`
-	TermTrimTrailingWhitespace     *bool    `json:"term:trimtrailingwhitespace,omitempty"`
+	TermClear                  bool     `json:"term:*,omitempty"`
+	TermFontSize               float64  `json:"term:fontsize,omitempty" jsonschema:"description=Terminal font size"`
+	TermFontFamily             string   `json:"term:fontfamily,omitempty" jsonschema:"description=Terminal font family"`
+	TermTheme                  string   `json:"term:theme,omitempty" jsonschema:"description=Terminal color theme"`
+	TermDisableWebGl           bool     `json:"term:disablewebgl,omitempty"`
+	TermLocalShellPath         string   `json:"term:localshellpath,omitempty" jsonschema:"description=Path to the local shell binary"`
+	TermLocalShellOpts         []string `json:"term:localshellopts,omitempty"`
+	TermGitBashPath            string   `json:"term:gitbashpath,omitempty"`
+	TermScrollback             *int64   `json:"term:scrollback,omitempty" jsonschema:"description=Terminal scrollback buffer size (lines)"`
+	TermCopyOnSelect           *bool    `json:"term:copyonselect,omitempty"`
+	TermTransparency           *float64 `json:"term:transparency,omitempty" jsonschema:"description=Terminal background transparency"`
+	TermAllowBracketedPaste    *bool    `json:"term:allowbracketedpaste,omitempty"`
+	TermShiftEnterNewline      *bool    `json:"term:shiftenternewline,omitempty"`
+	TermMacOptionIsMeta        *bool    `json:"term:macoptionismeta,omitempty"`
+	TermCursor                 string   `json:"term:cursor,omitempty"`
+	TermCursorBlink            *bool    `json:"term:cursorblink,omitempty"`
+	TermBellSound              *bool    `json:"term:bellsound,omitempty"`
+	TermBellIndicator          *bool    `json:"term:bellindicator,omitempty"`
+	TermOsc52                  string   `json:"term:osc52,omitempty" jsonschema:"enum=focus,enum=always"`
+	TermDurable                *bool    `json:"term:durable,omitempty"`
+	TermShowSplitButtons       bool     `json:"term:showsplitbuttons,omitempty"`
+	TermTrimTrailingWhitespace *bool    `json:"term:trimtrailingwhitespace,omitempty"`
 
 	EditorMinimapEnabled      bool    `json:"editor:minimapenabled,omitempty"`
 	EditorStickyScrollEnabled bool    `json:"editor:stickyscrollenabled,omitempty"`
 	EditorWordWrap            bool    `json:"editor:wordwrap,omitempty"`
-	EditorFontSize            float64 `json:"editor:fontsize,omitempty"`
+	EditorFontSize            float64 `json:"editor:fontsize,omitempty" jsonschema:"description=Editor font size"`
 	EditorInlineDiff          bool    `json:"editor:inlinediff,omitempty"`
 
 	WebClear               bool   `json:"web:*,omitempty"`
@@ -113,8 +113,8 @@ type SettingsType struct {
 	WindowReducedMotion                 bool     `json:"window:reducedmotion,omitempty"`
 	WindowTileGapSize                   *int64   `json:"window:tilegapsize,omitempty"`
 	WindowShowMenuBar                   bool     `json:"window:showmenubar,omitempty"`
-	WindowNativeTitleBar                bool     `json:"window:nativetitlebar,omitempty"`
-	WindowDisableHardwareAcceleration   bool     `json:"window:disablehardwareacceleration,omitempty"`
+	WindowNativeTitleBar                bool     `json:"window:nativetitlebar,omitempty" reload:"required"`
+	WindowDisableHardwareAcceleration   bool     `json:"window:disablehardwareacceleration,omitempty" reload:"required"`
 	WindowMaxTabCacheSize               int      `json:"window:maxtabcachesize,omitempty"`
 	WindowMagnifiedBlockOpacity         *float64 `json:"window:magnifiedblockopacity,omitempty"`
 	WindowMagnifiedBlockSize            *float64 `json:"window:magnifiedblocksize,omitempty"`
