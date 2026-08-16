@@ -114,7 +114,6 @@ function DirectoryTable({
 }: DirectoryTableProps) {
     const env = useWaveEnv<PreviewEnv>();
     const fullConfig = useAtomValue(env.atoms.fullConfigAtom);
-    const defaultSort = useAtomValue(env.getSettingsKeyAtom("preview:defaultsort")) ?? "name";
     const setErrorMsg = useSetAtom(model.errorMsgAtom);
     const getIconFromMimeType = useCallback(
         (mimeType: string): string => {
@@ -210,7 +209,12 @@ function DirectoryTable({
         [model, setErrorMsg]
     );
 
-    const initialSorting = defaultSort === "modtime" ? [{ id: "modtime", desc: true }] : [{ id: "name", desc: false }];
+    const sorting = useAtomValue(model.directorySorting);
+    const setSorting = useSetAtom(model.directorySorting);
+    const columnSizing = useAtomValue(model.directoryColumnSizing);
+    const setColumnSizing = useSetAtom(model.directoryColumnSizing);
+    const columnVisibility = useAtomValue(model.directoryColumnVisibility);
+    const setColumnVisibility = useSetAtom(model.directoryColumnVisibility);
 
     const table = useReactTable({
         data,
@@ -219,12 +223,14 @@ function DirectoryTable({
         getSortedRowModel: getSortedRowModel(),
         getCoreRowModel: getCoreRowModel(),
 
-        initialState: {
-            sorting: initialSorting,
-            columnVisibility: {
-                path: false,
-            },
+        state: {
+            sorting,
+            columnSizing,
+            columnVisibility,
         },
+        onSortingChange: setSorting,
+        onColumnSizingChange: setColumnSizing,
+        onColumnVisibilityChange: setColumnVisibility,
         enableMultiSort: false,
         enableSortingRemoval: false,
         meta: {
@@ -588,15 +594,6 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const dragCounterRef = useRef(0);
     const directoryDropdownOpen = useAtomValue(model.directoryDropdownOpen);
 
-    useEffect(() => {
-        model.refreshCallback = () => {
-            setRefreshVersion((refreshVersion) => refreshVersion + 1);
-        };
-        return () => {
-            model.refreshCallback = null;
-        };
-    }, [setRefreshVersion]);
-
     useEffect(
         () =>
             fireAndForget(async () => {
@@ -765,9 +762,9 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 }
                 setErrorMsg(errorMsg);
             }
-            model.refreshCallback();
+            model.refresh();
         },
-        [model.refreshCallback]
+        [model.refresh]
     );
 
     const [, drop] = useDrop(
@@ -799,7 +796,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             },
             // TODO: mabe add a hover option?
         }),
-        [dirPath, model.formatRemoteUri, model.refreshCallback]
+        [dirPath, model.formatRemoteUri, model.refresh]
     );
 
     useEffect(() => {
@@ -824,7 +821,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                         },
                         null
                     );
-                    model.refreshCallback();
+                    model.refresh();
                 });
                 setEntryManagerProps(undefined);
             },
@@ -841,7 +838,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                             path: await model.formatRemoteUri(`${dirPath}/${newName}`, globalStore.get),
                         },
                     });
-                    model.refreshCallback();
+                    model.refresh();
                 });
                 setEntryManagerProps(undefined);
             },

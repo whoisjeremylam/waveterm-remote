@@ -16,6 +16,7 @@ import { formatRemoteUri } from "@/util/waveutil";
 import clsx from "clsx";
 import { Atom, atom, Getter, PrimitiveAtom, WritableAtom } from "jotai";
 import { loadable } from "jotai/utils";
+import type { ColumnSizingState, SortingState, VisibilityState } from "@tanstack/react-table";
 import type * as MonacoTypes from "monaco-editor";
 import { createRef } from "react";
 import { PreviewView } from "./preview";
@@ -166,7 +167,9 @@ export class PreviewModel implements ViewModel {
     refreshVersion: PrimitiveAtom<number>;
     directorySearchActive: PrimitiveAtom<boolean>;
     directoryDropdownOpen: PrimitiveAtom<boolean>;
-    refreshCallback: () => void;
+    directorySorting: PrimitiveAtom<SortingState>;
+    directoryColumnSizing: PrimitiveAtom<ColumnSizingState>;
+    directoryColumnVisibility: PrimitiveAtom<VisibilityState>;
     directoryKeyDownHandler: (waveEvent: WaveKeyboardEvent) => boolean;
     codeEditKeyDownHandler: (waveEvent: WaveKeyboardEvent) => boolean;
     env: PreviewEnv;
@@ -180,6 +183,12 @@ export class PreviewModel implements ViewModel {
         let showHiddenFiles = globalStore.get(this.env.getSettingsKeyAtom("preview:showhiddenfiles")) ?? true;
         this.showHiddenFiles = atom<boolean>(showHiddenFiles);
         this.refreshVersion = atom(0);
+        const defaultSort = globalStore.get(this.env.getSettingsKeyAtom("preview:defaultsort")) ?? "name";
+        this.directorySorting = atom<SortingState>(
+            defaultSort === "modtime" ? [{ id: "modtime", desc: true }] : [{ id: "name", desc: false }]
+        );
+        this.directoryColumnSizing = atom<ColumnSizingState>({});
+        this.directoryColumnVisibility = atom<VisibilityState>({ path: false });
         this.directorySearchActive = atom(false);
         this.directoryDropdownOpen = atom(false);
         this.previewTextRef = createRef();
@@ -356,6 +365,12 @@ export class PreviewModel implements ViewModel {
                     click: () => this.goHistory(getFocusedTerminalCwd() ?? "~"),
                 },
             ];
+            const refreshIconButton: IconButtonDecl = {
+                elemtype: "iconbutton",
+                icon: "arrows-rotate",
+                title: "Refresh",
+                click: () => this.refresh(),
+            };
             if (mimeType == "directory") {
                 const showHiddenFiles = get(this.showHiddenFiles);
                 return [
@@ -368,13 +383,12 @@ export class PreviewModel implements ViewModel {
                             globalStore.set(this.showHiddenFiles, (prev) => !prev);
                         },
                     },
-                    {
-                        elemtype: "iconbutton",
-                        icon: "arrows-rotate",
-                        click: () => this.refreshCallback?.(),
-                    },
+                    refreshIconButton,
                 ] as IconButtonDecl[];
-            } else if (!isCeView && isMarkdownLike(mimeType)) {
+            } else if (isCeView) {
+                // code edit view: add a refresh (re-read from disk) button
+                return [...navIconButtons, refreshIconButton] as IconButtonDecl[];
+            } else if (isMarkdownLike(mimeType)) {
                 return [
                     ...navIconButtons,
                     {
@@ -383,24 +397,11 @@ export class PreviewModel implements ViewModel {
                         title: "Table of Contents",
                         click: () => this.markdownShowTocToggle(),
                     },
-                    {
-                        elemtype: "iconbutton",
-                        icon: "arrows-rotate",
-                        title: "Refresh",
-                        click: () => this.refreshCallback?.(),
-                    },
+                    refreshIconButton,
                 ] as IconButtonDecl[];
-            } else if (!isCeView && mimeType) {
-                // For all other file types (text, code, etc.), add refresh button
-                return [
-                    ...navIconButtons,
-                    {
-                        elemtype: "iconbutton",
-                        icon: "arrows-rotate",
-                        title: "Refresh",
-                        click: () => this.refreshCallback?.(),
-                    },
-                ] as IconButtonDecl[];
+            } else if (mimeType) {
+                // For all other file types (csv, streaming, etc.), add refresh button
+                return [...navIconButtons, refreshIconButton] as IconButtonDecl[];
             }
             return null;
         });
@@ -521,6 +522,14 @@ export class PreviewModel implements ViewModel {
 
     markdownShowTocToggle() {
         globalStore.set(this.markdownShowToc, !globalStore.get(this.markdownShowToc));
+    }
+
+    // Re-read the current file from disk (or re-list the current directory).
+    // Clears the saved-content buffer so a previously saved file falls through
+    // to a fresh read; unsaved edits (newFileContent) are left intact.
+    refresh() {
+        globalStore.set(this.fileContentSaved, null);
+        globalStore.set(this.refreshVersion, (v) => v + 1);
     }
 
     get viewComponent(): ViewComponent {
@@ -921,7 +930,7 @@ export class PreviewModel implements ViewModel {
             }
         }
         if (successCount > 0) {
-            this.refreshCallback?.();
+            this.refresh();
         }
     }
 

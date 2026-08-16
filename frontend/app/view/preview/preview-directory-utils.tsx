@@ -107,7 +107,7 @@ export function handleRename(
             };
             setErrorMsg(errorMsg);
         }
-        model.refreshCallback();
+        model.refresh();
     });
 }
 
@@ -148,7 +148,7 @@ export function handleFileDelete(
             }
             setErrorMsg(errorMsg);
         }
-        model.refreshCallback();
+        model.refresh();
     });
 }
 
