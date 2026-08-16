@@ -174,6 +174,10 @@ type WshRpcInterface interface {
 	// terminal
 	TermGetScrollbackLinesCommand(ctx context.Context, data CommandTermGetScrollbackLinesData) (*CommandTermGetScrollbackLinesRtnData, error)
 
+	// block runtime status + term file read (used by `wsh run --wait`)
+	BlockControllerStatusCommand(ctx context.Context, blockId string) (*BlockControllerStatusData, error)
+	BlockReadTermFileCommand(ctx context.Context, blockId string) (string, error)
+
 	// file
 	WshRpcFileInterface
 	WaveFileReadStreamCommand(ctx context.Context, data CommandWaveFileReadStreamData) (*WaveFileInfo, error)
@@ -618,6 +622,19 @@ type CommandTermGetScrollbackLinesRtnData struct {
 	LineStart   int      `json:"linestart"`
 	Lines       []string `json:"lines"`
 	LastUpdated int64    `json:"lastupdated"`
+}
+
+// BlockControllerStatusData is the wshrpc-level mirror of
+// blockcontroller.BlockControllerRuntimeStatus. It is kept in wshrpc (rather than
+// importing pkg/blockcontroller) to avoid an import cycle: pkg/blockcontroller
+// depends on pkg/wshrpc.
+type BlockControllerStatusData struct {
+	BlockId           string `json:"blockid"`
+	Version           int64  `json:"version"`
+	ShellProcStatus   string `json:"shellprocstatus,omitempty"`
+	ShellProcConnName string `json:"shellprocconnname,omitempty"`
+	ShellProcExitCode int    `json:"shellprocexitcode"`
+	TsunamiPort       int    `json:"tsunamiport,omitempty"`
 }
 
 type CommandTermUpdateAttachedJobData struct {

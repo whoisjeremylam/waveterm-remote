@@ -35,6 +35,9 @@ func init() {
 	flags.BoolP("paused", "p", false, "create block in paused state")
 	flags.String("cwd", "", "set working directory for command")
 	flags.BoolP("append", "a", false, "append output on restart instead of clearing")
+	flags.Bool("wait", false, "wait for the command to complete and print its output/exit code")
+	flags.Bool("json", false, "with --wait, print machine-readable JSON (stdout, stderr, exitcode, durationms). stderr is always empty because the pty merges stdout and stderr")
+	flags.String("connection", "", "run the command on the specified connection (overrides the session default connection)")
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -51,6 +54,13 @@ func runRun(cmd *cobra.Command, args []string) (rtnErr error) {
 	cwd, _ := flags.GetString("cwd")
 	delayMs, _ := flags.GetInt("delay")
 	appendOutput, _ := flags.GetBool("append")
+	waitForExit, _ := flags.GetBool("wait")
+	jsonOut, _ := flags.GetBool("json")
+	connection, _ := flags.GetString("connection")
+	if jsonOut && !waitForExit {
+		OutputHelpMessage(cmd)
+		return fmt.Errorf("--json requires --wait")
+	}
 	var cmdArgs []string
 	var useShell bool
 	var shellCmd string
@@ -128,8 +138,12 @@ func runRun(cmd *cobra.Command, args []string) (rtnErr error) {
 		createMeta[waveobj.MetaKey_CmdClearOnStart] = false
 	}
 
-	if RpcContext.Conn != "" {
-		createMeta[waveobj.MetaKey_Connection] = RpcContext.Conn
+	connName := connection
+	if connName == "" {
+		connName = RpcContext.Conn
+	}
+	if connName != "" {
+		createMeta[waveobj.MetaKey_Connection] = connName
 	}
 
 	tabId := getTabIdFromEnv()
@@ -156,6 +170,10 @@ func runRun(cmd *cobra.Command, args []string) (rtnErr error) {
 		return fmt.Errorf("creating new run block: %w", err)
 	}
 
-	WriteStdout("run block created: %s\n", oref)
-	return nil
+	if !waitForExit {
+		WriteStdout("run block created: %s\n", oref)
+		return nil
+	}
+
+	return waitForRunBlock(oref.OID, connName, jsonOut)
 }

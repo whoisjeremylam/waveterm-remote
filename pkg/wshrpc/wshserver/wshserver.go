@@ -1489,3 +1489,28 @@ func (ws *WshServer) BlockJobStatusCommand(ctx context.Context, blockId string) 
 func (ws *WshServer) BlockRestartStreamCommand(ctx context.Context, blockId string) error {
 	return jobcontroller.RestartBlockStream(ctx, blockId)
 }
+
+func (ws *WshServer) BlockControllerStatusCommand(ctx context.Context, blockId string) (*wshrpc.BlockControllerStatusData, error) {
+	status := blockcontroller.GetBlockControllerRuntimeStatus(blockId)
+	if status == nil {
+		return nil, fmt.Errorf("no block controller found for block %s", blockId)
+	}
+	return &wshrpc.BlockControllerStatusData{
+		BlockId:           status.BlockId,
+		Version:           status.Version,
+		ShellProcStatus:   status.ShellProcStatus,
+		ShellProcConnName: status.ShellProcConnName,
+		ShellProcExitCode: status.ShellProcExitCode,
+		TsunamiPort:       status.TsunamiPort,
+	}, nil
+}
+
+func (ws *WshServer) BlockReadTermFileCommand(ctx context.Context, blockId string) (string, error) {
+	readCtx, cancelFn := context.WithTimeout(context.Background(), blockcontroller.DefaultTimeout)
+	defer cancelFn()
+	_, data, err := filestore.WFS.ReadFile(readCtx, blockId, wavebase.BlockFile_Term)
+	if err != nil {
+		return "", fmt.Errorf("error reading block term file: %w", err)
+	}
+	return string(data), nil
+}
