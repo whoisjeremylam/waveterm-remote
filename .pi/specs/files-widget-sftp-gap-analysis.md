@@ -26,7 +26,7 @@ protocol rather than inherited from libssh/sftp.
 
 | Area | Feature | Where |
 |------|---------|-------|
-| Browse | Streaming dir listing, chunked (128/chunk, hard cap 1024 entries) | `RemoteListEntriesCommand` |
+| Browse | Streaming dir listing, chunked (128/chunk), no entry cap (reads all) | `RemoteListEntriesCommand` |
 | Browse | Columns: icon, name, perm, mtime, size, type | `preview-directory.tsx` |
 | Browse | Client-side sort (name/mtime), resizable columns | TanStack table |
 | Browse | Hidden-file toggle, type-to-filter (name substring, in-memory) | `preview-directory.tsx` |
@@ -107,8 +107,13 @@ for SSH file management".
     path box.
 17. **No toolbar.** Common actions (New Folder, Upload, Download, Delete,
     Refresh, New File) live only in context menus.
-18. **Directory listing silently truncates at 1024 entries** (`MaxDirSize`),
-    with no "showing X of Y" indication, no pagination, no server-side sort.
+18. **No pagination / total count for large directories.** The normal listing
+    reads all entries (`os.ReadDir`, streamed in 128-entry chunks) — it does
+    *not* truncate. `MaxDirSize = 1024` is a latent cap on the recursive `All`
+    path only, which is currently disabled (`DisableRecursiveFileOpts`); when
+    that path is enabled it must ship with a "showing X of Y" indicator (none
+    exists today) or it truncates silently. Large flat dirs (100k+ entries)
+    also lack lazy loading and server-side sort.
 19. **Search is client-side and shallow.** Type-to-filter only matches the
     already-loaded names; no recursive/grep search, no server-side search
     (the `FileListOpts.All` recursive path is disabled).
@@ -154,7 +159,7 @@ P2 (polish / parity):
 - Breadcrumb bar + toolbar + status bar.
 - Favorites manager (persisted bookmarks).
 - Recursive search / server-side search.
-- Pagination or lazy listing beyond 1024 entries.
+- Pagination / lazy loading / total-count indicator for large directories; revisit `MaxDirSize` when the recursive `All` path is enabled (it truncates silently if enabled as-is).
 - Trash or at least delete confirmation depth.
 - Preserve mtime on copy; optional checksum verify.
 - Keyboard shortcuts (Cmd+C/X/V/A, Delete).

@@ -93,10 +93,18 @@ expectation is left ambiguous.
 
 ### Archive strategy (resolved: hybrid)
 
-Pre-archive to a temp tar.gz when the tree exceeds a size threshold (default
-TBD, e.g. 64 MB), giving a determinate transfer bar for large transfers. For
-smaller trees, stream-compress on the fly (no temp file, faster start,
-indeterminate bar). The threshold is configurable.
+Pre-archive to a temp tar.gz when the tree crosses **either** threshold
+(OR-trigger):
+
+- `totalSize > sizeThreshold` (default ~64 MB) — network-bound cost.
+- `fileCount > fileCountThreshold` (default ~1,000 files) — archive/extract
+  syscall cost (stat/open/close per file), which size alone under-predicts
+  (e.g. `node_modules`-shaped trees).
+
+Above either threshold the transfer bar is determinate (compressed size is
+known); below both, stream-compress on the fly (no temp file, faster start,
+indeterminate bar). Both thresholds are configurable. File count is free to
+measure — it is counted during the tree walk we already perform to tar.
 
 ## Phase breakdown
 
@@ -132,8 +140,10 @@ indeterminate bar). The threshold is configurable.
 - **Single already-compressed file:** gzip level 0 path (or tar-without-gzip)
   skips compression — no wasted CPU.
 - **Large file in tree:** >32 MB file inside a directory round-trips.
-- **Hybrid threshold:** a tree above the threshold is pre-archived (determinate
-  `bytesTotal` == archive size); a tree below it streams without a temp file.
+- **Hybrid threshold:** a tree above the size threshold OR the file-count
+  threshold is pre-archived (determinate `bytesTotal` == archive size); a tree
+  below both streams without a temp file. Verify the file-count trigger fires
+  for a many-small-files tree whose total size is under the size threshold.
 - **Destination conflict:** extract onto existing files honors overwrite/skip
   (ties into the conflict dialog, Phase 3).
 
@@ -166,3 +176,9 @@ indeterminate bar). The threshold is configurable.
 - Conflict dialog (Skip / Rename / Overwrite / Apply-to-all) — Phase 3.
 - Resume after disconnect — post-Phase 2.
 - Binary framing, SSH compression, server-side copy — revisit after profiling.
+- **Directory-browser pagination (note):** the normal listing reads all entries
+  (no 1024 cap — `os.ReadDir` + 128-entry chunked streaming). `MaxDirSize = 1024`
+  is a latent cap on the *disabled* recursive `All` path; when that path is
+  enabled it must add a "showing X of Y" / pagination indicator or it truncates
+  silently. Relevant to bulk transfer because a user can only select what the
+  browser can show.
