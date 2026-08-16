@@ -885,6 +885,54 @@ func TestStartPortForwarding_MalformedRule(t *testing.T) {
 	}
 }
 
+// TestCloseInternal_NilForwardListener verifies that closing a connection
+// whose forward rules include a failed bind (Listener == nil, Error set)
+// does not panic. Regression test for the nil-pointer dereference in
+// closeInternal_withlifecyclelock's cleanup goroutine (rule.Listener.Close()).
+func TestCloseInternal_NilForwardListener(t *testing.T) {
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	// A real listener to verify legitimate listeners are still closed.
+	realListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	defer realListener.Close()
+
+	conn.WithLock(func() {
+		// A failed LocalForward bind leaves Listener nil with Error set.
+		conn.LocalForwardListeners = []ForwardingRule{
+			{Listener: nil, Rule: "127.0.0.1:8080 -> localhost:80", Error: "address already in use"},
+			{Listener: realListener, Rule: "127.0.0.1:9090 -> localhost:9090"},
+		}
+		// A failed RemoteForward bind — the exact production crash path
+		// (ssh: tcpip-forward request denied by peer).
+		conn.RemoteForwardListeners = []ForwardingRule{
+			{Listener: nil, Rule: "127.0.0.1:9222 -> localhost:9222", Error: "ssh: tcpip-forward request denied by peer"},
+		}
+	})
+
+	conn.lifecycleLock.Lock()
+	conn.closeInternal_withlifecyclelock(nil)
+	conn.lifecycleLock.Unlock()
+
+	// Let the cleanup goroutine run. Without the nil-Listener guard this
+	// panics inside the goroutine and fails the whole test binary.
+	time.Sleep(100 * time.Millisecond)
+
+	conn.lock.Lock()
+	localLen := len(conn.LocalForwardListeners)
+	remoteLen := len(conn.RemoteForwardListeners)
+	conn.lock.Unlock()
+	if localLen != 0 {
+		t.Fatalf("expected 0 LocalForwardListeners after close, got %d", localLen)
+	}
+	if remoteLen != 0 {
+		t.Fatalf("expected 0 RemoteForwardListeners after close, got %d", remoteLen)
+	}
+}
+
 // TestStartPortForwarding_NilClient verifies that startPortForwarding
 // returns immediately when client is nil.
 func TestStartPortForwarding_NilClient(t *testing.T) {

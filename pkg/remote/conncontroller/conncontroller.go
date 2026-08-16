@@ -731,10 +731,14 @@ func (conn *SSHConn) closeInternal_withlifecyclelock(expectedClient *ssh.Client)
 			oldMonitor.Close()
 		}
 		for _, rule := range oldLocalForwardListeners {
-			rule.Listener.Close()
+			if rule.Listener != nil {
+				rule.Listener.Close()
+			}
 		}
 		for _, rule := range oldRemoteForwardListeners {
-			rule.Listener.Close()
+			if rule.Listener != nil {
+				rule.Listener.Close()
+			}
 		}
 	}()
 }
