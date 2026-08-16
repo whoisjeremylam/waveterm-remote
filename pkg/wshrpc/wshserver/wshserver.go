@@ -260,6 +260,13 @@ func (ws *WshServer) ResolveIdsCommand(ctx context.Context, data wshrpc.CommandR
 }
 
 func (ws *WshServer) CreateBlockCommand(ctx context.Context, data wshrpc.CommandCreateBlockData) (*waveobj.ORef, error) {
+	var targetConn string
+	if data.BlockDef != nil {
+		targetConn = data.BlockDef.Meta.GetString(waveobj.MetaKey_Connection, "")
+	}
+	if err := checkRemoteToLocalControl(ctx, targetConn); err != nil {
+		return nil, err
+	}
 	ctx = waveobj.ContextWithUpdates(ctx)
 	tabId := data.TabId
 	blockData, err := wcore.CreateBlock(ctx, tabId, data.BlockDef, data.RtOpts)
@@ -355,6 +362,13 @@ func (ws *WshServer) ControllerResyncCommand(ctx context.Context, data wshrpc.Co
 }
 
 func (ws *WshServer) ControllerInputCommand(ctx context.Context, data wshrpc.CommandBlockInputData) error {
+	targetConn, err := getBlockConnName(ctx, data.BlockId)
+	if err != nil {
+		return err
+	}
+	if err := checkRemoteToLocalControl(ctx, targetConn); err != nil {
+		return err
+	}
 	inputUnion := &blockcontroller.BlockInputUnion{
 		SigName:  data.SigName,
 		TermSize: data.TermSize,
@@ -512,6 +526,13 @@ func (ws *WshServer) DeleteBlockCommand(ctx context.Context, data wshrpc.Command
 	if data.BlockId == "" {
 		return fmt.Errorf("blockid is required")
 	}
+	targetConn, err := getBlockConnName(ctx, data.BlockId)
+	if err != nil {
+		return err
+	}
+	if err := checkRemoteToLocalControl(ctx, targetConn); err != nil {
+		return err
+	}
 	ctx = waveobj.ContextWithUpdates(ctx)
 	tabId, err := wstore.DBFindTabForBlockId(ctx, data.BlockId)
 	if err != nil {
@@ -637,6 +658,9 @@ func (ws *WshServer) ConnEnsureCommand(ctx context.Context, data wshrpc.ConnExtD
 }
 
 func (ws *WshServer) ConnDisconnectCommand(ctx context.Context, connName string) error {
+	if err := checkRemoteToLocalControl(ctx, connName); err != nil {
+		return err
+	}
 	if conncontroller.IsLocalConnName(connName) {
 		return nil
 	}
@@ -687,6 +711,9 @@ func (ws *WshServer) ConnStopAutoRetryCommand(ctx context.Context, connName stri
 }
 
 func (ws *WshServer) ConnConnectCommand(ctx context.Context, connRequest wshrpc.ConnRequest) error {
+	if err := checkRemoteToLocalControl(ctx, connRequest.Host); err != nil {
+		return err
+	}
 	if conncontroller.IsLocalConnName(connRequest.Host) {
 		return nil
 	}

@@ -51,6 +51,8 @@ type SettingsType struct {
 
 	FeatureWaveAppBuilder bool `json:"feature:waveappbuilder,omitempty"`
 
+	AgentAllowRemoteLocalControl bool `json:"agent:allowremotelocalcontrol,omitempty" jsonschema:"description=Allow remote wsh sessions to control the local machine"`
+
 	TermClear                  bool     `json:"term:*,omitempty"`
 	TermFontSize               float64  `json:"term:fontsize,omitempty" jsonschema:"description=Terminal font size"`
 	TermFontFamily             string   `json:"term:fontfamily,omitempty" jsonschema:"description=Terminal font family"`
