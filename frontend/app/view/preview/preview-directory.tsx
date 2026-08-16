@@ -3,6 +3,7 @@
 
 import { DirectoryDropdown } from "@/app/element/directorydropdown";
 import { ContextMenuModel } from "@/app/store/contextmenu";
+import { setBlockUploadState } from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
 import { getApi } from "@/store/global";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
@@ -519,12 +520,17 @@ function TableRow({ model, row, focusIndex, setFocusIndex, setSearch, idx, handl
     const handleDragStart = useCallback(
         (e: React.DragEvent) => {
             globalStore.set(model.dragSource, dragItem);
+            if (!dragItem.isDir) {
+                setBlockUploadState(model.blockId, { active: true, fileName: dragItem.relName, fileSize: row.original.size ?? 0 });
+            }
             getApi().startFileDrag(dragItem.uri, dragItem.relName, dragItem.isDir);
         },
-        [dragItem, model]
+        [dragItem, model, row.original.size]
     );
     const handleDragEnd = useCallback(() => {
         globalStore.set(model.dragSource, null);
+        setBlockUploadState(model.blockId, null);
+        getApi().cleanupDragTemp();
     }, [model]);
 
     return (
@@ -843,6 +849,8 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     await handleDropCopy(data, dragSource.isDir);
                 } finally {
                     globalStore.set(model.dragSource, null);
+                    setBlockUploadState(model.blockId, null);
+                    getApi().cleanupDragTemp();
                 }
                 return;
             }
@@ -856,6 +864,8 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             }
             // "reject": no-op (and clear any stale drag source for safety)
             globalStore.set(model.dragSource, null);
+            setBlockUploadState(model.blockId, null);
+            getApi().cleanupDragTemp();
         },
         [dirPath, model, handleDropCopy]
     );

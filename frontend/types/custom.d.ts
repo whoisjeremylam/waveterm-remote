@@ -96,6 +96,7 @@ declare global {
         onIframeNavigate: (callback: (url: string) => void) => void;
         downloadFile: (path: string) => void; // download
         startFileDrag: (remoteUri: string, fileName: string, isDir: boolean) => void; // start-file-drag
+        cleanupDragTemp: () => void; // cleanup-drag-temp
         openExternal: (url: string) => void; // open-external
         onFullScreenChange: (callback: (isFullScreen: boolean) => void) => void; // fullscreen-change
         onZoomFactorChange: (callback: (zoomFactor: number) => void) => void; // zoom-factor-change

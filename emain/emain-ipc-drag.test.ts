@@ -10,6 +10,7 @@ import {
     buildStreamFileUrl,
     cleanupAllTempDragFiles,
     cleanupTempDragDir,
+    cleanupTempDirsForWebContents,
     getRegisteredTempDragDirs,
     isDragDirRejected,
     registerTempDragDir,
@@ -44,7 +45,7 @@ describe("temp drag dir registry", () => {
 
     it("registers and cleans up a temp dir; second cleanup is a no-op", async () => {
         const dir = await mkdtemp(path.join(os.tmpdir(), "wave-drag-test-"));
-        registerTempDragDir(dir);
+        registerTempDragDir(1, dir);
         expect(getRegisteredTempDragDirs()).toContain(dir);
 
         await cleanupTempDragDir(dir);
@@ -59,13 +60,46 @@ describe("temp drag dir registry", () => {
     it("cleanupAllTempDragFiles removes all registered dirs", async () => {
         const dir1 = await mkdtemp(path.join(os.tmpdir(), "wave-drag-test-"));
         const dir2 = await mkdtemp(path.join(os.tmpdir(), "wave-drag-test-"));
-        registerTempDragDir(dir1);
-        registerTempDragDir(dir2);
+        registerTempDragDir(1, dir1);
+        registerTempDragDir(1, dir2);
         expect(getRegisteredTempDragDirs()).toHaveLength(2);
 
         await cleanupAllTempDragFiles();
         expect(getRegisteredTempDragDirs()).toHaveLength(0);
         await expect(stat(dir1)).rejects.toThrow();
         await expect(stat(dir2)).rejects.toThrow();
+    });
+});
+
+describe("cleanupTempDirsForWebContents", () => {
+    afterEach(async () => {
+        await cleanupAllTempDragFiles();
+    });
+
+    it("removes only the dirs registered for the given webContents id", async () => {
+        const dirA = await mkdtemp(path.join(os.tmpdir(), "wave-drag-test-"));
+        const dirB = await mkdtemp(path.join(os.tmpdir(), "wave-drag-test-"));
+        const dirC = await mkdtemp(path.join(os.tmpdir(), "wave-drag-test-"));
+        registerTempDragDir(1, dirA);
+        registerTempDragDir(1, dirB);
+        registerTempDragDir(2, dirC);
+        expect(getRegisteredTempDragDirs()).toHaveLength(3);
+
+        await cleanupTempDirsForWebContents(1);
+
+        await expect(stat(dirA)).rejects.toThrow();
+        await expect(stat(dirB)).rejects.toThrow();
+        await expect(stat(dirC)).resolves.toBeDefined();
+        expect(getRegisteredTempDragDirs()).toEqual([dirC]);
+    });
+
+    it("is idempotent (a second call for the same webContents id is a no-op)", async () => {
+        const dirA = await mkdtemp(path.join(os.tmpdir(), "wave-drag-test-"));
+        registerTempDragDir(1, dirA);
+        await cleanupTempDirsForWebContents(1);
+        expect(getRegisteredTempDragDirs()).toHaveLength(0);
+
+        await cleanupTempDirsForWebContents(1);
+        expect(getRegisteredTempDragDirs()).toHaveLength(0);
     });
 });

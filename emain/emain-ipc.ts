@@ -16,6 +16,7 @@ import {
     buildStreamFileUrl,
     cleanupAllTempDragFiles,
     cleanupTempDragDir,
+    cleanupTempDirsForWebContents,
     isDragDirRejected,
     registerTempDragDir,
     scheduleTempDragDirCleanup,
@@ -206,7 +207,7 @@ async function startFileDrag(
     let tempDir: string = null;
     try {
         tempDir = await fs.promises.mkdtemp(path.join(electronApp.getPath("temp"), TEMP_DRAG_DIR_PREFIX));
-        registerTempDragDir(tempDir);
+        registerTempDragDir(sender.id, tempDir);
         const tempPath = path.join(tempDir, payload.fileName);
         const result = await getUrlInSession(sender.session, buildStreamFileUrl(payload.remoteUri));
         const writeStream = fs.createWriteStream(tempPath);
@@ -290,6 +291,10 @@ export function initIpcHandlers() {
 
     electron.ipcMain.on("start-file-drag", (event, payload: { remoteUri: string; fileName: string; isDir: boolean }) => {
         fireAndForget(() => startFileDrag(event.sender, payload));
+    });
+
+    electron.ipcMain.on("cleanup-drag-temp", (event) => {
+        fireAndForget(() => cleanupTempDirsForWebContents(event.sender.id));
     });
 
     electronApp.on("will-quit", () => {

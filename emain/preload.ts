@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("api", {
     downloadFile: (filePath) => ipcRenderer.send("download", { filePath }),
     startFileDrag: (remoteUri: string, fileName: string, isDir: boolean) =>
         ipcRenderer.send("start-file-drag", { remoteUri, fileName, isDir }),
+    cleanupDragTemp: () => ipcRenderer.send("cleanup-drag-temp"),
     openExternal: (url) => {
         if (url && typeof url === "string") {
             ipcRenderer.send("open-external", url);
