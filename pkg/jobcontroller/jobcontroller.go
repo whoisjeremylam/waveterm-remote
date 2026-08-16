@@ -2103,6 +2103,27 @@ func waitForStreamLoopExit(jobId string, streamId string, timeout time.Duration)
 	log.Printf("[job:%s] warning: output loop [stream:%s] did not exit within %v; proceeding without seq adjustment", jobId, streamId, timeout)
 }
 
+// RestartBlockStream restarts the output stream for a block's job, re-establishing
+// the seq/ACK handshake with the remote StreamManager without reconnecting the SSH
+// connection and without killing the shell. This is the manual recovery path
+// ("Reconnect Stream") for a block whose output stream has wedged while the
+// connection itself remains healthy (e.g. a flow-control/ACK deadlock).
+func RestartBlockStream(ctx context.Context, blockId string) error {
+	block, err := wstore.DBGet[*waveobj.Block](ctx, blockId)
+	if err != nil {
+		return fmt.Errorf("failed to get block: %w", err)
+	}
+	if block == nil || block.JobId == "" {
+		return fmt.Errorf("block %q has no attached job", blockId)
+	}
+	log.Printf("[block:%s] reconnect stream requested for job %s", blockId, block.JobId)
+	if err := restartStreaming(ctx, block.JobId, false, nil); err != nil {
+		return fmt.Errorf("failed to restart stream: %w", err)
+	}
+	log.Printf("[block:%s] reconnect stream completed for job %s", blockId, block.JobId)
+	return nil
+}
+
 func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rtOpts *waveobj.RuntimeOpts) error {
 	job, err := wstore.DBMustGet[*waveobj.Job](ctx, jobId)
 	if err != nil {

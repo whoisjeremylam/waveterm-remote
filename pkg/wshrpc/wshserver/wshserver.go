@@ -1485,3 +1485,7 @@ func (ws *WshServer) JobControllerDetachJobCommand(ctx context.Context, jobId st
 func (ws *WshServer) BlockJobStatusCommand(ctx context.Context, blockId string) (*wshrpc.BlockJobStatusData, error) {
 	return jobcontroller.GetBlockJobStatus(ctx, blockId)
 }
+
+func (ws *WshServer) BlockRestartStreamCommand(ctx context.Context, blockId string) error {
+	return jobcontroller.RestartBlockStream(ctx, blockId)
+}

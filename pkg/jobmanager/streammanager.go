@@ -63,6 +63,12 @@ type StreamManager struct {
 	maxAckedSeq  int64
 	maxAckedRwnd int64
 
+	// lastAckAt tracks the last time a valid ACK was processed; used by the
+	// stall watchdog to detect a flow-control deadlock (window full, no ACKs).
+	lastAckAt time.Time
+	// lastRejectLogAt rate-limits logging of rejected/stale ACKs.
+	lastRejectLogAt time.Time
+
 	// terminal state - once true, stream is complete
 	terminalEventAcked bool
 	closed             bool
@@ -101,7 +107,33 @@ func MakeStreamManagerWithSizes(cwndSize, cirbufSize int) *StreamManager {
 	}
 	sm.drainCond = sync.NewCond(&sm.lock)
 	go sm.senderLoop()
+	go sm.stallWatchdog()
 	return sm
+}
+
+// stallWatchdog periodically checks for a flow-control deadlock: the stream is
+// connected, we have unacked/sent data, but no ACK has arrived recently. This is
+// the signature of a wedged output stream (window full, ACKs stopped). Logs are
+// rate-limited to once per tick (10s).
+func (sm *StreamManager) stallWatchdog() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		sm.lock.Lock()
+		connected := sm.connected
+		sentNotAcked := sm.sentNotAcked
+		bufCount := sm.buf.Size()
+		if !connected || (sentNotAcked == 0 && bufCount == 0) {
+			sm.lock.Unlock()
+			continue
+		}
+		stalled := !sm.lastAckAt.IsZero() && time.Since(sm.lastAckAt) > 10*time.Second
+		if stalled {
+			log.Printf("[streammanager] STALL-WATCH jobid=%s connected=%v sentNotAcked=%d rwndSize=%d bufCount=%d bufTotal=%d headPos=%d maxAckedSeq=%d maxAckedRwnd=%d lastAckAgo=%s",
+				sm.jobId, connected, sentNotAcked, sm.rwndSize, bufCount, sm.buf.TotalSize(), sm.buf.HeadPos(), sm.maxAckedSeq, sm.maxAckedRwnd, time.Since(sm.lastAckAt))
+		}
+		sm.lock.Unlock()
+	}
 }
 
 // AttachReader starts reading from the given reader
@@ -166,6 +198,7 @@ func (sm *StreamManager) ClientConnected(streamId string, dataSender DataSender,
 	sm.connected = true
 	sm.rwndSize = rwndSize
 	sm.sentNotAcked = 0
+	sm.lastAckAt = time.Now()
 	effectiveWindow := sm.cwndSize
 	if sm.rwndSize < effectiveWindow {
 		effectiveWindow = sm.rwndSize
@@ -259,6 +292,19 @@ func (sm *StreamManager) ClientDisconnected() {
 	sm.drainCond.Signal()
 }
 
+// logRejectAck rate-limits logging for ACKs that RecvAck rejects. Rejections are
+// normally rare; a flood of these indicates a seq-tracking drift between the
+// client and server stream positions.
+func (sm *StreamManager) logRejectAck(reason string, seq, rwnd, maxAckedSeq, maxAckedRwnd, headPos, sentNotAcked int64) {
+	now := time.Now()
+	if !sm.lastRejectLogAt.IsZero() && now.Sub(sm.lastRejectLogAt) < time.Second {
+		return
+	}
+	sm.lastRejectLogAt = now
+	log.Printf("[streammanager] RecvAck rejected (%s) jobid=%s seq=%d rwnd=%d maxAckedSeq=%d maxAckedRwnd=%d headPos=%d sentNotAcked=%d",
+		reason, sm.jobId, seq, rwnd, maxAckedSeq, maxAckedRwnd, headPos, sentNotAcked)
+}
+
 // RecvAck processes an ACK from the client
 // must be connected, and streamid must match
 func (sm *StreamManager) RecvAck(ackPk wshrpc.CommandStreamAckData) {
@@ -280,22 +326,24 @@ func (sm *StreamManager) RecvAck(ackPk wshrpc.CommandStreamAckData) {
 
 	// Ignore stale ACKs using tuple comparison (seq, rwnd)
 	if seq < sm.maxAckedSeq || (seq == sm.maxAckedSeq && rwnd <= sm.maxAckedRwnd) {
-		// log.Printf("streammanager ignoring stale ACK: seq=%d rwnd=%d (max: seq=%d rwnd=%d)",
-		// 	seq, rwnd, sm.maxAckedSeq, sm.maxAckedRwnd)
+		sm.logRejectAck("stale", seq, rwnd, sm.maxAckedSeq, sm.maxAckedRwnd, sm.buf.HeadPos(), sm.sentNotAcked)
 		return
 	}
 
 	// Update max acked tuple
 	sm.maxAckedSeq = seq
 	sm.maxAckedRwnd = rwnd
+	sm.lastAckAt = time.Now()
 
 	headPos := sm.buf.HeadPos()
 	if seq < headPos {
+		sm.logRejectAck("seq-behind-head", seq, rwnd, sm.maxAckedSeq, sm.maxAckedRwnd, headPos, sm.sentNotAcked)
 		return
 	}
 
 	ackedBytes := seq - headPos
 	if ackedBytes > sm.sentNotAcked {
+		sm.logRejectAck("ack-exceeds-sent", seq, rwnd, sm.maxAckedSeq, sm.maxAckedRwnd, headPos, sm.sentNotAcked)
 		return
 	}
 

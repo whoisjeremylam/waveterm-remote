@@ -4,8 +4,10 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
 )
@@ -27,6 +29,7 @@ type Reader struct {
 	closed       bool
 	lastRwndSent int64
 	oooPackets   []wshrpc.CommandStreamData // out-of-order packets awaiting delivery
+	lastAnomLog  time.Time                 // rate-limits seq-anomaly logging
 }
 
 func NewReader(id string, readWindow int64, ackSender AckSender) *Reader {
@@ -66,9 +69,11 @@ func (r *Reader) RecvData(dataPk wshrpc.CommandStreamData) {
 	}
 
 	if dataPk.Seq < r.nextSeq {
+		r.logSeqAnomaly("stale-seq-dropped", dataPk.Seq, r.nextSeq)
 		return
 	}
 	if dataPk.Seq > r.nextSeq {
+		r.logSeqAnomaly("out-of-order-buffered", dataPk.Seq, r.nextSeq)
 		r.addOOOPacketLocked(dataPk)
 		return
 	}
@@ -94,6 +99,19 @@ func (r *Reader) recvDataOrderedLocked(dataPk wshrpc.CommandStreamData) {
 	if dataPk.Eof {
 		r.eof = true
 	}
+}
+
+// logSeqAnomaly rate-limits logging when a stream data packet arrives with a seq
+// that does not match nextSeq. This indicates a seq-tracking drift between the
+// remote StreamManager and this reader, which can silently wedge the stream (OOO
+// packets are buffered but never ACKed).
+func (r *Reader) logSeqAnomaly(reason string, pktSeq, nextSeq int64) {
+	now := time.Now()
+	if !r.lastAnomLog.IsZero() && now.Sub(r.lastAnomLog) < time.Second {
+		return
+	}
+	r.lastAnomLog = now
+	log.Printf("[streamclient] %s stream=%s pktSeq=%d nextSeq=%d oooCount=%d bufferLen=%d", reason, r.id, pktSeq, nextSeq, len(r.oooPackets), len(r.buffer))
 }
 
 func (r *Reader) addOOOPacketLocked(dataPk wshrpc.CommandStreamData) {

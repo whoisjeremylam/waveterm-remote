@@ -1185,6 +1185,10 @@ export class TermViewModel implements ViewModel {
             label: "Force Restart Controller",
             click: () => fireAndForget(() => this.forceRestartController()),
         });
+        advancedSubmenu.push({
+            label: "Reconnect Stream",
+            click: () => fireAndForget(() => RpcApi.BlockRestartStreamCommand(TabRpcClient, this.blockId)),
+        });
         const isClearOnStart = blockData?.meta?.["cmd:clearonstart"];
         advancedSubmenu.push({
             label: "Clear Output On Restart",

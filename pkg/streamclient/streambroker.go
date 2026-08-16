@@ -2,6 +2,7 @@ package streamclient
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -150,6 +151,9 @@ func (b *Broker) processSendAck(ackPk wshrpc.CommandStreamAckData) {
 	route, ok := b.writerRoutes[ackPk.Id]
 	b.lock.Unlock()
 	if !ok {
+		// A missing writer route means the ACK is silently dropped, which can
+		// wedge the remote StreamManager's flow-control window.
+		log.Printf("[streamclient] processSendAck: no writer route for stream %s, dropping ACK seq=%d", ackPk.Id, ackPk.Seq)
 		return
 	}
 
@@ -157,7 +161,9 @@ func (b *Broker) processSendAck(ackPk wshrpc.CommandStreamAckData) {
 		Route:      route,
 		NoResponse: true,
 	}
-	b.rpcClient.StreamDataAckCommand(ackPk, opts)
+	if err := b.rpcClient.StreamDataAckCommand(ackPk, opts); err != nil {
+		log.Printf("[streamclient] processSendAck: error sending ACK for stream %s seq=%d: %v", ackPk.Id, ackPk.Seq, err)
+	}
 
 	if ackPk.Fin || ackPk.Cancel {
 		b.cleanupReader(ackPk.Id)
