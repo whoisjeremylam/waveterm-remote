@@ -14,6 +14,7 @@ Most developer terminals assume code is installed, built, and tested locally. Th
 
 ## Active Specs
 
+- [[specs/wsh-agent-api.md]] — **"Agent Control Fabric"** — design converged; phased implementation (worktree `waveterm-remote-agent-fabric`, branch `feat/agent-control-fabric`)
 - [[specs/reconnection-ux-backlog.md]] — **P0 + P1 + most of P2 merged**; remaining is UX-3.2 QA matrix + spec hygiene
 - [[specs/reconnection.md]] — Implementation log (through stale hung-dial soft-cancel / password-cache hardening)
 - [[specs/newtab-connect-dropdown.md]] — Implemented; ≥2-char auto-select; block-header is filter-free switcher
@@ -26,7 +27,7 @@ Most developer terminals assume code is installed, built, and tested locally. Th
 
 - **Branch:** `odds-and-ends` (reconnection UX P0/P1/P2 already merged into `main`/`odds-and-ends`)
 - **⚠️ ACTION (Jeremy):** run the reconnection UX-3.2 QA matrix (Q1–Q17) — manual tests, see [[specs/reconnection-p1-p2-verification.md]] for steps/expected results and [[todos.md]] for the recommended order
-- **Next (agent):** reconcile `reconnection.md` "current behavior"; then SCM widget P1–P3 or wsh Agent API
+- **Next (agent):** wsh Agent API ("agent control fabric") — see [[specs/wsh-agent-api.md]]; developed in worktree `waveterm-remote-agent-fabric` on branch `feat/agent-control-fabric` (branched off `odds-and-ends`, which will merge first)
 - **Todos:** [[todos.md]] — see the "Open action — manual QA" section at top
 
 ## Context & Decisions

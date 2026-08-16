@@ -604,3 +604,24 @@ Gates are soft (delay/retry, user Connect can bypass). They do not prove the SSH
 **Files:** `pkg/jobcontroller/jobcontroller.go`, `pkg/jobmanager/streammanager.go`, `pkg/streamclient/streamreader.go`, `pkg/streamclient/streambroker.go`, `pkg/wshrpc/{wshrpctypes,wshserver,wshclient}`, `frontend/app/store/wshclientapi.ts`, `frontend/app/view/term/term-model.ts`.
 
 **Open:** root cause not yet identified; the instrumentation is intended to capture the exact stuck state on the next occurrence (likely seq drift or an ACK deadlock in the durable-shell stream path).
+
+## 2026-08-16: wsh Agent API ("Agent Control Fabric") — design decisions
+
+**Decision:** Expose terminal orchestration to AI agents via `wsh`, modeled on tmux, with two execution modes and flat geometry for layout understanding.
+
+**Context:** Agents (pi, Claude Code, Cursor) run inside terminals but can't see/control other blocks, understand spatial layout, configure the app, or prompt the user. tmux is the de-facto standard agents are already trained on, so naming should transfer from tmux (session→workspace, window→tab, pane→block).
+
+**Decisions:**
+
+1. **Two execution modes** — Mode A synchronous (`wsh run --wait --json`, the 90% workhorse: stdout+stderr+exit code+duration) vs Mode B asynchronous tmux-style block control (create / send-keys / capture / status / select / kill).
+2. **tmux-transferable naming** — grouped noun forms (`wsh block capture`, `send-keys`, `split`, `select`, `kill`, `rename`) plus top-level tmux aliases (`wsh capture-pane`, `send-keys`, `split-pane`, ...). `termscrollback` → `block capture`.
+3. **Flat geometry for v1** — per-block `x/y/w/h` fractions in `block list --json`; raw layout tree deferred. Directional (`--left-of` etc.) + title-substring addressing added to the existing resolver.
+4. **Prompt surface** — `wsh prompt` uses a UI modal (works for hidden/background orchestrators); stdin deferred.
+5. **Trust gate** — `agent:allowremotelocalcontrol` default **off**; remote-origin `wsh` targeting the `local` connection is rejected unless the user opts in.
+6. **`block status`** minimal for v1 (running/exited/exit-code); `--tail` capture (not `--since`) for v1.
+
+**Files:** `.pi/specs/wsh-agent-api.md` (full command reference + 28 test cases).
+
+**Consequences:**
+- Build order: Mode A → Mode B → layout → settings → prompt → trust gate.
+- Requires new RPCs (geometry, process state, input injection, prompt) and CLI surface; the existing `ResolveIds` resolver already covers most addressing forms (blocknum, `view:N`, `tab:N`, `this`, uuid).

@@ -47,6 +47,7 @@ docs/superpowers
 golang-*/
 zig-*/
 .pi/delegate-results/
+.pi/phase-state.md
 
 # Local tooling / accidental artifacts (never commit)
 server
