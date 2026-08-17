@@ -169,6 +169,9 @@ export class PreviewModel implements ViewModel {
     directoryDropdownOpen: PrimitiveAtom<boolean>;
     directorySorting: PrimitiveAtom<SortingState>;
     dragSource: PrimitiveAtom<DraggedFile | null>;
+    selectedPaths: PrimitiveAtom<Set<string>>;
+    selectionAnchor: PrimitiveAtom<string | null>;
+    directorySelectablePaths: PrimitiveAtom<string[]>;
     directoryColumnSizing: PrimitiveAtom<ColumnSizingState>;
     directoryColumnVisibility: PrimitiveAtom<VisibilityState>;
     directoryKeyDownHandler: (waveEvent: WaveKeyboardEvent) => boolean;
@@ -191,6 +194,9 @@ export class PreviewModel implements ViewModel {
         this.directoryColumnSizing = atom<ColumnSizingState>({});
         this.directoryColumnVisibility = atom<VisibilityState>({ path: false });
         this.dragSource = atom(null) as PrimitiveAtom<DraggedFile | null>;
+        this.selectedPaths = atom<Set<string>>(new Set());
+        this.selectionAnchor = atom<string | null>(null);
+        this.directorySelectablePaths = atom<string[]>([]);
         this.directorySearchActive = atom(false);
         this.directoryDropdownOpen = atom(false);
         this.previewTextRef = createRef();

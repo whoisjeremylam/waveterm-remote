@@ -34,6 +34,9 @@ import { debounce } from "throttle-debounce";
 import "./directorypreview.scss";
 import { EntryManagerOverlay, EntryManagerOverlayProps, EntryManagerType } from "./entry-manager";
 import {
+    applyClearSelection,
+    applySelectAll,
+    applySelectionClick,
     cleanMimetype,
     decideNativeDropRoute,
     getBestUnit,
@@ -245,7 +248,11 @@ function DirectoryTable({
     useEffect(() => {
         const allRows = table.getRowModel()?.flatRows || [];
         setSelectedPath((allRows[focusIndex]?.getValue("path") as string) ?? null);
-    }, [focusIndex, data, setSelectedPath, sortingState]);
+        const selectablePaths = allRows
+            .filter((row) => row.getValue("name") !== "..")
+            .map((row) => row.getValue("path") as string);
+        globalStore.set(model.directorySelectablePaths, selectablePaths);
+    }, [focusIndex, data, setSelectedPath, sortingState, model]);
 
     const columnSizeVars = useMemo(() => {
         const headers = table.getFlatHeaders();
@@ -442,6 +449,25 @@ function TableBody({
     const dotdotRow = allRows.find((row) => row.getValue("name") === "..");
     const otherRows = allRows.filter((row) => row.getValue("name") !== "..");
 
+    const handleRowClick = useCallback(
+        (path: string, idx: number, opts: { cmd: boolean; shift: boolean }) => {
+            setFocusIndex(idx);
+            const selectablePaths = globalStore.get(model.directorySelectablePaths);
+            if (!selectablePaths.includes(path)) {
+                // The ".." row is never selectable.
+                return;
+            }
+            const prev = {
+                selectedPaths: globalStore.get(model.selectedPaths),
+                anchor: globalStore.get(model.selectionAnchor),
+            };
+            const next = applySelectionClick(prev, path, opts, selectablePaths);
+            globalStore.set(model.selectedPaths, next.selectedPaths);
+            globalStore.set(model.selectionAnchor, next.anchor);
+        },
+        [model, setFocusIndex]
+    );
+
     return (
         <div className="dir-table-body" ref={bodyRef}>
             {(searchActive || search !== "") && (
@@ -473,7 +499,7 @@ function TableBody({
                         model={model}
                         row={dotdotRow}
                         focusIndex={focusIndex}
-                        setFocusIndex={setFocusIndex}
+                        handleRowClick={handleRowClick}
                         setSearch={setSearch}
                         idx={0}
                         handleFileContextMenu={handleFileContextMenu}
@@ -485,7 +511,7 @@ function TableBody({
                         model={model}
                         row={row}
                         focusIndex={focusIndex}
-                        setFocusIndex={setFocusIndex}
+                        handleRowClick={handleRowClick}
                         setSearch={setSearch}
                         idx={dotdotRow ? idx + 1 : idx}
                         handleFileContextMenu={handleFileContextMenu}
@@ -501,15 +527,17 @@ type TableRowProps = {
     model: PreviewModel;
     row: Row<FileInfo>;
     focusIndex: number;
-    setFocusIndex: (_: number) => void;
+    handleRowClick: (path: string, idx: number, opts: { cmd: boolean; shift: boolean }) => void;
     setSearch: (_: string) => void;
     idx: number;
     handleFileContextMenu: (e: any, finfo: FileInfo) => Promise<void>;
 };
 
-function TableRow({ model, row, focusIndex, setFocusIndex, setSearch, idx, handleFileContextMenu }: TableRowProps) {
+function TableRow({ model, row, focusIndex, handleRowClick, setSearch, idx, handleFileContextMenu }: TableRowProps) {
     const dirPath = useAtomValue(model.statFilePath);
     const connection = useAtomValue(model.connection);
+    const selectedPaths = useAtomValue(model.selectedPaths);
+    const isSelected = selectedPaths.has(row.getValue("path") as string);
 
     const dragItem: DraggedFile = {
         relName: row.getValue("name") as string,
@@ -535,7 +563,7 @@ function TableRow({ model, row, focusIndex, setFocusIndex, setSearch, idx, handl
 
     return (
         <div
-            className={clsx("dir-table-body-row", { focused: focusIndex === idx })}
+            className={clsx("dir-table-body-row", { focused: focusIndex === idx, selected: isSelected })}
             data-rowindex={idx}
             draggable
             onDoubleClick={() => {
@@ -544,7 +572,9 @@ function TableRow({ model, row, focusIndex, setFocusIndex, setSearch, idx, handl
                 setSearch("");
                 globalStore.set(model.directorySearchActive, false);
             }}
-            onClick={() => setFocusIndex(idx)}
+            onClick={(e) =>
+                handleRowClick(row.getValue("path") as string, idx, { cmd: e.metaKey || e.ctrlKey, shift: e.shiftKey })
+            }
             onContextMenu={(e) => handleFileContextMenu(e, row.original)}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
@@ -617,6 +647,8 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     });
                 }
                 setUnfilteredData(entries);
+                globalStore.set(model.selectedPaths, new Set());
+                globalStore.set(model.selectionAnchor, null);
             }),
         [conn, dirPath, refreshVersion]
     );
@@ -642,10 +674,56 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 globalStore.set(model.directorySearchActive, true);
                 return true;
             }
+            if (checkKeyPressed(waveEvent, "Cmd:a")) {
+                const selectablePaths = globalStore.get(model.directorySelectablePaths);
+                const next = applySelectAll(selectablePaths);
+                globalStore.set(model.selectedPaths, next.selectedPaths);
+                globalStore.set(model.selectionAnchor, next.anchor);
+                return true;
+            }
             if (checkKeyPressed(waveEvent, "Escape")) {
                 setSearchText("");
                 globalStore.set(model.directorySearchActive, false);
+                const cleared = applyClearSelection();
+                globalStore.set(model.selectedPaths, cleared.selectedPaths);
+                globalStore.set(model.selectionAnchor, cleared.anchor);
                 return;
+            }
+            if (checkKeyPressed(waveEvent, "Shift:ArrowUp")) {
+                const newFocusIndex = Math.max(focusIndex - 1, 0);
+                setFocusIndex(newFocusIndex);
+                const selectablePaths = globalStore.get(model.directorySelectablePaths);
+                const dotdotPresent = filteredData.some((f) => f.name === "..");
+                const selectableIdx = dotdotPresent ? newFocusIndex - 1 : newFocusIndex;
+                const focusedPath = selectablePaths[selectableIdx];
+                if (focusedPath != null) {
+                    const prev = {
+                        selectedPaths: globalStore.get(model.selectedPaths),
+                        anchor: globalStore.get(model.selectionAnchor),
+                    };
+                    const next = applySelectionClick(prev, focusedPath, { cmd: false, shift: true }, selectablePaths);
+                    globalStore.set(model.selectedPaths, next.selectedPaths);
+                    globalStore.set(model.selectionAnchor, next.anchor);
+                }
+                return true;
+            }
+            if (checkKeyPressed(waveEvent, "Shift:ArrowDown")) {
+                const newFocusIndex = Math.min(focusIndex + 1, filteredData.length - 1);
+                setFocusIndex(newFocusIndex);
+                const selectablePaths = globalStore.get(model.directorySelectablePaths);
+                const dotdotPresent = filteredData.some((f) => f.name === "..");
+                const selectableIdx = dotdotPresent ? newFocusIndex - 1 : newFocusIndex;
+                const focusedPath = selectablePaths[selectableIdx];
+                if (focusedPath != null) {
+                    const prev = {
+                        selectedPaths: globalStore.get(model.selectedPaths),
+                        anchor: globalStore.get(model.selectionAnchor),
+                    };
+                    const next = applySelectionClick(prev, focusedPath, { cmd: false, shift: true }, selectablePaths);
+                    globalStore.set(model.selectedPaths, next.selectedPaths);
+                    globalStore.set(model.selectionAnchor, next.anchor);
+                }
+                return true;
             }
             if (checkKeyPressed(waveEvent, "ArrowUp")) {
                 setFocusIndex((idx) => Math.max(idx - 1, 0));
@@ -697,7 +775,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         return () => {
             model.directoryKeyDownHandler = null;
         };
-    }, [filteredData, selectedPath, searchText]);
+    }, [filteredData, selectedPath, searchText, focusIndex]);
 
     useEffect(() => {
         if (filteredData.length != 0 && focusIndex > filteredData.length - 1) {

@@ -27,6 +27,56 @@ export function decideNativeDropRoute(
     return "upload";
 }
 
+export type SelectionState = { selectedPaths: Set<string>; anchor: string | null };
+
+// plain click -> {path}; cmd-click -> toggle path (anchor=path);
+// shift-click -> range over selectablePaths from anchor to path (anchor unchanged);
+// if anchor is null or not found in selectablePaths, fall back to plain {path}.
+// If cmd is set, treat as toggle (ignore shift).
+export function applySelectionClick(
+    prev: SelectionState,
+    path: string,
+    opts: { cmd: boolean; shift: boolean },
+    selectablePaths: string[]
+): SelectionState {
+    if (opts.cmd) {
+        const nextPaths = new Set(prev.selectedPaths);
+        if (nextPaths.has(path)) {
+            nextPaths.delete(path);
+        } else {
+            nextPaths.add(path);
+        }
+        return { selectedPaths: nextPaths, anchor: path };
+    }
+    if (opts.shift) {
+        const anchorIdx = prev.anchor != null ? selectablePaths.indexOf(prev.anchor) : -1;
+        const pathIdx = selectablePaths.indexOf(path);
+        if (anchorIdx !== -1 && pathIdx !== -1) {
+            const [start, end] = anchorIdx <= pathIdx ? [anchorIdx, pathIdx] : [pathIdx, anchorIdx];
+            const nextPaths = new Set<string>();
+            for (let i = start; i <= end; i++) {
+                nextPaths.add(selectablePaths[i]);
+            }
+            return { selectedPaths: nextPaths, anchor: prev.anchor };
+        }
+        return { selectedPaths: new Set([path]), anchor: path };
+    }
+    return { selectedPaths: new Set([path]), anchor: path };
+}
+
+// select all selectablePaths, anchor = first
+export function applySelectAll(selectablePaths: string[]): SelectionState {
+    return {
+        selectedPaths: new Set(selectablePaths),
+        anchor: selectablePaths.length > 0 ? selectablePaths[0] : null,
+    };
+}
+
+// empty set, null anchor
+export function applyClearSelection(): SelectionState {
+    return { selectedPaths: new Set(), anchor: null };
+}
+
 export const recursiveError = "recursive flag must be set for directory operations";
 export const overwriteError = "set overwrite flag to delete the existing file";
 export const mergeError = "set overwrite flag to delete the existing contents or set merge flag to merge the contents";
