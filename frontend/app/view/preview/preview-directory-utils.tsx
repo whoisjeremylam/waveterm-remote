@@ -64,6 +64,24 @@ export function buildDragFileItems(
         }));
 }
 
+// Builds the full selection as DraggedFile items (INCLUDING directories), for
+// clipboard copy/cut. The ".." row is excluded.
+export function buildSelectionItems(
+    selectedPaths: Set<string>,
+    entries: Array<{ path: string; name: string; isdir: boolean }>,
+    dirPath: string,
+    connName: string
+): DraggedFile[] {
+    return entries
+        .filter((entry) => entry.name !== ".." && selectedPaths.has(entry.path))
+        .map((entry) => ({
+            relName: entry.name,
+            absParent: dirPath,
+            uri: formatRemoteUri(entry.path, connName),
+            isDir: entry.isdir,
+        }));
+}
+
 export type SelectionState = { selectedPaths: Set<string>; anchor: string | null };
 
 // plain click -> {path}; cmd-click -> toggle path (anchor=path);

@@ -459,6 +459,11 @@ declare global {
         move: boolean;
     };
 
+    type FileClipboardState = {
+        sources: DraggedFile[];
+        cut: boolean;
+    };
+
     type ErrorButtonDef = {
         text: string;
         onClick: () => void;

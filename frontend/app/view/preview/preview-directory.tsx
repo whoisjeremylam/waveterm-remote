@@ -37,6 +37,7 @@ import {
     applySelectionClick,
     buildDropFileCopyOpts,
     buildDragFileItems,
+    buildSelectionItems,
     cleanMimetype,
     decideNativeDropRoute,
     getBestUnit,
@@ -410,6 +411,44 @@ function TableBody({
                     },
                 },
                 {
+                    label: "Copy",
+                    click: () => {
+                        const selected = globalStore.get(model.selectedPaths);
+                        if (!selected.has(finfo.path)) {
+                            globalStore.set(model.selectedPaths, new Set([finfo.path]));
+                            globalStore.set(model.selectionAnchor, finfo.path);
+                        }
+                        const entries = allRows.map((r) => ({
+                            path: r.getValue("path") as string,
+                            name: r.getValue("name") as string,
+                            isdir: Boolean(r.original.isdir),
+                        }));
+                        globalStore.set(model.fileClipboard, {
+                            sources: buildSelectionItems(globalStore.get(model.selectedPaths), entries, dirPath, connName),
+                            cut: false,
+                        });
+                    },
+                },
+                {
+                    label: "Cut",
+                    click: () => {
+                        const selected = globalStore.get(model.selectedPaths);
+                        if (!selected.has(finfo.path)) {
+                            globalStore.set(model.selectedPaths, new Set([finfo.path]));
+                            globalStore.set(model.selectionAnchor, finfo.path);
+                        }
+                        const entries = allRows.map((r) => ({
+                            path: r.getValue("path") as string,
+                            name: r.getValue("name") as string,
+                            isdir: Boolean(r.original.isdir),
+                        }));
+                        globalStore.set(model.fileClipboard, {
+                            sources: buildSelectionItems(globalStore.get(model.selectedPaths), entries, dirPath, connName),
+                            cut: true,
+                        });
+                    },
+                },
+                {
                     type: "separator",
                 },
                 {
@@ -649,6 +688,81 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const dragCounterRef = useRef(0);
     const directoryDropdownOpen = useAtomValue(model.directoryDropdownOpen);
 
+    const handleDropCopyOrMove = useCallback(
+        async (data: CommandFileCopyData, isDir: boolean, move: boolean) => {
+            try {
+                if (move) {
+                    await env.rpc.FileMoveCommand(TabRpcClient, data, { timeout: data.opts.timeout });
+                } else {
+                    await env.rpc.FileCopyCommand(TabRpcClient, data, { timeout: data.opts.timeout });
+                }
+            } catch (e) {
+                console.warn(`${move ? "Move" : "Copy"} failed:`, e);
+                const copyError = `${e}`;
+                const allowRetry = copyError.includes(overwriteError) || copyError.includes(mergeError);
+                let errorMsg: ErrorMsg;
+                if (allowRetry) {
+                    errorMsg = {
+                        status: "Confirm Overwrite File(s)",
+                        text: `This ${move ? "move" : "copy"} operation will overwrite an existing file. Would you like to continue?`,
+                        level: "warning",
+                        buttons: [
+                            {
+                                text: `Delete Then ${move ? "Move" : "Copy"}`,
+                                onClick: async () => {
+                                    data.opts.overwrite = true;
+                                    await handleDropCopyOrMove(data, isDir, move);
+                                },
+                            },
+                            {
+                                text: "Sync",
+                                onClick: async () => {
+                                    data.opts.merge = true;
+                                    await handleDropCopyOrMove(data, isDir, move);
+                                },
+                            },
+                        ],
+                    };
+                } else {
+                    errorMsg = {
+                        status: `${move ? "Move" : "Copy"} Failed`,
+                        text: copyError,
+                        level: "error",
+                    };
+                }
+                setErrorMsg(errorMsg);
+            }
+            model.refresh();
+        },
+        [model.refresh]
+    );
+
+    const pasteClipboard = useCallback(
+        (targetDir: string) => {
+            const clipboard = globalStore.get(model.fileClipboard);
+            if (clipboard == null || clipboard.sources.length === 0) {
+                return;
+            }
+            if (clipboard.sources[0].absParent === targetDir) {
+                return; // pasting into the source directory is a no-op
+            }
+            fireAndForget(async () => {
+                const desturi = await model.formatRemoteUri(targetDir, globalStore.get);
+                for (const s of clipboard.sources) {
+                    await handleDropCopyOrMove(
+                        { srcuri: s.uri, desturi, opts: buildDropFileCopyOpts(s.isDir, clipboard.cut) },
+                        s.isDir,
+                        clipboard.cut
+                    );
+                }
+                if (clipboard.cut) {
+                    globalStore.set(model.fileClipboard, null); // move consumes the source
+                }
+            });
+        },
+        [model, handleDropCopyOrMove]
+    );
+
     useEffect(
         () =>
             fireAndForget(async () => {
@@ -791,6 +905,32 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 handleFileDeleteBatch(model, items, setErrorMsg);
                 return true;
             }
+            if (checkKeyPressed(waveEvent, "Cmd:c")) {
+                const selected = globalStore.get(model.selectedPaths);
+                if (selected.size > 0) {
+                    const entries = filteredData.map((f) => ({ path: f.path, name: f.name, isdir: Boolean(f.isdir) }));
+                    globalStore.set(model.fileClipboard, {
+                        sources: buildSelectionItems(selected, entries, dirPath, conn),
+                        cut: false,
+                    });
+                }
+                return true;
+            }
+            if (checkKeyPressed(waveEvent, "Cmd:x")) {
+                const selected = globalStore.get(model.selectedPaths);
+                if (selected.size > 0) {
+                    const entries = filteredData.map((f) => ({ path: f.path, name: f.name, isdir: Boolean(f.isdir) }));
+                    globalStore.set(model.fileClipboard, {
+                        sources: buildSelectionItems(selected, entries, dirPath, conn),
+                        cut: true,
+                    });
+                }
+                return true;
+            }
+            if (checkKeyPressed(waveEvent, "Cmd:v")) {
+                pasteClipboard(dirPath);
+                return true;
+            }
             if (checkKeyPressed(waveEvent, "Backspace")) {
                 if (searchText.length == 0) {
                     return true;
@@ -816,7 +956,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         return () => {
             model.directoryKeyDownHandler = null;
         };
-    }, [filteredData, selectedPath, searchText, focusIndex]);
+    }, [filteredData, selectedPath, searchText, focusIndex, pasteClipboard, conn, dirPath]);
 
     useEffect(() => {
         if (filteredData.length != 0 && focusIndex > filteredData.length - 1) {
@@ -834,55 +974,6 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         onOpenChange: () => setEntryManagerProps(undefined),
         middleware: [offset(({ rects }) => -rects.reference.height / 2 - rects.floating.height / 2)],
     });
-
-    const handleDropCopyOrMove = useCallback(
-        async (data: CommandFileCopyData, isDir: boolean, move: boolean) => {
-            try {
-                if (move) {
-                    await env.rpc.FileMoveCommand(TabRpcClient, data, { timeout: data.opts.timeout });
-                } else {
-                    await env.rpc.FileCopyCommand(TabRpcClient, data, { timeout: data.opts.timeout });
-                }
-            } catch (e) {
-                console.warn(`${move ? "Move" : "Copy"} failed:`, e);
-                const copyError = `${e}`;
-                const allowRetry = copyError.includes(overwriteError) || copyError.includes(mergeError);
-                let errorMsg: ErrorMsg;
-                if (allowRetry) {
-                    errorMsg = {
-                        status: "Confirm Overwrite File(s)",
-                        text: `This ${move ? "move" : "copy"} operation will overwrite an existing file. Would you like to continue?`,
-                        level: "warning",
-                        buttons: [
-                            {
-                                text: `Delete Then ${move ? "Move" : "Copy"}`,
-                                onClick: async () => {
-                                    data.opts.overwrite = true;
-                                    await handleDropCopyOrMove(data, isDir, move);
-                                },
-                            },
-                            {
-                                text: "Sync",
-                                onClick: async () => {
-                                    data.opts.merge = true;
-                                    await handleDropCopyOrMove(data, isDir, move);
-                                },
-                            },
-                        ],
-                    };
-                } else {
-                    errorMsg = {
-                        status: `${move ? "Move" : "Copy"} Failed`,
-                        text: copyError,
-                        level: "error",
-                    };
-                }
-                setErrorMsg(errorMsg);
-            }
-            model.refresh();
-        },
-        [model.refresh]
-    );
 
     const dismiss = useDismiss(context);
     const { getReferenceProps, getFloatingProps } = useInteractions([dismiss]);
@@ -996,6 +1087,14 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             e.stopPropagation();
             const menu: ContextMenuItem[] = [
                 {
+                    label: "Paste",
+                    enabled: (() => {
+                        const cb = globalStore.get(model.fileClipboard);
+                        return cb != null && cb.sources.length > 0 && cb.sources[0].absParent !== dirPath;
+                    })(),
+                    click: () => pasteClipboard(dirPath),
+                },
+                {
                     label: "New File",
                     click: () => {
                         newFile();
@@ -1015,7 +1114,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
 
             ContextMenuModel.getInstance().showContextMenu(menu, e);
         },
-        [setRefreshVersion, conn, newFile, newDirectory, dirPath]
+        [setRefreshVersion, conn, newFile, newDirectory, dirPath, pasteClipboard]
     );
 
     return (

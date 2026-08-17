@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, decideNativeDropRoute, resolveDeleteItems, shouldConfirmDelete } from "./preview-directory-utils";
+import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, resolveDeleteItems, shouldConfirmDelete } from "./preview-directory-utils";
 
 describe("buildDropFileCopyOpts", () => {
     const yearTimeout = 31536000000; // one year
@@ -104,6 +104,28 @@ describe("buildDragFileItems", () => {
         const selectedPaths = new Set(["/dir/sub", "/dir/.."]);
         const files = buildDragFileItems(selectedPaths, "/dir/sub", entries, "/dir", "conn");
         expect(files).toEqual([]);
+    });
+});
+
+describe("buildSelectionItems", () => {
+    const entries = [
+        { path: "/dir/..", name: "..", isdir: true },
+        { path: "/dir/a.txt", name: "a.txt", isdir: false },
+        { path: "/dir/b.txt", name: "b.txt", isdir: false },
+        { path: "/dir/sub", name: "sub", isdir: true },
+    ];
+
+    it("builds all selected items INCLUDING directories (excludes ..), with correct uri/absParent/isDir", () => {
+        const selectedPaths = new Set(["/dir/a.txt", "/dir/sub", "/dir/.."]);
+        const items = buildSelectionItems(selectedPaths, entries, "/dir", "conn");
+        expect(items).toEqual([
+            { relName: "a.txt", absParent: "/dir", uri: "wsh://conn//dir/a.txt", isDir: false },
+            { relName: "sub", absParent: "/dir", uri: "wsh://conn//dir/sub", isDir: true },
+        ]);
+    });
+
+    it("empty selection -> []", () => {
+        expect(buildSelectionItems(new Set(), entries, "/dir", "conn")).toEqual([]);
     });
 });
 
