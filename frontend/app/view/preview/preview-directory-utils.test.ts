@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, decideNativeDropRoute } from "./preview-directory-utils";
+import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, decideNativeDropRoute, resolveDeleteItems, shouldConfirmDelete } from "./preview-directory-utils";
 
 describe("buildDropFileCopyOpts", () => {
     const yearTimeout = 31536000000; // one year
@@ -179,5 +179,72 @@ describe("applyClearSelection", () => {
         const next = applyClearSelection();
         expect(next.selectedPaths.size).toBe(0);
         expect(next.anchor).toBeNull();
+    });
+});
+
+const deleteEntries = [
+    { path: "/dir/..", name: "..", isdir: true },
+    { path: "/dir/a.txt", name: "a.txt", isdir: false },
+    { path: "/dir/b.txt", name: "b.txt", isdir: false },
+    { path: "/dir/sub", name: "sub", isdir: true },
+];
+
+describe("resolveDeleteItems", () => {
+    it("right-clicking an unselected path deletes just that item", () => {
+        const selectedPaths = new Set(["/dir/a.txt"]);
+        const items = resolveDeleteItems(selectedPaths, "/dir/b.txt", deleteEntries);
+        expect(items).toEqual([{ path: "/dir/b.txt", isdir: false }]);
+    });
+
+    it("right-clicking an already-selected path deletes the whole selection", () => {
+        const selectedPaths = new Set(["/dir/a.txt", "/dir/b.txt"]);
+        const items = resolveDeleteItems(selectedPaths, "/dir/a.txt", deleteEntries);
+        expect(items).toEqual([
+            { path: "/dir/a.txt", isdir: false },
+            { path: "/dir/b.txt", isdir: false },
+        ]);
+    });
+
+    it("clickedPath null deletes the whole selection", () => {
+        const selectedPaths = new Set(["/dir/a.txt", "/dir/sub"]);
+        const items = resolveDeleteItems(selectedPaths, null, deleteEntries);
+        expect(items).toEqual([
+            { path: "/dir/a.txt", isdir: false },
+            { path: "/dir/sub", isdir: true },
+        ]);
+    });
+
+    it("never includes the .. entry", () => {
+        const selectedPaths = new Set(["/dir/..", "/dir/a.txt"]);
+        const items = resolveDeleteItems(selectedPaths, null, deleteEntries);
+        expect(items).toEqual([{ path: "/dir/a.txt", isdir: false }]);
+    });
+});
+
+describe("shouldConfirmDelete", () => {
+    it("a single file does not require confirmation", () => {
+        expect(shouldConfirmDelete([{ path: "/dir/a.txt", isdir: false }])).toBe(false);
+    });
+
+    it("a single directory requires confirmation", () => {
+        expect(shouldConfirmDelete([{ path: "/dir/sub", isdir: true }])).toBe(true);
+    });
+
+    it("two files require confirmation", () => {
+        expect(
+            shouldConfirmDelete([
+                { path: "/dir/a.txt", isdir: false },
+                { path: "/dir/b.txt", isdir: false },
+            ])
+        ).toBe(true);
+    });
+
+    it("two directories require confirmation", () => {
+        expect(
+            shouldConfirmDelete([
+                { path: "/dir/sub", isdir: true },
+                { path: "/dir/sub2", isdir: true },
+            ])
+        ).toBe(true);
     });
 });

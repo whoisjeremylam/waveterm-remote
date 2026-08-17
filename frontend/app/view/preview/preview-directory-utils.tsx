@@ -114,7 +114,6 @@ export function applyClearSelection(): SelectionState {
     return { selectedPaths: new Set(), anchor: null };
 }
 
-export const recursiveError = "recursive flag must be set for directory operations";
 export const overwriteError = "set overwrite flag to delete the existing file";
 export const mergeError = "set overwrite flag to delete the existing contents or set merge flag to merge the contents";
 
@@ -217,45 +216,68 @@ export function handleRename(
     });
 }
 
-export function handleFileDelete(
+// Decides which items to delete. Right-clicking an unselected row deletes just
+// that row; otherwise (keyboard, or right-clicking an already-selected row)
+// deletes the whole selection. The ".." row is always excluded.
+export function resolveDeleteItems(
+    selectedPaths: Set<string>,
+    clickedPath: string | null,
+    entries: Array<{ path: string; name: string; isdir: boolean }>
+): Array<{ path: string; isdir: boolean }> {
+    const paths = clickedPath != null && !selectedPaths.has(clickedPath) ? new Set<string>([clickedPath]) : selectedPaths;
+    return entries
+        .filter((entry) => entry.name !== ".." && paths.has(entry.path))
+        .map((entry) => ({ path: entry.path, isdir: entry.isdir }));
+}
+
+// true when items.length > 1 OR any item is a directory (recursive delete is destructive)
+export function shouldConfirmDelete(items: Array<{ path: string; isdir: boolean }>): boolean {
+    return items.length > 1 || items.some((item) => item.isdir);
+}
+
+export function handleFileDeleteBatch(
     model: PreviewModel,
-    path: string,
-    recursive: boolean,
+    items: Array<{ path: string; isdir: boolean }>,
     setErrorMsg: (msg: ErrorMsg) => void
-) {
-    fireAndForget(async () => {
-        const formattedPath = await model.formatRemoteUri(path, globalStore.get);
-        try {
-            await model.env.rpc.FileDeleteCommand(TabRpcClient, {
-                path: formattedPath,
-                recursive,
-            });
-        } catch (e) {
-            const errorText = `${e}`;
-            console.warn(`Delete failed: ${errorText}`);
-            let errorMsg: ErrorMsg;
-            if (errorText.includes(recursiveError) && !recursive) {
-                errorMsg = {
-                    status: "Confirm Delete Directory",
-                    text: "Deleting a directory requires the recursive flag. Proceed?",
-                    level: "warning",
-                    buttons: [
-                        {
-                            text: "Delete Recursively",
-                            onClick: () => handleFileDelete(model, path, true, setErrorMsg),
-                        },
-                    ],
-                };
-            } else {
-                errorMsg = {
-                    status: "Delete Failed",
-                    text: `${e}`,
-                };
+): void {
+    if (items.length === 0) {
+        return;
+    }
+    const doDelete = () => {
+        fireAndForget(async () => {
+            for (const item of items) {
+                try {
+                    const formattedPath = await model.formatRemoteUri(item.path, globalStore.get);
+                    await model.env.rpc.FileDeleteCommand(TabRpcClient, {
+                        path: formattedPath,
+                        recursive: item.isdir,
+                    });
+                } catch (e) {
+                    setErrorMsg({
+                        status: "Delete Failed",
+                        text: `Failed to delete "${item.path}": ${e}`,
+                        level: "error",
+                    });
+                }
             }
-            setErrorMsg(errorMsg);
-        }
-        model.refresh();
-    });
+            model.refresh();
+            globalStore.set(model.selectedPaths, new Set());
+            globalStore.set(model.selectionAnchor, null);
+        });
+    };
+    if (shouldConfirmDelete(items)) {
+        setErrorMsg({
+            status: "Confirm Delete",
+            text: items.length > 1 ? `Delete ${items.length} items?` : "Delete directory and its contents?",
+            level: "warning",
+            buttons: [
+                { text: "Delete", onClick: doDelete },
+                { text: "Cancel", onClick: () => {} },
+            ],
+        });
+    } else {
+        doDelete();
+    }
 }
 
 export function makeDirectoryDefaultMenuItems(model: PreviewModel): ContextMenuItem[] {

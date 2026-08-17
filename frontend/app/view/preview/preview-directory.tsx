@@ -42,8 +42,10 @@ import {
     getBestUnit,
     getLastModifiedTime,
     getSortIcon,
-    handleFileDelete,
+    handleFileDeleteBatch,
     handleRename,
+    resolveDeleteItems,
+    shouldConfirmDelete,
     isIconValid,
     makeDirectoryDefaultMenuItems,
     mergeError,
@@ -385,6 +387,8 @@ function TableBody({
             if (finfo == null) {
                 return;
             }
+            const selectedPaths = globalStore.get(model.selectedPaths);
+            const selectedCount = selectedPaths.size;
             const fileName = finfo.path.split("/").pop();
             const menu: ContextMenuItem[] = [
                 {
@@ -438,8 +442,20 @@ function TableBody({
                     type: "separator",
                 },
                 {
-                    label: "Delete",
-                    click: () => handleFileDelete(model, finfo.path, false, setErrorMsg),
+                    label:
+                        finfo != null && selectedPaths.has(finfo.path) && selectedCount > 1
+                            ? `Delete ${selectedCount} Items`
+                            : "Delete",
+                    click: () => {
+                        const selected = globalStore.get(model.selectedPaths);
+                        const entries = allRows.map((r) => ({
+                            path: r.getValue("path") as string,
+                            name: r.getValue("name") as string,
+                            isdir: Boolean(r.original.isdir),
+                        }));
+                        const items = resolveDeleteItems(selected, finfo.path, entries);
+                        handleFileDeleteBatch(model, items, setErrorMsg);
+                    },
                 }
             );
             ContextMenuModel.getInstance().showContextMenu(menu, e);
@@ -763,6 +779,16 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 model.goHistory(selectedPath);
                 setSearchText("");
                 globalStore.set(model.directorySearchActive, false);
+                return true;
+            }
+            if (checkKeyPressed(waveEvent, "Delete") || checkKeyPressed(waveEvent, "Cmd:Backspace")) {
+                const selected = globalStore.get(model.selectedPaths);
+                if (selected.size === 0) {
+                    return true;
+                }
+                const entries = filteredData.map((f) => ({ path: f.path, name: f.name, isdir: Boolean(f.isdir) }));
+                const items = resolveDeleteItems(selected, null, entries);
+                handleFileDeleteBatch(model, items, setErrorMsg);
                 return true;
             }
             if (checkKeyPressed(waveEvent, "Backspace")) {
