@@ -4,6 +4,7 @@
 import { globalStore } from "@/app/store/jotaiStore";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { fireAndForget, isBlank } from "@/util/util";
+import { formatRemoteUri } from "@/util/waveutil";
 import dayjs from "dayjs";
 import React from "react";
 import { type PreviewModel } from "./preview-model";
@@ -15,16 +16,41 @@ export type NativeDropRoute = "inapp" | "upload" | "reject";
 //  - our own widget drag dropped back into its own parent directory -> "reject" (no-op)
 //  - no drag source (e.g. OS/Finder/Explorer files) -> "upload"
 export function decideNativeDropRoute(
-    dragSource: DraggedFile | null,
+    dragSource: DragSourceState | null,
     dirPath: string | null | undefined
 ): NativeDropRoute {
     if (dirPath == null) {
         return "reject";
     }
     if (dragSource != null) {
-        return dragSource.absParent === dirPath ? "reject" : "inapp";
+        if (dragSource.files.length > 0 && dragSource.files.every((f) => f.absParent === dirPath)) {
+            return "reject";
+        }
+        return "inapp";
     }
     return "upload";
+}
+
+// Builds the OS drag-out file list from the current selection. If the dragged
+// path is part of the selection, every selected file is dragged; otherwise only
+// the dragged row. Directories and the ".." row are always excluded (native
+// drag-out is files-only).
+export function buildDragFileItems(
+    selectedPaths: Set<string>,
+    draggedPath: string,
+    entries: Array<{ path: string; name: string; isdir: boolean }>,
+    dirPath: string,
+    connName: string
+): DraggedFile[] {
+    const paths = selectedPaths.has(draggedPath) ? selectedPaths : new Set<string>([draggedPath]);
+    return entries
+        .filter((entry) => entry.name !== ".." && !entry.isdir && paths.has(entry.path))
+        .map((entry) => ({
+            relName: entry.name,
+            absParent: dirPath,
+            uri: formatRemoteUri(entry.path, connName),
+            isDir: false,
+        }));
 }
 
 export type SelectionState = { selectedPaths: Set<string>; anchor: string | null };

@@ -25,14 +25,6 @@ export function buildStreamFileUrl(remoteUri: string): string {
     return getWebServerEndpoint() + "/wave/stream-file?path=" + encodeURIComponent(remoteUri);
 }
 
-/**
- * Native drag-out only supports files; directories must be rejected before we
- * download anything or call startDrag.
- */
-export function isDragDirRejected(isDir: boolean): boolean {
-    return Boolean(isDir);
-}
-
 export function registerTempDragDir(webContentsId: number, dir: string): void {
     tempDragDirs.add(dir);
     let dirs = tempDragDirsByWebContents.get(webContentsId);

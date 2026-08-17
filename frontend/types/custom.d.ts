@@ -95,7 +95,7 @@ declare global {
         onNavigate: (callback: (url: string) => void) => void;
         onIframeNavigate: (callback: (url: string) => void) => void;
         downloadFile: (path: string) => void; // download
-        startFileDrag: (remoteUri: string, fileName: string, isDir: boolean) => void; // start-file-drag
+        startFileDrag: (items: { remoteUri: string; fileName: string }[]) => void; // start-file-drag
         cleanupDragTemp: () => void; // cleanup-drag-temp
         openExternal: (url: string) => void; // open-external
         onFullScreenChange: (callback: (isFullScreen: boolean) => void) => void; // fullscreen-change
@@ -452,6 +452,11 @@ declare global {
         absParent: string;
         relName: string;
         isDir: boolean;
+    };
+
+    type DragSourceState = {
+        files: DraggedFile[];
+        move: boolean;
     };
 
     type ErrorButtonDef = {

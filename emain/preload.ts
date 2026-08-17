@@ -24,8 +24,7 @@ contextBridge.exposeInMainWorld("api", {
     onContextMenuClick: (callback: (id: string | null) => void) =>
         ipcRenderer.on("contextmenu-click", (_event, id: string | null) => callback(id)),
     downloadFile: (filePath) => ipcRenderer.send("download", { filePath }),
-    startFileDrag: (remoteUri: string, fileName: string, isDir: boolean) =>
-        ipcRenderer.send("start-file-drag", { remoteUri, fileName, isDir }),
+    startFileDrag: (items: { remoteUri: string; fileName: string }[]) => ipcRenderer.send("start-file-drag", { items }),
     cleanupDragTemp: () => ipcRenderer.send("cleanup-drag-temp"),
     openExternal: (url) => {
         if (url && typeof url === "string") {

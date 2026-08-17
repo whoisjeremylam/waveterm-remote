@@ -38,14 +38,19 @@ describe("preview model drag source", () => {
         expect(globalStore.get(model.dragSource)).toBe(null);
     });
 
-    it("records a dragged file in the drag source atom", () => {
+    it("records a drag source in the drag source atom", () => {
         const model = makePreviewModel("preview-drag-block-set");
 
-        const value: DraggedFile = {
-            uri: "wsh://conn/home/a.txt",
-            absParent: "/home",
-            relName: "a.txt",
-            isDir: false,
+        const value: DragSourceState = {
+            move: false,
+            files: [
+                {
+                    uri: "wsh://conn/home/a.txt",
+                    absParent: "/home",
+                    relName: "a.txt",
+                    isDir: false,
+                },
+            ],
         };
         globalStore.set(model.dragSource, value);
 
@@ -56,10 +61,15 @@ describe("preview model drag source", () => {
         const model = makePreviewModel("preview-drag-block-clear");
 
         globalStore.set(model.dragSource, {
-            uri: "wsh://conn/home/a.txt",
-            absParent: "/home",
-            relName: "a.txt",
-            isDir: false,
+            move: false,
+            files: [
+                {
+                    uri: "wsh://conn/home/a.txt",
+                    absParent: "/home",
+                    relName: "a.txt",
+                    isDir: false,
+                },
+            ],
         });
         globalStore.set(model.dragSource, null);
 

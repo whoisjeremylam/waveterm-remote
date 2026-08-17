@@ -12,7 +12,6 @@ import {
     cleanupTempDragDir,
     cleanupTempDirsForWebContents,
     getRegisteredTempDragDirs,
-    isDragDirRejected,
     registerTempDragDir,
 } from "./drag-temp-files";
 
@@ -28,13 +27,6 @@ describe("buildStreamFileUrl", () => {
         const url = buildStreamFileUrl(remoteUri);
         expect(url.endsWith("/wave/stream-file?path=" + encodeURIComponent(remoteUri))).toBe(true);
         expect(url).not.toContain(" ");
-    });
-});
-
-describe("isDragDirRejected", () => {
-    it("rejects directories and allows files", () => {
-        expect(isDragDirRejected(true)).toBe(true);
-        expect(isDragDirRejected(false)).toBe(false);
     });
 });
 

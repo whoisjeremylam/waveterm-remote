@@ -17,7 +17,6 @@ import {
     cleanupAllTempDragFiles,
     cleanupTempDragDir,
     cleanupTempDirsForWebContents,
-    isDragDirRejected,
     registerTempDragDir,
     scheduleTempDragDirCleanup,
     TEMP_DRAG_DIR_PREFIX,
@@ -198,27 +197,30 @@ function saveImageFileWithNativeDialog(
 
 async function startFileDrag(
     sender: electron.WebContents,
-    payload: { remoteUri: string; fileName: string; isDir: boolean }
+    payload: { items: { remoteUri: string; fileName: string }[] }
 ): Promise<void> {
-    if (isDragDirRejected(payload.isDir)) {
-        console.log("start-file-drag: ignoring directory drag (not supported)", payload.remoteUri);
+    if (payload.items == null || payload.items.length === 0) {
         return;
     }
     let tempDir: string = null;
     try {
         tempDir = await fs.promises.mkdtemp(path.join(electronApp.getPath("temp"), TEMP_DRAG_DIR_PREFIX));
         registerTempDragDir(sender.id, tempDir);
-        const tempPath = path.join(tempDir, payload.fileName);
-        const result = await getUrlInSession(sender.session, buildStreamFileUrl(payload.remoteUri));
-        const writeStream = fs.createWriteStream(tempPath);
-        await new Promise<void>((resolve, reject) => {
-            writeStream.on("finish", () => resolve());
-            writeStream.on("error", (err) => reject(err));
-            result.stream.on("error", (err) => reject(err));
-            result.stream.pipe(writeStream);
-        });
-        const icon = await electronApp.getFileIcon(tempPath);
-        sender.startDrag({ file: tempPath, icon });
+        const tempPaths: string[] = [];
+        for (const item of payload.items) {
+            const tempPath = path.join(tempDir, item.fileName);
+            const result = await getUrlInSession(sender.session, buildStreamFileUrl(item.remoteUri));
+            const writeStream = fs.createWriteStream(tempPath);
+            await new Promise<void>((resolve, reject) => {
+                writeStream.on("finish", () => resolve());
+                writeStream.on("error", (err) => reject(err));
+                result.stream.on("error", (err) => reject(err));
+                result.stream.pipe(writeStream);
+            });
+            tempPaths.push(tempPath);
+        }
+        const icon = await electronApp.getFileIcon(tempPaths[0]);
+        sender.startDrag({ files: tempPaths, icon });
         scheduleTempDragDirCleanup(tempDir);
     } catch (err) {
         console.error("start-file-drag failed:", err);
@@ -289,7 +291,7 @@ export function initIpcHandlers() {
         event.sender.downloadURL(streamingUrl);
     });
 
-    electron.ipcMain.on("start-file-drag", (event, payload: { remoteUri: string; fileName: string; isDir: boolean }) => {
+    electron.ipcMain.on("start-file-drag", (event, payload: { items: { remoteUri: string; fileName: string }[] }) => {
         fireAndForget(() => startFileDrag(event.sender, payload));
     });
 

@@ -2,42 +2,80 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { applyClearSelection, applySelectAll, applySelectionClick, decideNativeDropRoute } from "./preview-directory-utils";
+import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, decideNativeDropRoute } from "./preview-directory-utils";
 
 describe("decideNativeDropRoute", () => {
+    const multiSourceSameParent: DragSourceState = {
+        move: false,
+        files: [
+            { uri: "wsh://conn//home/user/a.txt", absParent: "/home/user", relName: "a.txt", isDir: false },
+            { uri: "wsh://conn//home/user/b.txt", absParent: "/home/user", relName: "b.txt", isDir: false },
+        ],
+    };
+    const multiSourceOtherParent: DragSourceState = {
+        move: false,
+        files: [
+            { uri: "wsh://conn//home/user/a.txt", absParent: "/home/user", relName: "a.txt", isDir: false },
+            { uri: "wsh://conn//home/other/b.txt", absParent: "/home/other", relName: "b.txt", isDir: false },
+        ],
+    };
+
     it("routes our own drag to a different directory as inapp (copy)", () => {
-        const dragSource: DraggedFile = {
-            uri: "wave://conn//home/user/file.txt",
-            absParent: "/home/user",
-            relName: "file.txt",
-            isDir: false,
-        };
-        expect(decideNativeDropRoute(dragSource, "/home/other")).toBe("inapp");
+        expect(decideNativeDropRoute(multiSourceOtherParent, "/home/dest")).toBe("inapp");
     });
 
     it("routes an OS-file drag (no drag source) as upload", () => {
         expect(decideNativeDropRoute(null, "/home/user")).toBe("upload");
     });
 
-    it("rejects our own drag dropped back into its own parent directory", () => {
-        const dragSource: DraggedFile = {
-            uri: "wave://conn//home/user/file.txt",
-            absParent: "/home/user",
-            relName: "file.txt",
-            isDir: false,
-        };
-        expect(decideNativeDropRoute(dragSource, "/home/user")).toBe("reject");
+    it("rejects a multi-file drag when every file's parent matches the drop dir", () => {
+        expect(decideNativeDropRoute(multiSourceSameParent, "/home/user")).toBe("reject");
+    });
+
+    it("rejects a multi-file drag with a mixed parent (inapp) when any parent differs", () => {
+        expect(decideNativeDropRoute(multiSourceOtherParent, "/home/user")).toBe("inapp");
+    });
+
+    it("treats an empty file list as inapp (not reject)", () => {
+        expect(decideNativeDropRoute({ files: [], move: false }, "/home/user")).toBe("inapp");
     });
 
     it("rejects when dirPath is null or undefined", () => {
-        const dragSource: DraggedFile = {
-            uri: "wave://conn//home/user/file.txt",
-            absParent: "/home/user",
-            relName: "file.txt",
-            isDir: false,
-        };
-        expect(decideNativeDropRoute(dragSource, null)).toBe("reject");
-        expect(decideNativeDropRoute(dragSource, undefined)).toBe("reject");
+        expect(decideNativeDropRoute(multiSourceSameParent, null)).toBe("reject");
+        expect(decideNativeDropRoute(multiSourceSameParent, undefined)).toBe("reject");
+    });
+});
+
+describe("buildDragFileItems", () => {
+    const entries = [
+        { path: "/dir/..", name: "..", isdir: true },
+        { path: "/dir/a.txt", name: "a.txt", isdir: false },
+        { path: "/dir/b.txt", name: "b.txt", isdir: false },
+        { path: "/dir/sub", name: "sub", isdir: true },
+        { path: "/dir/c.txt", name: "c.txt", isdir: false },
+    ];
+
+    it("dragging a selected path picks all selected file entries (excludes .. and directories)", () => {
+        const selectedPaths = new Set(["/dir/a.txt", "/dir/b.txt", "/dir/sub"]);
+        const files = buildDragFileItems(selectedPaths, "/dir/a.txt", entries, "/dir", "conn");
+        expect(files).toEqual([
+            { relName: "a.txt", absParent: "/dir", uri: "wsh://conn//dir/a.txt", isDir: false },
+            { relName: "b.txt", absParent: "/dir", uri: "wsh://conn//dir/b.txt", isDir: false },
+        ]);
+    });
+
+    it("dragging an unselected path picks just that single file", () => {
+        const selectedPaths = new Set(["/dir/a.txt"]);
+        const files = buildDragFileItems(selectedPaths, "/dir/c.txt", entries, "/dir", "conn");
+        expect(files).toEqual([
+            { relName: "c.txt", absParent: "/dir", uri: "wsh://conn//dir/c.txt", isDir: false },
+        ]);
+    });
+
+    it("a selection that is all directories yields []", () => {
+        const selectedPaths = new Set(["/dir/sub", "/dir/.."]);
+        const files = buildDragFileItems(selectedPaths, "/dir/sub", entries, "/dir", "conn");
+        expect(files).toEqual([]);
     });
 });
 

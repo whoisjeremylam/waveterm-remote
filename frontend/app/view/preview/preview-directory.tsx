@@ -3,7 +3,6 @@
 
 import { DirectoryDropdown } from "@/app/element/directorydropdown";
 import { ContextMenuModel } from "@/app/store/contextmenu";
-import { setBlockUploadState } from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
 import { getApi } from "@/store/global";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
@@ -12,7 +11,6 @@ import { checkKeyPressed, isCharacterKeyEvent } from "@/util/keyutil";
 import { PLATFORM, PlatformMacOS } from "@/util/platformutil";
 import { addOpenMenuItems } from "@/util/previewutil";
 import { fireAndForget } from "@/util/util";
-import { formatRemoteUri } from "@/util/waveutil";
 import { offset, useDismiss, useFloating, useInteractions } from "@floating-ui/react";
 import {
     Header,
@@ -37,6 +35,7 @@ import {
     applyClearSelection,
     applySelectAll,
     applySelectionClick,
+    buildDragFileItems,
     cleanMimetype,
     decideNativeDropRoute,
     getBestUnit,
@@ -342,6 +341,8 @@ function TableBody({
     const dummyLineRef = useRef<HTMLDivElement>(null);
     const warningBoxRef = useRef<HTMLDivElement>(null);
     const conn = useAtomValue(model.connection);
+    const dirPath = useAtomValue(model.statFilePath);
+    const connName = useAtomValue(model.connectionImmediate);
     const setErrorMsg = useSetAtom(model.errorMsgAtom);
 
     useEffect(() => {
@@ -468,6 +469,28 @@ function TableBody({
         [model, setFocusIndex]
     );
 
+    const handleDragStart = useCallback(
+        (draggedPath: string, move: boolean) => {
+            // Dragging an unselected row selects it (standard file-manager behavior).
+            if (!globalStore.get(model.selectedPaths).has(draggedPath)) {
+                globalStore.set(model.selectedPaths, new Set([draggedPath]));
+                globalStore.set(model.selectionAnchor, draggedPath);
+            }
+            const entries = allRows.map((r) => ({
+                path: r.getValue("path") as string,
+                name: r.getValue("name") as string,
+                isdir: Boolean(r.original.isdir),
+            }));
+            const files = buildDragFileItems(globalStore.get(model.selectedPaths), draggedPath, entries, dirPath, connName);
+            if (files.length === 0) {
+                return;
+            }
+            globalStore.set(model.dragSource, { files, move });
+            getApi().startFileDrag(files.map((f) => ({ remoteUri: f.uri, fileName: f.relName })));
+        },
+        [allRows, dirPath, connName, model]
+    );
+
     return (
         <div className="dir-table-body" ref={bodyRef}>
             {(searchActive || search !== "") && (
@@ -500,6 +523,7 @@ function TableBody({
                         row={dotdotRow}
                         focusIndex={focusIndex}
                         handleRowClick={handleRowClick}
+                        onDragStartSelection={handleDragStart}
                         setSearch={setSearch}
                         idx={0}
                         handleFileContextMenu={handleFileContextMenu}
@@ -512,6 +536,7 @@ function TableBody({
                         row={row}
                         focusIndex={focusIndex}
                         handleRowClick={handleRowClick}
+                        onDragStartSelection={handleDragStart}
                         setSearch={setSearch}
                         idx={dotdotRow ? idx + 1 : idx}
                         handleFileContextMenu={handleFileContextMenu}
@@ -528,36 +553,25 @@ type TableRowProps = {
     row: Row<FileInfo>;
     focusIndex: number;
     handleRowClick: (path: string, idx: number, opts: { cmd: boolean; shift: boolean }) => void;
+    onDragStartSelection: (path: string, move: boolean) => void;
     setSearch: (_: string) => void;
     idx: number;
     handleFileContextMenu: (e: any, finfo: FileInfo) => Promise<void>;
 };
 
-function TableRow({ model, row, focusIndex, handleRowClick, setSearch, idx, handleFileContextMenu }: TableRowProps) {
-    const dirPath = useAtomValue(model.statFilePath);
-    const connection = useAtomValue(model.connection);
+function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection, setSearch, idx, handleFileContextMenu }: TableRowProps) {
     const selectedPaths = useAtomValue(model.selectedPaths);
     const isSelected = selectedPaths.has(row.getValue("path") as string);
 
-    const dragItem: DraggedFile = {
-        relName: row.getValue("name") as string,
-        absParent: dirPath,
-        uri: formatRemoteUri(row.getValue("path") as string, connection),
-        isDir: row.original.isdir,
-    };
     const handleDragStart = useCallback(
         (e: React.DragEvent) => {
-            globalStore.set(model.dragSource, dragItem);
-            if (!dragItem.isDir) {
-                setBlockUploadState(model.blockId, { active: true, fileName: dragItem.relName, fileSize: row.original.size ?? 0 });
-            }
-            getApi().startFileDrag(dragItem.uri, dragItem.relName, dragItem.isDir);
+            e.preventDefault();
+            onDragStartSelection(row.getValue("path") as string, e.metaKey || e.ctrlKey);
         },
-        [dragItem, model, row.original.size]
+        [onDragStartSelection, row]
     );
     const handleDragEnd = useCallback(() => {
         globalStore.set(model.dragSource, null);
-        setBlockUploadState(model.blockId, null);
         getApi().cleanupDragTemp();
     }, [model]);
 
@@ -919,15 +933,11 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     const timeoutYear = 31536000000; // one year
                     const opts: FileCopyOpts = { timeout: timeoutYear };
                     const desturi = await model.formatRemoteUri(dirPath, globalStore.get);
-                    const data: CommandFileCopyData = {
-                        srcuri: dragSource.uri,
-                        desturi,
-                        opts,
-                    };
-                    await handleDropCopy(data, dragSource.isDir);
+                    for (const f of dragSource.files) {
+                        await handleDropCopy({ srcuri: f.uri, desturi, opts }, f.isDir);
+                    }
                 } finally {
                     globalStore.set(model.dragSource, null);
-                    setBlockUploadState(model.blockId, null);
                     getApi().cleanupDragTemp();
                 }
                 return;
@@ -942,7 +952,6 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             }
             // "reject": no-op (and clear any stale drag source for safety)
             globalStore.set(model.dragSource, null);
-            setBlockUploadState(model.blockId, null);
             getApi().cleanupDragTemp();
         },
         [dirPath, model, handleDropCopy]
