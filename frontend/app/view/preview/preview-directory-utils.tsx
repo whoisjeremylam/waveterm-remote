@@ -31,6 +31,17 @@ export function decideNativeDropRoute(
     return "upload";
 }
 
+// Builds the per-item FileCopyOpts for an in-app drop. Directories being copied
+// need no recursive flag (copy is always recursive backend-side), but a directory
+// move does require recursive to be set.
+export function buildDropFileCopyOpts(isDir: boolean, move: boolean): FileCopyOpts {
+    const opts: FileCopyOpts = { timeout: 31536000000 }; // one year
+    if (move && isDir) {
+        opts.recursive = true;
+    }
+    return opts;
+}
+
 // Builds the OS drag-out file list from the current selection. If the dragged
 // path is part of the selection, every selected file is dragged; otherwise only
 // the dragged row. Directories and the ".." row are always excluded (native

@@ -2,7 +2,35 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, decideNativeDropRoute } from "./preview-directory-utils";
+import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, decideNativeDropRoute } from "./preview-directory-utils";
+
+describe("buildDropFileCopyOpts", () => {
+    const yearTimeout = 31536000000; // one year
+
+    it("file + copy -> no recursive flag, year timeout", () => {
+        const opts = buildDropFileCopyOpts(false, false);
+        expect(opts.recursive).toBeUndefined();
+        expect(opts.timeout).toBe(yearTimeout);
+    });
+
+    it("directory + copy -> no recursive flag (copy is always recursive backend-side)", () => {
+        const opts = buildDropFileCopyOpts(true, false);
+        expect(opts.recursive).toBeUndefined();
+        expect(opts.timeout).toBe(yearTimeout);
+    });
+
+    it("directory + move -> recursive === true", () => {
+        const opts = buildDropFileCopyOpts(true, true);
+        expect(opts.recursive).toBe(true);
+        expect(opts.timeout).toBe(yearTimeout);
+    });
+
+    it("file + move -> no recursive flag", () => {
+        const opts = buildDropFileCopyOpts(false, true);
+        expect(opts.recursive).toBeUndefined();
+        expect(opts.timeout).toBe(yearTimeout);
+    });
+});
 
 describe("decideNativeDropRoute", () => {
     const multiSourceSameParent: DragSourceState = {

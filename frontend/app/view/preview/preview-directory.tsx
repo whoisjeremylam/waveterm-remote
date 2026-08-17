@@ -35,6 +35,7 @@ import {
     applyClearSelection,
     applySelectAll,
     applySelectionClick,
+    buildDropFileCopyOpts,
     buildDragFileItems,
     cleanMimetype,
     decideNativeDropRoute,
@@ -808,40 +809,44 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         middleware: [offset(({ rects }) => -rects.reference.height / 2 - rects.floating.height / 2)],
     });
 
-    const handleDropCopy = useCallback(
-        async (data: CommandFileCopyData, isDir: boolean) => {
+    const handleDropCopyOrMove = useCallback(
+        async (data: CommandFileCopyData, isDir: boolean, move: boolean) => {
             try {
-                await env.rpc.FileCopyCommand(TabRpcClient, data, { timeout: data.opts.timeout });
+                if (move) {
+                    await env.rpc.FileMoveCommand(TabRpcClient, data, { timeout: data.opts.timeout });
+                } else {
+                    await env.rpc.FileCopyCommand(TabRpcClient, data, { timeout: data.opts.timeout });
+                }
             } catch (e) {
-                console.warn("Copy failed:", e);
+                console.warn(`${move ? "Move" : "Copy"} failed:`, e);
                 const copyError = `${e}`;
                 const allowRetry = copyError.includes(overwriteError) || copyError.includes(mergeError);
                 let errorMsg: ErrorMsg;
                 if (allowRetry) {
                     errorMsg = {
                         status: "Confirm Overwrite File(s)",
-                        text: "This copy operation will overwrite an existing file. Would you like to continue?",
+                        text: `This ${move ? "move" : "copy"} operation will overwrite an existing file. Would you like to continue?`,
                         level: "warning",
                         buttons: [
                             {
-                                text: "Delete Then Copy",
+                                text: `Delete Then ${move ? "Move" : "Copy"}`,
                                 onClick: async () => {
                                     data.opts.overwrite = true;
-                                    await handleDropCopy(data, isDir);
+                                    await handleDropCopyOrMove(data, isDir, move);
                                 },
                             },
                             {
                                 text: "Sync",
                                 onClick: async () => {
                                     data.opts.merge = true;
-                                    await handleDropCopy(data, isDir);
+                                    await handleDropCopyOrMove(data, isDir, move);
                                 },
                             },
                         ],
                     };
                 } else {
                     errorMsg = {
-                        status: "Copy Failed",
+                        status: `${move ? "Move" : "Copy"} Failed`,
                         text: copyError,
                         level: "error",
                     };
@@ -928,13 +933,15 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             const dragSource = globalStore.get(model.dragSource);
             const route = decideNativeDropRoute(dragSource, dirPath);
             if (route === "inapp") {
-                // In-app copy: our own drag from the directory widget to a different dir.
+                // In-app drop: our own drag from the directory widget to a different dir.
                 try {
-                    const timeoutYear = 31536000000; // one year
-                    const opts: FileCopyOpts = { timeout: timeoutYear };
                     const desturi = await model.formatRemoteUri(dirPath, globalStore.get);
                     for (const f of dragSource.files) {
-                        await handleDropCopy({ srcuri: f.uri, desturi, opts }, f.isDir);
+                        await handleDropCopyOrMove(
+                            { srcuri: f.uri, desturi, opts: buildDropFileCopyOpts(f.isDir, dragSource.move) },
+                            f.isDir,
+                            dragSource.move
+                        );
                     }
                 } finally {
                     globalStore.set(model.dragSource, null);
@@ -954,7 +961,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             globalStore.set(model.dragSource, null);
             getApi().cleanupDragTemp();
         },
-        [dirPath, model, handleDropCopy]
+        [dirPath, model, handleDropCopyOrMove]
     );
 
     const handleFileContextMenu = useCallback(
