@@ -136,6 +136,10 @@ var (
 	// from the remote, or is stuck in a Connected-but-no-stream state (failure mode B).
 	jobStreamHealth = ds.MakeSyncMap[streamHealthInfo]()
 
+	// streamStaleLoggedAt tracks when streamHealthWatchdog last logged a stale
+	// stream, so idle-but-healthy shells don't get re-logged every tick.
+	streamStaleLoggedAt = ds.MakeSyncMap[time.Time]()
+
 	// jobDrainProgress tracks UX-1.7 disk drain / catch-up progress per job.
 	jobDrainProgress = ds.MakeSyncMap[drainProgressInfo]()
 
@@ -199,6 +203,7 @@ const FlappingAttemptThreshold = 3
 func InitJobController() {
 	go connReconcileWorker()
 	go jobPruningWorker()
+	go streamHealthWatchdog()
 
 	// Stop reconnect scheduler whenever user Disconnect or Stop auto-retry
 	// sets suppress — avoids import cycle (conncontroller cannot import us).
@@ -389,6 +394,39 @@ func sendBlockJobStatusEventByJob(ctx context.Context, job *waveobj.Job) {
 		return
 	}
 	SendBlockJobStatusEvent(ctx, job.AttachedBlockId)
+}
+
+// streamHealthWatchdog periodically flags output streams that are marked active
+// but whose lastReadAt has gone stale. A stale lastReadAt means runOutputLoop is
+// blocked in Read() — either the shell is idle (benign) or the stream has wedged
+// (ACK window stuck, no data arriving). Logged at most once per reLogInterval per
+// stream so idle terminals don't spam the log. This is a corroborating signal for
+// the ACK-timeout goroutine dump captured in streamclient.
+func streamHealthWatchdog() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	const staleThreshold = 2 * time.Minute
+	const reLogInterval = 15 * time.Minute
+	for range ticker.C {
+		now := time.Now()
+		jobStreamHealth.ForEach(func(jobId string, health streamHealthInfo) {
+			if !health.active {
+				return
+			}
+			age := now.Sub(health.lastReadAt)
+			if age <= staleThreshold {
+				streamStaleLoggedAt.Delete(jobId)
+				return
+			}
+			lastLogged, ok := streamStaleLoggedAt.GetEx(jobId)
+			if ok && now.Sub(lastLogged) < reLogInterval {
+				return
+			}
+			streamStaleLoggedAt.Set(jobId, now)
+			log.Printf("[streamhealth] job=%s stream=%s active but no output read for %s (totalBytes=%d) — idle or wedged",
+				jobId, health.streamId, age.Round(time.Second), health.totalBytes)
+		})
+	}
 }
 
 func connReconcileWorker() {
