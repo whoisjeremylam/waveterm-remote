@@ -618,3 +618,16 @@ Gates are soft (delay/retry, user Connect can bypass). They do not prove the SSH
 5. **Hybrid archive strategy:** pre-archive to a temp tar.gz when the tree crosses **either** a size threshold or a file-count threshold (OR-trigger: `totalSize > sizeThreshold` OR `fileCount > fileCountThreshold`), giving a determinate progress bar for large or many-file trees; stream-compress on the fly otherwise (faster start, indeterminate bar). Defaults ~64 MB / ~1,000 files, TBD. Size predicts network time; file count predicts archive/extract syscall time — either can dominate (e.g. `node_modules`-shaped trees).
 
 **Files:** (new) `.pi/specs/files-widget-transfer-engine.md`; code changes tracked there.
+
+## 2026-08-22: Stream freeze — A1 ACK retry + B2 lock-free recv metadata
+
+**Context:** Recurring "connected but frozen" terminal is a flow-control deadlock: the backend drops a stream ACK after `timeout sending request` (5s wait on bare-client `OutputCh`, cap 32), the remote 64 KB window never advances, and the remote does not probe. Diagnosis: `.pi/stream-freeze-diagnosis.md` (on `odds-and-ends`). Review rejected the diagnosis's "snapshot trust/source at recv-loop start" (loop starts untrusted) and deferred BlockFile coalescing (frontend paints `data64`; dropping chunks corrupts the terminal).
+
+**Decision:** Implement A1 + B2 on `feat/files-widget` (already merged with `odds-and-ends` stream code). Not B1 (snapshot at start), not C1 (drop BlockFile events).
+
+1. **A1 — never drop the last ACK.** On send failure, keep one pending ACK per stream (highest seq + rwnd; Fin/Cancel OR'd). Retry on a short interval. ACK enqueue uses a 10ms fail-fast timeout so the single send worker is not blocked for 5s. Cleanup of the reader happens only after a successful Fin/Cancel send. Missing writer-route ACKs are still dropped (nowhere to send).
+2. **B2 — lock-free recv-loop metadata.** `trusted` / `sourceRouteId` / `alive` are atomics, loaded every message. Recv loop no longer takes `router.lock` via `getLinkMeta`. Trust/bind after loop start is still observed. `UnregisterLink` sets `alive=false`.
+
+**Deferred:** B3 (non-blocking `inputCh` send), B4 (per-link sender / don't hold `router.lock` around `SendRpcMessage`), C2 (concatenating BlockFile flush).
+
+**Files:** `pkg/streamclient/streambroker.go`, `pkg/wshutil/wshstreamadapter.go`, `pkg/wshutil/wshrouter.go`, tests in `pkg/streamclient/ack_retry_test.go` and `pkg/wshutil/wshrouter_recvloop_test.go`.

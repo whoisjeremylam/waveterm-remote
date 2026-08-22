@@ -24,10 +24,10 @@ Most developer terminals assume code is installed, built, and tested locally. Th
 
 ## Current branch / handoff
 
-- **Branch:** `odds-and-ends` (reconnection UX P0/P1/P2 already merged into `main`/`odds-and-ends`)
-- **⚠️ ACTION (Jeremy):** run the reconnection UX-3.2 QA matrix (Q1–Q17) — manual tests, see [[specs/reconnection-p1-p2-verification.md]] for steps/expected results and [[todos.md]] for the recommended order
-- **Next (agent):** reconcile `reconnection.md` "current behavior"; then SCM widget P1–P3 or wsh Agent API
-- **Todos:** [[todos.md]] — see the "Open action — manual QA" section at top
+- **Branch:** `feat/files-widget` (worktree; merged with `origin/odds-and-ends`)
+- **In progress:** stream-freeze A1 (ACK retry/coalesce) + B2 (lock-free recv-loop metadata) — [[decisions.md#2026-08-22-stream-freeze--a1-ack-retry--b2-lock-free-recv-metadata]]
+- **⚠️ ACTION (Jeremy):** run the reconnection UX-3.2 QA matrix (Q1–Q17) — manual tests, see [[specs/reconnection-p1-p2-verification.md]]
+- **Todos:** [[todos.md]]
 
 ## Context & Decisions
 
