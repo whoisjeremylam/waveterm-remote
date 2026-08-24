@@ -29,8 +29,10 @@ import {
     planUploadChunks,
     raceWithCancel,
     readChunkAsBase64,
+    reconcileChunkFailure,
     resolveMaxUploadSize,
     UploadChunkSize,
+    UploadChunkTimeoutMs,
 } from "./preview-model-upload";
 import type { CancelToken, DownloadProgress, UploadProgress } from "./preview-model-upload";
 import type { PreviewEnv } from "./previewenv";
@@ -943,8 +945,15 @@ export class PreviewModel implements ViewModel {
         // Clear any lingering transient status from a previous (cancelled) run
         // so a new upload shows its progress banner, not the old status.
         globalStore.set(this.uploadStatus, null);
+        // Set when the run ends early for any reason — user cancellation or an
+        // irrecoverable chunk interruption. Suppresses the success count and the
+        // "Upload complete" status so a terminal status isn't clobbered.
+        let stopped = false;
         try {
             for (const file of files) {
+                if (stopped) {
+                    break;
+                }
                 if (file.size > maxUploadSize) {
                     const errorStatus: ErrorMsg = {
                         status: "Upload Failed",
@@ -974,30 +983,30 @@ export class PreviewModel implements ViewModel {
                             total: file.size,
                             speedBps: computeSpeedBps(sent, startedAt, Date.now()),
                         });
-                        if (i === 0) {
-                            // First chunk creates/truncates the file.
-                            await raceWithCancel(
-                                this.env.rpc.FileWriteCommand(TabRpcClient, { info: { path: filePath }, data64 }),
-                                cancelToken
-                            );
-                        } else {
-                            // Subsequent chunks append sequentially; the server's
-                            // O_APPEND maintains the correct write offset (we do not
-                            // send data.At because FileAppendCommand forces Append=true
-                            // and RemoteWriteFileCommand rejects append+offset).
-                            await raceWithCancel(
-                                this.env.rpc.FileAppendCommand(TabRpcClient, { info: { path: filePath }, data64 }),
-                                cancelToken
-                            );
+                        // Send this chunk with a single automatic retry and, on a
+                        // second failure, size-based reconciliation against the
+                        // destination. Cancellation is raced at every step.
+                        const chunkResult = await this.sendUploadChunk(filePath, data64, i === 0, sent, cancelToken);
+                        if (chunkResult === "failed") {
+                            // Irrecoverable: report how far we got (confirmed bytes
+                            // before this chunk) and stop the whole run without
+                            // deleting the partial file (the user may re-upload).
+                            const pct = file.size > 0 ? Math.floor((chunk.offset / file.size) * 100) : 0;
+                            this.setTransientUploadStatus(`Upload interrupted at ${pct}%`);
+                            stopped = true;
+                            break;
                         }
                     }
-                    successCount++;
+                    if (!stopped) {
+                        successCount++;
+                    }
                 } catch (e) {
                     if (e instanceof CancelledError) {
                         // User-initiated cancel: stop the whole run, best-effort
                         // delete the partial destination, and show a transient
                         // status. Not an error — no error banner, no success count.
                         this.setTransientUploadStatus("Upload cancelled");
+                        stopped = true;
                         try {
                             await this.env.rpc.FileDeleteCommand(TabRpcClient, {
                                 path: filePath,
@@ -1022,9 +1031,81 @@ export class PreviewModel implements ViewModel {
         } finally {
             globalStore.set(this.uploadCancel, null);
         }
-        if (successCount > 0) {
+        if (successCount > 0 && !stopped) {
+            // Brief terminal confirmation after the last successful file, then
+            // re-read the directory so the new files appear. Skipped when the run
+            // stopped early (cancelled or interrupted) so that status stays visible.
+            this.setTransientUploadStatus("Upload complete");
             this.refresh();
         }
+    }
+
+    // Sends one upload chunk — FileWriteCommand (truncate) for the first chunk,
+    // FileAppendCommand (O_APPEND) for the rest — each raced against
+    // cancellation. On a non-cancelled failure the chunk is retried once; if the
+    // retry also fails, the destination is statted and reconciled against the
+    // expected bytes sent so far (see reconcileChunkFailure). Returns:
+    //   - "ok"        the write/append succeeded (or was delivered on retry)
+    //   - "delivered" both attempts failed but the remote size proves the bytes
+    //                 actually landed (lost-ACK) — safe to continue
+    //   - "failed"    irrecoverable — caller should abort the upload cleanly
+    // Cancellation always wins: CancelledError is rethrown from every step.
+    async sendUploadChunk(
+        filePath: string,
+        data64: string,
+        isFirstChunk: boolean,
+        expectedSent: number,
+        cancelToken: CancelToken
+    ): Promise<"ok" | "delivered" | "failed"> {
+        const send = () =>
+            isFirstChunk
+                ? this.env.rpc.FileWriteCommand(
+                      TabRpcClient,
+                      { info: { path: filePath }, data64 },
+                      { timeout: UploadChunkTimeoutMs }
+                  )
+                : this.env.rpc.FileAppendCommand(
+                      TabRpcClient,
+                      { info: { path: filePath }, data64 },
+                      { timeout: UploadChunkTimeoutMs }
+                  );
+        try {
+            await raceWithCancel(send(), cancelToken);
+            return "ok";
+        } catch (e) {
+            if (e instanceof CancelledError) {
+                throw e;
+            }
+            // fall through to the single retry
+        }
+        try {
+            await raceWithCancel(send(), cancelToken);
+            return "ok";
+        } catch (e) {
+            if (e instanceof CancelledError) {
+                throw e;
+            }
+            // retry also failed — reconcile against the remote size
+        }
+        let remoteSize: number | null = null;
+        try {
+            const stat = await raceWithCancel(
+                this.env.rpc.FileInfoCommand(
+                    TabRpcClient,
+                    { info: { path: filePath } },
+                    { timeout: UploadChunkTimeoutMs }
+                ),
+                cancelToken
+            );
+            remoteSize = stat?.size ?? null;
+        } catch (e) {
+            if (e instanceof CancelledError) {
+                throw e;
+            }
+            // Stat itself errored: treat as failed rather than guessing.
+            return "failed";
+        }
+        return reconcileChunkFailure(remoteSize, expectedSent);
     }
 
     // Shows a transient banner status (e.g. "Upload cancelled") that clears

@@ -12,6 +12,7 @@ import {
     planUploadChunks,
     raceWithCancel,
     readChunkAsBase64,
+    reconcileChunkFailure,
     resolveMaxUploadSize,
 } from "./preview-model-upload";
 
@@ -207,6 +208,28 @@ describe("formatBytesSize", () => {
     it("renders invalid and negative input as a dash", () => {
         expect(formatBytesSize(NaN)).toBe("-");
         expect(formatBytesSize(-1)).toBe("-");
+    });
+});
+
+describe("reconcileChunkFailure", () => {
+    it("equal sizes -> delivered (the bytes landed, only the ACK was lost)", () => {
+        expect(reconcileChunkFailure(100, 100)).toBe("delivered");
+        expect(reconcileChunkFailure(0, 0)).toBe("delivered");
+    });
+
+    it("remote size shorter than expected -> failed", () => {
+        expect(reconcileChunkFailure(99, 100)).toBe("failed");
+        expect(reconcileChunkFailure(0, 100)).toBe("failed");
+    });
+
+    it("remote size longer than expected -> failed (duplication/corruption)", () => {
+        expect(reconcileChunkFailure(101, 100)).toBe("failed");
+        expect(reconcileChunkFailure(200, 100)).toBe("failed");
+    });
+
+    it("null remote size (unstatable/missing file) -> failed", () => {
+        expect(reconcileChunkFailure(null, 100)).toBe("failed");
+        expect(reconcileChunkFailure(null, 0)).toBe("failed");
     });
 });
 

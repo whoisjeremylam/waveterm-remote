@@ -13,6 +13,13 @@ import base64 from "base64-js";
 // send cap.
 export const UploadChunkSize = 3 * 1024 * 1024;
 
+// Per-chunk RPC timeout (120s). This is an explicit backstop against a stalled
+// chunk write/append — cancellation is separate and immediate (see
+// raceWithCancel). It bounds a single RPC so a hung remote can't stall an
+// upload indefinitely, while leaving headroom for slow WAN links pushing ~4MB
+// base64 chunks.
+export const UploadChunkTimeoutMs = 120000;
+
 // Per-file upload size cap (Phase 3). The default is 5GB; the
 // `files:maxuploadsize` setting (bytes) can override it. See
 // resolveMaxUploadSize for the validation rules.
@@ -151,6 +158,23 @@ export async function readChunkAsBase64(blob: Blob, offset: number, length: numb
     const slice = blob.slice(offset, offset + length);
     const buffer = await slice.arrayBuffer();
     return base64.fromByteArray(new Uint8Array(buffer));
+}
+
+export type ChunkReconcileResult = "delivered" | "failed";
+
+// Decides whether a failed-and-retried chunk should be treated as actually
+// delivered. After a chunk write/append has failed and its single retry has
+// also failed, we stat the destination and compare its size against the bytes
+// we expected to have sent (the sum of the lengths of chunks 0..i). An exact
+// match means the write landed server-side but the acknowledgement was lost —
+// safe to continue to the next chunk. Anything else (short, long, or an
+// unstatable file) means the upload is genuinely interrupted and must fail
+// cleanly rather than risk silent corruption.
+export function reconcileChunkFailure(remoteSize: number | null, expectedSent: number): ChunkReconcileResult {
+    if (remoteSize !== null && remoteSize === expectedSent) {
+        return "delivered";
+    }
+    return "failed";
 }
 
 // Computes the average upload throughput in bytes/second from the upload start
