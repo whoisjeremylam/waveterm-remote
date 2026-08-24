@@ -31,6 +31,17 @@ export function decideNativeDropRoute(
     return "upload";
 }
 
+// Returns the overlay banner text shown while a drag is in progress.
+// Internal widget drags (dragSource set) advertise the pending copy/move;
+// external OS drags (dragSource null) advertise upload. This guarantees the
+// upload wording is never shown for our own in-app drags.
+export function getDropBannerText(dragSource: DragSourceState | null): string {
+    if (dragSource == null) {
+        return "Drop files here to upload";
+    }
+    return dragSource.move ? "Drop to move here" : "Drop to copy here";
+}
+
 // Builds the per-item FileCopyOpts for an in-app drop. Directory copies are
 // unsupported backend-side (RemoteFileCopyCommand refuses recursive copies), so
 // copy opts never set recursive. Directory moves set recursive=true, though

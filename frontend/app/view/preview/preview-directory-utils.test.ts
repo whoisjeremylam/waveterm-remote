@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, joinRemoteDir, osDraggableItems, resolveDeleteItems, shouldConfirmDelete } from "./preview-directory-utils";
+import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, getDropBannerText, joinRemoteDir, osDraggableItems, resolveDeleteItems, shouldConfirmDelete } from "./preview-directory-utils";
 
 describe("buildDropFileCopyOpts", () => {
     const yearTimeout = 31536000000; // one year
@@ -71,6 +71,23 @@ describe("decideNativeDropRoute", () => {
     it("rejects when dirPath is null or undefined", () => {
         expect(decideNativeDropRoute(multiSourceSameParent, null)).toBe("reject");
         expect(decideNativeDropRoute(multiSourceSameParent, undefined)).toBe("reject");
+    });
+});
+
+describe("getDropBannerText", () => {
+    const internalCopy: DragSourceState = { move: false, files: [] };
+    const internalMove: DragSourceState = { move: true, files: [] };
+
+    it("external OS drag (no drag source) advertises upload", () => {
+        expect(getDropBannerText(null)).toBe("Drop files here to upload");
+    });
+
+    it("internal copy drag advertises copy", () => {
+        expect(getDropBannerText(internalCopy)).toBe("Drop to copy here");
+    });
+
+    it("internal move drag advertises move", () => {
+        expect(getDropBannerText(internalMove)).toBe("Drop to move here");
     });
 });
 

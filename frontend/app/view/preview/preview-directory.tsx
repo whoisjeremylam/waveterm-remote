@@ -41,6 +41,7 @@ import {
     cleanMimetype,
     decideNativeDropRoute,
     getBestUnit,
+    getDropBannerText,
     getLastModifiedTime,
     getSortIcon,
     handleFileDeleteBatch,
@@ -105,6 +106,7 @@ interface DirectoryTableProps {
     entryManagerOverlayPropsAtom: PrimitiveAtom<EntryManagerOverlayProps>;
     newFile: () => void;
     newDirectory: () => void;
+    onRowDrop: (rowDirPath: string) => void;
 }
 
 const columnHelper = createColumnHelper<FileInfo>();
@@ -121,6 +123,7 @@ function DirectoryTable({
     entryManagerOverlayPropsAtom,
     newFile,
     newDirectory,
+    onRowDrop,
 }: DirectoryTableProps) {
     const env = useWaveEnv<PreviewEnv>();
     const fullConfig = useAtomValue(env.atoms.fullConfigAtom);
@@ -313,6 +316,7 @@ function DirectoryTable({
                 setSelectedPath={setSelectedPath}
                 setRefreshVersion={setRefreshVersion}
                 osRef={osRef.current}
+                onRowDrop={onRowDrop}
             />
         </OverlayScrollbarsComponent>
     );
@@ -330,6 +334,7 @@ interface TableBodyProps {
     setSelectedPath: (_: string) => void;
     setRefreshVersion: React.Dispatch<React.SetStateAction<number>>;
     osRef: OverlayScrollbarsComponentRef;
+    onRowDrop: (rowDirPath: string) => void;
 }
 
 function TableBody({
@@ -342,6 +347,7 @@ function TableBody({
     setSearch,
     setRefreshVersion,
     osRef,
+    onRowDrop,
 }: TableBodyProps) {
     const searchActive = useAtomValue(model.directorySearchActive);
     const dummyLineRef = useRef<HTMLDivElement>(null);
@@ -591,6 +597,7 @@ function TableBody({
                         focusIndex={focusIndex}
                         handleRowClick={handleRowClick}
                         onDragStartSelection={handleDragStart}
+                        onRowDrop={onRowDrop}
                         setSearch={setSearch}
                         idx={0}
                         handleFileContextMenu={handleFileContextMenu}
@@ -604,6 +611,7 @@ function TableBody({
                         focusIndex={focusIndex}
                         handleRowClick={handleRowClick}
                         onDragStartSelection={handleDragStart}
+                        onRowDrop={onRowDrop}
                         setSearch={setSearch}
                         idx={dotdotRow ? idx + 1 : idx}
                         handleFileContextMenu={handleFileContextMenu}
@@ -621,12 +629,13 @@ type TableRowProps = {
     focusIndex: number;
     handleRowClick: (path: string, idx: number, opts: { cmd: boolean; shift: boolean }) => void;
     onDragStartSelection: (path: string, move: boolean) => void;
+    onRowDrop: (rowDirPath: string) => void;
     setSearch: (_: string) => void;
     idx: number;
     handleFileContextMenu: (e: any, finfo: FileInfo) => Promise<void>;
 };
 
-function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection, setSearch, idx, handleFileContextMenu }: TableRowProps) {
+function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection, onRowDrop, setSearch, idx, handleFileContextMenu }: TableRowProps) {
     const selectedPaths = useAtomValue(model.selectedPaths);
     const isSelected = selectedPaths.has(row.getValue("path") as string);
 
@@ -641,6 +650,43 @@ function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection
         globalStore.set(model.dragSource, null);
         getApi().cleanupDragTemp();
     }, [model]);
+
+    // Only directory rows (excluding the ".." row) are drop targets for our own
+    // in-app drags. File rows and ".." have no row-level drop handlers, so their
+    // drag events fall through to the container's upload/same-dir logic.
+    const isDirRow = row.getValue("name") !== ".." && Boolean(row.original.isdir);
+
+    const handleRowDragEnterOrOver = useCallback(
+        (e: React.DragEvent) => {
+            // External OS drag (no internal dragSource): defer to the container.
+            if (globalStore.get(model.dragSource) == null) {
+                return;
+            }
+            e.preventDefault();
+        },
+        [model]
+    );
+
+    const handleRowDragLeave = useCallback(
+        (e: React.DragEvent) => {
+            if (globalStore.get(model.dragSource) == null) {
+                return;
+            }
+        },
+        [model]
+    );
+
+    const handleRowDrop = useCallback(
+        (e: React.DragEvent) => {
+            if (globalStore.get(model.dragSource) == null) {
+                return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            onRowDrop(row.getValue("path") as string);
+        },
+        [model, onRowDrop, row]
+    );
 
     return (
         <div
@@ -659,6 +705,10 @@ function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection
             onContextMenu={(e) => handleFileContextMenu(e, row.original)}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
+            onDragEnter={isDirRow ? handleRowDragEnterOrOver : undefined}
+            onDragOver={isDirRow ? handleRowDragEnterOrOver : undefined}
+            onDragLeave={isDirRow ? handleRowDragLeave : undefined}
+            onDrop={isDirRow ? handleRowDrop : undefined}
         >
             {row.getVisibleCells().map((cell) => (
                 <div
@@ -694,6 +744,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const blockData = useAtomValue(model.blockAtom);
     const finfo = useAtomValue(model.statFile);
     const dirPath = finfo?.path;
+    const activeDragSource = useAtomValue(model.dragSource);
     const setErrorMsg = useSetAtom(model.errorMsgAtom);
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
@@ -756,6 +807,33 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             model.refresh();
         },
         [model.refresh, setErrorMsg]
+    );
+
+    const handleRowDrop = useCallback(
+        async (rowDirPath: string) => {
+            const dragSource = globalStore.get(model.dragSource);
+            if (dragSource == null) {
+                return; // external drop: let the container's upload logic handle it
+            }
+            try {
+                const rowDirUri = await model.formatRemoteUri(rowDirPath, globalStore.get);
+                for (const f of dragSource.files) {
+                    await handleDropCopyOrMove(
+                        {
+                            srcuri: f.uri,
+                            desturi: joinRemoteDir(rowDirUri, f.relName),
+                            opts: buildDropFileCopyOpts(f.isDir, dragSource.move),
+                        },
+                        f.isDir,
+                        dragSource.move
+                    );
+                }
+            } finally {
+                globalStore.set(model.dragSource, null);
+                getApi().cleanupDragTemp();
+            }
+        },
+        [model, handleDropCopyOrMove]
     );
 
     const pasteClipboard = useCallback(
@@ -1157,7 +1235,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 onDragLeave={handleNativeDragLeave}
                 onDrop={handleNativeDrop}
             >
-                {isDragOver && <div className="dir-drop-overlay">Drop files here to upload</div>}
+                {isDragOver && <div className="dir-drop-overlay">{getDropBannerText(activeDragSource)}</div>}
                 <DirectoryTable
                     model={model}
                     data={filteredData}
@@ -1170,6 +1248,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     entryManagerOverlayPropsAtom={entryManagerPropsAtom}
                     newFile={newFile}
                     newDirectory={newDirectory}
+                    onRowDrop={handleRowDrop}
                 />
             </div>
             {entryManagerProps && (
