@@ -923,6 +923,10 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
 
     useEffect(() => {
         model.directoryKeyDownHandler = (waveEvent: WaveKeyboardEvent): boolean => {
+            if (checkKeyPressed(waveEvent, "Cmd:r")) {
+                model.refresh();
+                return true;
+            }
             if (checkKeyPressed(waveEvent, "Cmd:f")) {
                 globalStore.set(model.directorySearchActive, true);
                 return true;
