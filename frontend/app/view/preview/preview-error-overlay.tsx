@@ -7,7 +7,7 @@ import clsx from "clsx";
 import { OverlayScrollbarsComponent } from "overlayscrollbars-react";
 import { memo, useCallback } from "react";
 
-export const ErrorOverlay = memo(({ errorMsg, resetOverlay }: { errorMsg: ErrorMsg; resetOverlay: () => void }) => {
+export const ErrorOverlay = memo(({ errorMsg, resetOverlay, className }: { errorMsg: ErrorMsg; resetOverlay: () => void; className?: string }) => {
     const showDismiss = errorMsg.showDismiss ?? true;
     const buttonClassName = "outlined grey text-[11px] py-[3px] px-[7px]";
 
@@ -21,7 +21,12 @@ export const ErrorOverlay = memo(({ errorMsg, resetOverlay }: { errorMsg: ErrorM
     }, [errorMsg.text]);
 
     return (
-        <div className="absolute top-[0] left-1.5 right-1.5 z-[var(--zindex-block-mask-inner)] overflow-hidden bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] rounded-md shadow-lg">
+        <div
+            className={clsx(
+                "absolute top-[0] left-1.5 right-1.5 overflow-hidden bg-[var(--conn-status-overlay-bg-color)] backdrop-blur-[50px] rounded-md shadow-lg",
+                className ?? "z-[var(--zindex-block-mask-inner)]"
+            )}
+        >
             <div className="flex flex-row justify-between p-2.5 pl-3 font-normal text-sm leading-normal font-sans text-secondary">
                 <div
                     className={clsx("flex flex-row items-center gap-3 grow min-w-0 shrink", {

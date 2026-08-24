@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, getDropBannerText, joinRemoteDir, osDraggableItems, resolveDeleteItems, shouldConfirmDelete } from "./preview-directory-utils";
+import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, formatDeleteConfirmText, getDropBannerText, joinRemoteDir, osDraggableItems, resolveDeleteItems } from "./preview-directory-utils";
 
 describe("buildDropFileCopyOpts", () => {
     const yearTimeout = 31536000000; // one year
@@ -300,15 +300,15 @@ describe("resolveDeleteItems", () => {
     it("right-clicking an unselected path deletes just that item", () => {
         const selectedPaths = new Set(["/dir/a.txt"]);
         const items = resolveDeleteItems(selectedPaths, "/dir/b.txt", deleteEntries);
-        expect(items).toEqual([{ path: "/dir/b.txt", isdir: false }]);
+        expect(items).toEqual([{ path: "/dir/b.txt", name: "b.txt", isdir: false }]);
     });
 
     it("right-clicking an already-selected path deletes the whole selection", () => {
         const selectedPaths = new Set(["/dir/a.txt", "/dir/b.txt"]);
         const items = resolveDeleteItems(selectedPaths, "/dir/a.txt", deleteEntries);
         expect(items).toEqual([
-            { path: "/dir/a.txt", isdir: false },
-            { path: "/dir/b.txt", isdir: false },
+            { path: "/dir/a.txt", name: "a.txt", isdir: false },
+            { path: "/dir/b.txt", name: "b.txt", isdir: false },
         ]);
     });
 
@@ -316,42 +316,65 @@ describe("resolveDeleteItems", () => {
         const selectedPaths = new Set(["/dir/a.txt", "/dir/sub"]);
         const items = resolveDeleteItems(selectedPaths, null, deleteEntries);
         expect(items).toEqual([
-            { path: "/dir/a.txt", isdir: false },
-            { path: "/dir/sub", isdir: true },
+            { path: "/dir/a.txt", name: "a.txt", isdir: false },
+            { path: "/dir/sub", name: "sub", isdir: true },
         ]);
     });
 
     it("never includes the .. entry", () => {
         const selectedPaths = new Set(["/dir/..", "/dir/a.txt"]);
         const items = resolveDeleteItems(selectedPaths, null, deleteEntries);
-        expect(items).toEqual([{ path: "/dir/a.txt", isdir: false }]);
+        expect(items).toEqual([{ path: "/dir/a.txt", name: "a.txt", isdir: false }]);
     });
 });
 
-describe("shouldConfirmDelete", () => {
-    it("a single file does not require confirmation", () => {
-        expect(shouldConfirmDelete([{ path: "/dir/a.txt", isdir: false }])).toBe(false);
+describe("formatDeleteConfirmText", () => {
+    it("returns an empty string for an empty list", () => {
+        expect(formatDeleteConfirmText([])).toBe("");
     });
 
-    it("a single directory requires confirmation", () => {
-        expect(shouldConfirmDelete([{ path: "/dir/sub", isdir: true }])).toBe(true);
+    it("names a single file", () => {
+        expect(formatDeleteConfirmText([{ path: "/dir/a.txt", name: "a.txt", isdir: false }])).toBe('Delete "a.txt"?');
     });
 
-    it("two files require confirmation", () => {
+    it("names a single directory with contents wording", () => {
+        expect(formatDeleteConfirmText([{ path: "/dir/reports", name: "reports", isdir: true }])).toBe(
+            'Delete "reports" and all its contents?'
+        );
+    });
+
+    it("falls back to the basename when name is missing", () => {
+        expect(formatDeleteConfirmText([{ path: "/dir/a.txt", isdir: false }])).toBe('Delete "a.txt"?');
+    });
+
+    it("lists a few items, marking directories with a trailing slash", () => {
         expect(
-            shouldConfirmDelete([
-                { path: "/dir/a.txt", isdir: false },
-                { path: "/dir/b.txt", isdir: false },
+            formatDeleteConfirmText([
+                { path: "/dir/a.txt", name: "a.txt", isdir: false },
+                { path: "/dir/b.txt", name: "b.txt", isdir: false },
+                { path: "/dir/notes", name: "notes", isdir: true },
             ])
-        ).toBe(true);
+        ).toBe('Delete 3 items? ("a.txt", "b.txt", "notes/")');
     });
 
-    it("two directories require confirmation", () => {
+    it("caps long lists at three names with a +N more suffix", () => {
         expect(
-            shouldConfirmDelete([
-                { path: "/dir/sub", isdir: true },
-                { path: "/dir/sub2", isdir: true },
+            formatDeleteConfirmText([
+                { path: "/dir/a.txt", name: "a.txt", isdir: false },
+                { path: "/dir/b.txt", name: "b.txt", isdir: false },
+                { path: "/dir/notes", name: "notes", isdir: true },
+                { path: "/dir/c.txt", name: "c.txt", isdir: false },
+                { path: "/dir/d.txt", name: "d.txt", isdir: false },
             ])
-        ).toBe(true);
+        ).toBe('Delete 5 items? ("a.txt", "b.txt", "notes/", +2 more)');
+    });
+
+    it("caps a two-name list without a +N more suffix", () => {
+        expect(
+            formatDeleteConfirmText([
+                { path: "/dir/a.txt", name: "a.txt", isdir: false },
+                { path: "/dir/b.txt", name: "b.txt", isdir: false },
+            ])
+        ).toBe('Delete 2 items? ("a.txt", "b.txt")');
     });
 });

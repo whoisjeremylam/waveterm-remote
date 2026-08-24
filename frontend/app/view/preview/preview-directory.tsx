@@ -47,7 +47,6 @@ import {
     handleFileDeleteBatch,
     handleRename,
     resolveDeleteItems,
-    shouldConfirmDelete,
     isIconValid,
     joinRemoteDir,
     makeDirectoryDefaultMenuItems,
@@ -55,6 +54,7 @@ import {
     osDraggableItems,
     overwriteError,
 } from "./preview-directory-utils";
+import { ErrorOverlay } from "./preview-error-overlay";
 import { type PreviewModel } from "./preview-model";
 import type { PreviewEnv } from "./previewenv";
 
@@ -107,6 +107,7 @@ interface DirectoryTableProps {
     newFile: () => void;
     newDirectory: () => void;
     onRowDrop: (rowDirPath: string) => void;
+    confirmDelete: (msg: ErrorMsg) => void;
 }
 
 const columnHelper = createColumnHelper<FileInfo>();
@@ -124,6 +125,7 @@ function DirectoryTable({
     newFile,
     newDirectory,
     onRowDrop,
+    confirmDelete,
 }: DirectoryTableProps) {
     const env = useWaveEnv<PreviewEnv>();
     const fullConfig = useAtomValue(env.atoms.fullConfigAtom);
@@ -317,6 +319,7 @@ function DirectoryTable({
                 setRefreshVersion={setRefreshVersion}
                 osRef={osRef.current}
                 onRowDrop={onRowDrop}
+                confirmDelete={confirmDelete}
             />
         </OverlayScrollbarsComponent>
     );
@@ -335,6 +338,7 @@ interface TableBodyProps {
     setRefreshVersion: React.Dispatch<React.SetStateAction<number>>;
     osRef: OverlayScrollbarsComponentRef;
     onRowDrop: (rowDirPath: string) => void;
+    confirmDelete: (msg: ErrorMsg) => void;
 }
 
 function TableBody({
@@ -348,6 +352,7 @@ function TableBody({
     setRefreshVersion,
     osRef,
     onRowDrop,
+    confirmDelete,
 }: TableBodyProps) {
     const searchActive = useAtomValue(model.directorySearchActive);
     const dummyLineRef = useRef<HTMLDivElement>(null);
@@ -503,13 +508,13 @@ function TableBody({
                             isdir: Boolean(r.original.isdir),
                         }));
                         const items = resolveDeleteItems(selected, finfo.path, entries);
-                        handleFileDeleteBatch(model, items, setErrorMsg);
+                        handleFileDeleteBatch(model, items, confirmDelete, setErrorMsg);
                     },
                 }
             );
             ContextMenuModel.getInstance().showContextMenu(menu, e);
         },
-        [setRefreshVersion, conn, allRows, dirPath, connName, model, table, setErrorMsg]
+        [setRefreshVersion, conn, allRows, dirPath, connName, model, table, setErrorMsg, confirmDelete]
     );
 
     const dotdotRow = allRows.find((row) => row.getValue("name") === "..");
@@ -567,7 +572,7 @@ function TableBody({
     return (
         <div className="dir-table-body" ref={bodyRef}>
             {(searchActive || search !== "") && (
-                <div className="flex rounded-[3px] py-1 px-2 bg-warning text-black" ref={warningBoxRef}>
+                <div className="dir-search-banner flex rounded-[3px] py-1 px-2 bg-warning text-black" ref={warningBoxRef}>
                     <span>{search === "" ? "Type to search (Esc to cancel)" : `Searching for "${search}"`}</span>
                     <div
                         className="ml-auto bg-transparent flex justify-center items-center flex-col p-0.5 rounded-md hover:bg-hoverbg focus:bg-hoverbg focus-within:bg-hoverbg cursor-pointer"
@@ -746,6 +751,8 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const dirPath = finfo?.path;
     const activeDragSource = useAtomValue(model.dragSource);
     const setErrorMsg = useSetAtom(model.errorMsgAtom);
+    const [confirmDeleteMsg, setConfirmDeleteMsg] = useState<ErrorMsg | null>(null);
+    const confirmDelete = useCallback((msg: ErrorMsg) => setConfirmDeleteMsg(msg), []);
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
     const directoryDropdownOpen = useAtomValue(model.directoryDropdownOpen);
@@ -1001,7 +1008,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 }
                 const entries = filteredData.map((f) => ({ path: f.path, name: f.name, isdir: Boolean(f.isdir) }));
                 const items = resolveDeleteItems(selected, null, entries);
-                handleFileDeleteBatch(model, items, setErrorMsg);
+                handleFileDeleteBatch(model, items, confirmDelete, setErrorMsg);
                 return true;
             }
             if (checkKeyPressed(waveEvent, "Cmd:c")) {
@@ -1055,7 +1062,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         return () => {
             model.directoryKeyDownHandler = null;
         };
-    }, [filteredData, selectedPath, searchText, focusIndex, pasteClipboard, conn, dirPath, model, setErrorMsg, blockData, env]);
+    }, [filteredData, selectedPath, searchText, focusIndex, pasteClipboard, conn, dirPath, model, setErrorMsg, blockData, env, confirmDelete]);
 
     useEffect(() => {
         if (filteredData.length != 0 && focusIndex > filteredData.length - 1) {
@@ -1216,6 +1223,33 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         [setRefreshVersion, conn, newFile, newDirectory, dirPath, pasteClipboard]
     );
 
+    const handleContainerClick = useCallback(
+        (e: React.MouseEvent<HTMLDivElement>) => {
+            setEntryManagerProps(undefined);
+            // Only a primary-button click on the empty container background clears
+            // the selection. Right-click (context menu) never fires onClick, and
+            // clicks on rows/cells, the header, search banner, or drop overlay must
+            // not clear — those are meaningful interactions.
+            if (e.button !== 0) {
+                return;
+            }
+            const target = e.target as HTMLElement;
+            if (
+                target.closest("[data-rowindex]") ||
+                target.closest(".dir-table-head") ||
+                target.closest(".dir-search-banner") ||
+                target.closest(".dir-drop-overlay")
+            ) {
+                return;
+            }
+            const cleared = applyClearSelection();
+            globalStore.set(model.selectedPaths, cleared.selectedPaths);
+            globalStore.set(model.selectionAnchor, cleared.anchor);
+            setFocusIndex(0);
+        },
+        [model, setEntryManagerProps, setFocusIndex]
+    );
+
     return (
         <Fragment>
             <div
@@ -1229,7 +1263,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 }}
                 {...getReferenceProps()}
                 onContextMenu={(e) => handleFileContextMenu(e)}
-                onClick={() => setEntryManagerProps(undefined)}
+                onClick={handleContainerClick}
                 onDragOver={handleNativeDragOver}
                 onDragEnter={handleNativeDragEnter}
                 onDragLeave={handleNativeDragLeave}
@@ -1249,7 +1283,17 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     newFile={newFile}
                     newDirectory={newDirectory}
                     onRowDrop={handleRowDrop}
+                    confirmDelete={confirmDelete}
                 />
+                {confirmDeleteMsg && (
+                    <div onClick={(e) => e.stopPropagation()}>
+                        <ErrorOverlay
+                            errorMsg={confirmDeleteMsg}
+                            resetOverlay={() => setConfirmDeleteMsg(null)}
+                            className="z-[100]"
+                        />
+                    </div>
+                )}
             </div>
             {entryManagerProps && (
                 <EntryManagerOverlay

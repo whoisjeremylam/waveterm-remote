@@ -274,26 +274,47 @@ export function handleRename(
 
 // Decides which items to delete. Right-clicking an unselected row deletes just
 // that row; otherwise (keyboard, or right-clicking an already-selected row)
-// deletes the whole selection. The ".." row is always excluded.
+// deletes the whole selection. The ".." row is always excluded. Each item
+// carries its display name so the confirmation text can name the items.
 export function resolveDeleteItems(
     selectedPaths: Set<string>,
     clickedPath: string | null,
     entries: Array<{ path: string; name: string; isdir: boolean }>
-): Array<{ path: string; isdir: boolean }> {
+): Array<{ path: string; name: string; isdir: boolean }> {
     const paths = clickedPath != null && !selectedPaths.has(clickedPath) ? new Set<string>([clickedPath]) : selectedPaths;
     return entries
         .filter((entry) => entry.name !== ".." && paths.has(entry.path))
-        .map((entry) => ({ path: entry.path, isdir: entry.isdir }));
+        .map((entry) => ({ path: entry.path, name: entry.name, isdir: entry.isdir }));
 }
 
-// true when items.length > 1 OR any item is a directory (recursive delete is destructive)
-export function shouldConfirmDelete(items: Array<{ path: string; isdir: boolean }>): boolean {
-    return items.length > 1 || items.some((item) => item.isdir);
+// Formats the confirmation text for a delete operation. Single items are named
+// directly (directories call out "and all its contents"); multiple items show up
+// to three names (directories marked with a trailing slash) plus a "+N more"
+// suffix for the rest. Returns "" for an empty list (nothing to confirm).
+export function formatDeleteConfirmText(items: Array<{ path: string; name?: string; isdir: boolean }>): string {
+    if (items.length === 0) {
+        return "";
+    }
+    const names = items.map((item) => item.name ?? item.path.split("/").at(-1) ?? item.path);
+    if (items.length === 1) {
+        const name = names[0];
+        return items[0].isdir ? `Delete "${name}" and all its contents?` : `Delete "${name}"?`;
+    }
+    const shownCount = Math.min(items.length, 3);
+    const shown: string[] = [];
+    for (let i = 0; i < shownCount; i++) {
+        shown.push(items[i].isdir ? `${names[i]}/` : names[i]);
+    }
+    const extra = items.length - shownCount;
+    const list = shown.map((name) => `"${name}"`).join(", ");
+    const suffix = extra > 0 ? `, +${extra} more` : "";
+    return `Delete ${items.length} items? (${list}${suffix})`;
 }
 
 export function handleFileDeleteBatch(
     model: PreviewModel,
-    items: Array<{ path: string; isdir: boolean }>,
+    items: Array<{ path: string; name: string; isdir: boolean }>,
+    confirm: (msg: ErrorMsg) => void,
     setErrorMsg: (msg: ErrorMsg) => void
 ): void {
     if (items.length === 0) {
@@ -321,19 +342,15 @@ export function handleFileDeleteBatch(
             globalStore.set(model.selectionAnchor, null);
         });
     };
-    if (shouldConfirmDelete(items)) {
-        setErrorMsg({
-            status: "Confirm Delete",
-            text: items.length > 1 ? `Delete ${items.length} items?` : "Delete directory and its contents?",
-            level: "warning",
-            buttons: [
-                { text: "Delete", onClick: doDelete },
-                { text: "Cancel", onClick: () => {} },
-            ],
-        });
-    } else {
-        doDelete();
-    }
+    confirm({
+        status: "Confirm Delete",
+        text: formatDeleteConfirmText(items),
+        level: "warning",
+        buttons: [
+            { text: "Delete", onClick: doDelete },
+            { text: "Cancel", onClick: () => {} },
+        ],
+    });
 }
 
 export function makeDirectoryDefaultMenuItems(model: PreviewModel): ContextMenuItem[] {
