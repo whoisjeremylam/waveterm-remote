@@ -9,9 +9,9 @@
 
 All punch-list items from the multiselect QA pass are implemented across 7 phases (spec: [[specs/files-widget-qa-fixes.md]], state: [[phase-state.md]]). Highlights: stale-closure menu fix, full-file paste destinations, dir drag in-app + clean copy-unsupported error, row-level drop targeting, always-confirm deletes with named text, no-flash confirm overlay, empty-click deselect, chunked uploads (>3.7MB works again) with progress overlay, loud oversize-RPC failures, Cmd+R refresh, editable path input, fork About dialog.
 
-## Next planned work — large transfers (spec ready, not started)
+## Next planned work — large transfers (spec ready, approved 2026-08-17) → ALL 5 PHASES IMPLEMENTED, awaiting user QA
 
-Spec: [[specs/files-widget-large-transfers.md]] — 4 phases: ① streaming chunk reads (kill whole-file arrayBuffer), ② upload cancel button (deletes partial), ③ raise cap to 1GB via `files.maxuploadsize` config, ④ real download progress via emain `will-download`. Execute with the same phased-implement workflow when Jeremy says go.
+Spec: [[specs/files-widget-large-transfers.md]] — 5 phases all committed: ① streaming chunk reads + 3MB chunks + speed readout (4c14f14d), ② immediate cancellation via cancel-token race, deletes partial (b572dd19), ③ 5GB default cap via `files:maxuploadsize` config (3b2fcc70 — includes Go schema field + regenerated types), ④ chunk timeout 120s + retry + stat reconciliation (0fccea26), ⑤ real download progress via emain will-download (7ee40785). QA on next CI build: upload a >50MB file (expect success + % + speed), cancel mid-upload (partial deleted), download with real %. Config knob: `files:maxuploadsize` in settings.json (bytes).
 
 ## ⚠️ Open action — manual QA (Jeremy)
 
