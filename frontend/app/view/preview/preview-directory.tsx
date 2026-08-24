@@ -56,6 +56,7 @@ import {
 } from "./preview-directory-utils";
 import { ErrorOverlay } from "./preview-error-overlay";
 import { type PreviewModel } from "./preview-model";
+import { formatSpeed } from "./preview-model-upload";
 import type { PreviewEnv } from "./previewenv";
 
 const PageJumpSize = 20;
@@ -1283,7 +1284,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                             {uploadProgress.total > 0
                                 ? Math.min(100, Math.floor((uploadProgress.sent / uploadProgress.total) * 100))
                                 : 100}
-                            %
+                            % · {formatSpeed(uploadProgress.speedBps)}
                         </div>
                         <div className="dir-transfer-progress-bar">
                             <div

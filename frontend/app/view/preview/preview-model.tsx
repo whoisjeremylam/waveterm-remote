@@ -11,7 +11,7 @@ import * as WOS from "@/store/wos";
 import { goHistory, goHistoryBack, goHistoryForward } from "@/util/historyutil";
 import { checkKeyPressed } from "@/util/keyutil";
 import { addOpenMenuItems } from "@/util/previewutil";
-import { arrayToBase64, base64ToString, fireAndForget, isBlank, jotaiLoadableValue, stringToBase64 } from "@/util/util";
+import { base64ToString, fireAndForget, isBlank, jotaiLoadableValue, stringToBase64 } from "@/util/util";
 import { formatRemoteUri } from "@/util/waveutil";
 import clsx from "clsx";
 import { Atom, atom, Getter, PrimitiveAtom, WritableAtom } from "jotai";
@@ -21,7 +21,7 @@ import type * as MonacoTypes from "monaco-editor";
 import { createRef } from "react";
 import { PreviewView } from "./preview";
 import { makeDirectoryDefaultMenuItems } from "./preview-directory-utils";
-import { planUploadChunks, UploadChunkSize } from "./preview-model-upload";
+import { computeSpeedBps, planUploadChunks, readChunkAsBase64, UploadChunkSize } from "./preview-model-upload";
 import type { DownloadProgress, UploadProgress } from "./preview-model-upload";
 import type { PreviewEnv } from "./previewenv";
 
@@ -927,17 +927,21 @@ export class PreviewModel implements ViewModel {
                 continue;
             }
             try {
-                const arrayBuffer = await file.arrayBuffer();
-                const bytes = new Uint8Array(arrayBuffer);
                 const filePath = `${remoteDir}/${file.name}`;
-                const chunks = planUploadChunks(bytes.length, UploadChunkSize);
+                const chunks = planUploadChunks(file.size, UploadChunkSize);
+                const startedAt = Date.now();
                 for (let i = 0; i < chunks.length; i++) {
                     const chunk = chunks[i];
-                    const data64 = arrayToBase64(bytes.subarray(chunk.offset, chunk.offset + chunk.length));
+                    // Read this chunk lazily via Blob.slice(...).arrayBuffer() so
+                    // only ~one chunk (~3MB) of file bytes is held in memory at a
+                    // time, instead of the whole file.
+                    const data64 = await readChunkAsBase64(file, chunk.offset, chunk.length);
+                    const sent = chunk.offset + chunk.length;
                     globalStore.set(this.uploadProgress, {
                         fileName: file.name,
-                        sent: chunk.offset + chunk.length,
+                        sent,
                         total: file.size,
+                        speedBps: computeSpeedBps(sent, startedAt, Date.now()),
                     });
                     if (i === 0) {
                         // First chunk creates/truncates the file.
