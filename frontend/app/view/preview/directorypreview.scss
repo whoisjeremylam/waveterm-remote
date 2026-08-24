@@ -27,6 +27,44 @@
         pointer-events: none;
         border-radius: 5px;
     }
+    .dir-transfer-banner {
+        position: absolute;
+        top: 6px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 101;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 6px 12px;
+        min-width: 200px;
+        max-width: 340px;
+        background: var(--conn-status-overlay-bg-color);
+        backdrop-filter: blur(50px);
+        border-radius: 6px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        pointer-events: none;
+
+        .dir-transfer-banner-text {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--secondary-text-color);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .dir-transfer-progress-bar {
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.15);
+            overflow: hidden;
+        }
+        .dir-transfer-progress-fill {
+            height: 100%;
+            background: var(--accent-color);
+            transition: width 0.15s ease;
+        }
+    }
     .dir-table {
         height: 100%;
         width: 100%;

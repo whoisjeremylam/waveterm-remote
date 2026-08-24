@@ -21,6 +21,8 @@ import type * as MonacoTypes from "monaco-editor";
 import { createRef } from "react";
 import { PreviewView } from "./preview";
 import { makeDirectoryDefaultMenuItems } from "./preview-directory-utils";
+import { planUploadChunks, UploadChunkSize } from "./preview-model-upload";
+import type { DownloadProgress, UploadProgress } from "./preview-model-upload";
 import type { PreviewEnv } from "./previewenv";
 
 // TODO drive this using config
@@ -175,6 +177,8 @@ export class PreviewModel implements ViewModel {
     directorySelectablePaths: PrimitiveAtom<string[]>;
     directoryColumnSizing: PrimitiveAtom<ColumnSizingState>;
     directoryColumnVisibility: PrimitiveAtom<VisibilityState>;
+    uploadProgress: PrimitiveAtom<UploadProgress | null>;
+    downloadProgress: PrimitiveAtom<DownloadProgress | null>;
     directoryKeyDownHandler: (waveEvent: WaveKeyboardEvent) => boolean;
     codeEditKeyDownHandler: (waveEvent: WaveKeyboardEvent) => boolean;
     env: PreviewEnv;
@@ -199,6 +203,8 @@ export class PreviewModel implements ViewModel {
         this.selectionAnchor = atom<string | null>(null);
         this.fileClipboard = atom(null) as PrimitiveAtom<FileClipboardState | null>;
         this.directorySelectablePaths = atom<string[]>([]);
+        this.uploadProgress = atom(null) as PrimitiveAtom<UploadProgress | null>;
+        this.downloadProgress = atom(null) as PrimitiveAtom<DownloadProgress | null>;
         this.directorySearchActive = atom(false);
         this.directoryDropdownOpen = atom(false);
         this.previewTextRef = createRef();
@@ -783,7 +789,7 @@ export class PreviewModel implements ViewModel {
         });
         menuItems.push({ type: "separator" });
         const finfo = jotaiLoadableValue(globalStore.get(this.loadableFileInfo), null);
-        addOpenMenuItems(menuItems, globalStore.get(this.connectionImmediate), finfo);
+        addOpenMenuItems(menuItems, globalStore.get(this.connectionImmediate), finfo, (remoteUri) => this.downloadFile(remoteUri));
         const loadableSV = globalStore.get(this.loadableSpecializedView);
         const wordWrapAtom = getOverrideConfigAtom(this.blockId, "editor:wordwrap");
         const wordWrap = globalStore.get(wordWrapAtom) ?? false;
@@ -907,7 +913,7 @@ export class PreviewModel implements ViewModel {
     }
 
     async uploadFiles(files: File[], targetDir: string) {
-        const MaxUploadSize = 50 * 1024 * 1024; // 50MB
+        const MaxUploadSize = 50 * 1024 * 1024; // 50MB (client cap; chunking makes raising this safe later)
         const cleanTargetDir = targetDir.replace(/\/+$/, "");
         const remoteDir = await this.formatRemoteUri(cleanTargetDir, globalStore.get);
         let successCount = 0;
@@ -923,13 +929,27 @@ export class PreviewModel implements ViewModel {
             try {
                 const arrayBuffer = await file.arrayBuffer();
                 const bytes = new Uint8Array(arrayBuffer);
-                const data64 = arrayToBase64(bytes);
-                await this.env.rpc.FileWriteCommand(TabRpcClient, {
-                    info: {
-                        path: `${remoteDir}/${file.name}`,
-                    },
-                    data64,
-                });
+                const filePath = `${remoteDir}/${file.name}`;
+                const chunks = planUploadChunks(bytes.length, UploadChunkSize);
+                for (let i = 0; i < chunks.length; i++) {
+                    const chunk = chunks[i];
+                    const data64 = arrayToBase64(bytes.subarray(chunk.offset, chunk.offset + chunk.length));
+                    globalStore.set(this.uploadProgress, {
+                        fileName: file.name,
+                        sent: chunk.offset + chunk.length,
+                        total: file.size,
+                    });
+                    if (i === 0) {
+                        // First chunk creates/truncates the file.
+                        await this.env.rpc.FileWriteCommand(TabRpcClient, { info: { path: filePath }, data64 });
+                    } else {
+                        // Subsequent chunks append sequentially; the server's
+                        // O_APPEND maintains the correct write offset (we do not
+                        // send data.At because FileAppendCommand forces Append=true
+                        // and RemoteWriteFileCommand rejects append+offset).
+                        await this.env.rpc.FileAppendCommand(TabRpcClient, { info: { path: filePath }, data64 });
+                    }
+                }
                 successCount++;
             } catch (e) {
                 const errorStatus: ErrorMsg = {
@@ -937,6 +957,8 @@ export class PreviewModel implements ViewModel {
                     text: `Failed to upload "${file.name}": ${e}`,
                 };
                 globalStore.set(this.errorMsgAtom, errorStatus);
+            } finally {
+                globalStore.set(this.uploadProgress, null);
             }
         }
         if (successCount > 0) {
@@ -946,8 +968,17 @@ export class PreviewModel implements ViewModel {
 
     downloadFile(remoteUri: string) {
         try {
+            // Electron's native download (emain `downloadURL`) provides no
+            // streaming progress callback, so we show an indeterminate banner
+            // that auto-clears after a short interval.
+            const fileName = remoteUri.split("/").at(-1) ?? remoteUri;
+            globalStore.set(this.downloadProgress, { fileName });
+            setTimeout(() => {
+                globalStore.set(this.downloadProgress, null);
+            }, 4000);
             getApi().downloadFile(remoteUri);
         } catch (e) {
+            globalStore.set(this.downloadProgress, null);
             const errorStatus: ErrorMsg = {
                 status: "Download Failed",
                 text: `Failed to download: ${e}`,

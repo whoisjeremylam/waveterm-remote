@@ -483,7 +483,7 @@ function TableBody({
                     click: () => fireAndForget(() => navigator.clipboard.writeText(shellQuote([finfo.path]))),
                 },
             ];
-            addOpenMenuItems(menu, conn, finfo);
+            addOpenMenuItems(menu, conn, finfo, (remoteUri) => model.downloadFile(remoteUri));
             menu.push(
                 {
                     type: "separator",
@@ -756,6 +756,8 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
     const directoryDropdownOpen = useAtomValue(model.directoryDropdownOpen);
+    const uploadProgress = useAtomValue(model.uploadProgress);
+    const downloadProgress = useAtomValue(model.downloadProgress);
 
     const handleDropCopyOrMove = useCallback(
         async (data: CommandFileCopyData, isDir: boolean, move: boolean) => {
@@ -1216,7 +1218,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     type: "separator",
                 },
             ];
-            addOpenMenuItems(menu, conn, finfo);
+            addOpenMenuItems(menu, conn, finfo, (remoteUri) => model.downloadFile(remoteUri));
 
             ContextMenuModel.getInstance().showContextMenu(menu, e);
         },
@@ -1270,6 +1272,30 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 onDrop={handleNativeDrop}
             >
                 {isDragOver && <div className="dir-drop-overlay">{getDropBannerText(activeDragSource)}</div>}
+                {uploadProgress && (
+                    <div className="dir-transfer-banner">
+                        <div className="dir-transfer-banner-text">
+                            Uploading {uploadProgress.fileName} —{" "}
+                            {uploadProgress.total > 0
+                                ? Math.min(100, Math.floor((uploadProgress.sent / uploadProgress.total) * 100))
+                                : 100}
+                            %
+                        </div>
+                        <div className="dir-transfer-progress-bar">
+                            <div
+                                className="dir-transfer-progress-fill"
+                                style={{
+                                    width: `${uploadProgress.total > 0 ? Math.min(100, Math.floor((uploadProgress.sent / uploadProgress.total) * 100)) : 100}%`,
+                                }}
+                            />
+                        </div>
+                    </div>
+                )}
+                {downloadProgress && (
+                    <div className="dir-transfer-banner">
+                        <div className="dir-transfer-banner-text">Downloading {downloadProgress.fileName}…</div>
+                    </div>
+                )}
                 <DirectoryTable
                     model={model}
                     data={filteredData}

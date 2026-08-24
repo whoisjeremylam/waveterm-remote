@@ -420,7 +420,7 @@ declare global {
     };
 
     interface AbstractWshClient {
-        recvRpcMessage(msg: RpcMessage): void;
+        recvRpcMessage(msg: RpcMessage): boolean;
     }
 
     type ClientRpcEntry = {
