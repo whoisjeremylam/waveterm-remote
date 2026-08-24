@@ -8,7 +8,10 @@
 ## Files widget QA fixes (2026-08-17) — implemented, awaiting final user QA on next CI build
 
 All punch-list items from the multiselect QA pass are implemented across 7 phases (spec: [[specs/files-widget-qa-fixes.md]], state: [[phase-state.md]]). Highlights: stale-closure menu fix, full-file paste destinations, dir drag in-app + clean copy-unsupported error, row-level drop targeting, always-confirm deletes with named text, no-flash confirm overlay, empty-click deselect, chunked uploads (>3.7MB works again) with progress overlay, loud oversize-RPC failures, Cmd+R refresh, editable path input, fork About dialog.
-Deferred/follow-ups: raise 50MB upload cap (safe now); move-onto-existing overwrite retry; HTML5 fallback for dir-only drags; self-drop guard; mergeError dead constant cleanup.
+
+## Next planned work — large transfers (spec ready, not started)
+
+Spec: [[specs/files-widget-large-transfers.md]] — 4 phases: ① streaming chunk reads (kill whole-file arrayBuffer), ② upload cancel button (deletes partial), ③ raise cap to 1GB via `files.maxuploadsize` config, ④ real download progress via emain `will-download`. Execute with the same phased-implement workflow when Jeremy says go.
 
 ## ⚠️ Open action — manual QA (Jeremy)
 
