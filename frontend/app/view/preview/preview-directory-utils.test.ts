@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, joinRemoteDir, resolveDeleteItems, shouldConfirmDelete } from "./preview-directory-utils";
+import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, joinRemoteDir, osDraggableItems, resolveDeleteItems, shouldConfirmDelete } from "./preview-directory-utils";
 
 describe("buildDropFileCopyOpts", () => {
     const yearTimeout = 31536000000; // one year
@@ -105,12 +105,13 @@ describe("buildDragFileItems", () => {
         { path: "/dir/c.txt", name: "c.txt", isdir: false },
     ];
 
-    it("dragging a selected path picks all selected file entries (excludes .. and directories)", () => {
+    it("dragging a selected path picks all selected entries INCLUDING directories (excludes ..)", () => {
         const selectedPaths = new Set(["/dir/a.txt", "/dir/b.txt", "/dir/sub"]);
         const files = buildDragFileItems(selectedPaths, "/dir/a.txt", entries, "/dir", "conn");
         expect(files).toEqual([
             { relName: "a.txt", absParent: "/dir", uri: "wsh://conn//dir/a.txt", isDir: false },
             { relName: "b.txt", absParent: "/dir", uri: "wsh://conn//dir/b.txt", isDir: false },
+            { relName: "sub", absParent: "/dir", uri: "wsh://conn//dir/sub", isDir: true },
         ]);
     });
 
@@ -122,10 +123,55 @@ describe("buildDragFileItems", () => {
         ]);
     });
 
-    it("a selection that is all directories yields []", () => {
-        const selectedPaths = new Set(["/dir/sub", "/dir/.."]);
+    it("dragging an unselected directory picks just that directory with isDir true", () => {
+        const selectedPaths = new Set(["/dir/a.txt"]);
         const files = buildDragFileItems(selectedPaths, "/dir/sub", entries, "/dir", "conn");
-        expect(files).toEqual([]);
+        expect(files).toEqual([
+            { relName: "sub", absParent: "/dir", uri: "wsh://conn//dir/sub", isDir: true },
+        ]);
+    });
+
+    it("a mixed files+dirs selection returns both with correct isDir", () => {
+        const selectedPaths = new Set(["/dir/a.txt", "/dir/sub"]);
+        const files = buildDragFileItems(selectedPaths, "/dir/a.txt", entries, "/dir", "conn");
+        expect(files).toEqual([
+            { relName: "a.txt", absParent: "/dir", uri: "wsh://conn//dir/a.txt", isDir: false },
+            { relName: "sub", absParent: "/dir", uri: "wsh://conn//dir/sub", isDir: true },
+        ]);
+    });
+
+    it("never includes the .. entry even when selected", () => {
+        const selectedPaths = new Set(["/dir/..", "/dir/sub"]);
+        const files = buildDragFileItems(selectedPaths, "/dir/..", entries, "/dir", "conn");
+        expect(files).toEqual([
+            { relName: "sub", absParent: "/dir", uri: "wsh://conn//dir/sub", isDir: true },
+        ]);
+    });
+});
+
+describe("osDraggableItems", () => {
+    const mixed: DraggedFile[] = [
+        { relName: "a.txt", absParent: "/dir", uri: "wsh://conn//dir/a.txt", isDir: false },
+        { relName: "sub", absParent: "/dir", uri: "wsh://conn//dir/sub", isDir: true },
+        { relName: "b.txt", absParent: "/dir", uri: "wsh://conn//dir/b.txt", isDir: false },
+    ];
+
+    it("keeps files and drops directories", () => {
+        expect(osDraggableItems(mixed)).toEqual([
+            { relName: "a.txt", absParent: "/dir", uri: "wsh://conn//dir/a.txt", isDir: false },
+            { relName: "b.txt", absParent: "/dir", uri: "wsh://conn//dir/b.txt", isDir: false },
+        ]);
+    });
+
+    it("returns [] for a directory-only selection", () => {
+        const dirsOnly: DraggedFile[] = [
+            { relName: "sub", absParent: "/dir", uri: "wsh://conn//dir/sub", isDir: true },
+        ];
+        expect(osDraggableItems(dirsOnly)).toEqual([]);
+    });
+
+    it("returns [] for an empty list", () => {
+        expect(osDraggableItems([])).toEqual([]);
     });
 });
 

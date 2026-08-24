@@ -51,6 +51,7 @@ import {
     joinRemoteDir,
     makeDirectoryDefaultMenuItems,
     mergeError,
+    osDraggableItems,
     overwriteError,
 } from "./preview-directory-utils";
 import { type PreviewModel } from "./preview-model";
@@ -543,8 +544,16 @@ function TableBody({
             if (files.length === 0) {
                 return;
             }
+            const osFiles = osDraggableItems(files);
+            if (osFiles.length === 0) {
+                // Directory-only selection: the Electron native drag requires at
+                // least one file (OS folder drag-out is files-only by product
+                // decision), so no drag can start. Directories still participate
+                // in in-app drops when dragged alongside at least one file.
+                return;
+            }
             globalStore.set(model.dragSource, { files, move });
-            getApi().startFileDrag(files.map((f) => ({ remoteUri: f.uri, fileName: f.relName })));
+            getApi().startFileDrag(osFiles.map((f) => ({ remoteUri: f.uri, fileName: f.relName })));
         },
         [allRows, dirPath, connName, model]
     );
@@ -692,6 +701,16 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
 
     const handleDropCopyOrMove = useCallback(
         async (data: CommandFileCopyData, isDir: boolean, move: boolean) => {
+            if (isDir && !move) {
+                // Directory copy is unsupported backend-side (no recursive copy
+                // RPC exists). Surface a clean message instead of a raw RPC error.
+                setErrorMsg({
+                    status: "Copy Failed",
+                    text: "Copying directories is not supported.",
+                    level: "error",
+                });
+                return;
+            }
             try {
                 if (move) {
                     await env.rpc.FileMoveCommand(TabRpcClient, data, { timeout: data.opts.timeout });
@@ -736,7 +755,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             }
             model.refresh();
         },
-        [model.refresh]
+        [model.refresh, setErrorMsg]
     );
 
     const pasteClipboard = useCallback(
