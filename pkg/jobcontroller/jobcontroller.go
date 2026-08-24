@@ -94,6 +94,11 @@ type streamHealthInfo struct {
 	lastReadAt time.Time
 	totalBytes int64
 	streamId   string
+	// remoteState is the last StreamStatusReport state received from the remote
+	// jobmanager ("" = no report / old remote). Lets the watchdog distinguish
+	// benign idle from remote-side retry/disk-buffer states.
+	remoteState   string
+	remoteStateAt time.Time
 }
 
 // drainProgressInfo tracks UX-1.7 catch-up progress for a job after reconnect.
@@ -423,9 +428,32 @@ func streamHealthWatchdog() {
 				return
 			}
 			streamStaleLoggedAt.Set(jobId, now)
-			log.Printf("[streamhealth] job=%s stream=%s active but no output read for %s (totalBytes=%d) — idle or wedged",
-				jobId, health.streamId, age.Round(time.Second), health.totalBytes)
+			remoteInfo := ""
+			if health.remoteState != "" {
+				remoteInfo = fmt.Sprintf(" [remote=%s, age=%s]", health.remoteState, now.Sub(health.remoteStateAt).Round(time.Second))
+			}
+			log.Printf("[streamhealth] job=%s stream=%s active but no output read for %s (totalBytes=%d)%s — idle or wedged",
+				jobId, health.streamId, age.Round(time.Second), health.totalBytes, remoteInfo)
 		})
+	}
+}
+
+// HandleStreamStatusReport consumes StreamStatusReport RPCs from a remote
+// jobmanager (spec: .pi/specs/stream-data-path-resilience.md). Reports arrive
+// only on state transitions or while stalled, so logging each is low-volume.
+func HandleStreamStatusReport(data wshrpc.CommandStreamStatusData) {
+	health, _ := jobStreamHealth.GetEx(data.JobId)
+	prev := health.remoteState
+	health.remoteState = data.State
+	health.remoteStateAt = time.Now()
+	if data.StreamId != "" {
+		health.streamId = data.StreamId
+	}
+	jobStreamHealth.Set(data.JobId, health)
+	if prev != data.State {
+		log.Printf("[streamhealth] job=%s stream=%s remote state %q -> %q (sentNotAcked=%d bufCount=%d rwnd=%d lastAckAgo=%s retryCount=%d diskBufBytes=%d)",
+			data.JobId, data.StreamId, prev, data.State, data.SentNotAcked, data.BufCount, data.RWnd,
+			time.Duration(data.LastAckAgeMs)*time.Millisecond, data.RetryCount, data.DiskBufBytes)
 	}
 }
 

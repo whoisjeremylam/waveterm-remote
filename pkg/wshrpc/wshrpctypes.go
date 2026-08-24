@@ -661,6 +661,28 @@ type CommandStreamAckData struct {
 	Error  string `json:"error,omitempty"`  // reason for cancel (may only be set if cancel is true)
 }
 
+// Stream state values for CommandStreamStatusData.State. Reported by the
+// remote jobmanager so wavesrv can distinguish idle from wedged from
+// disconnected (spec: .pi/specs/stream-data-path-resilience.md).
+const (
+	StreamStateConnected  = "connected"
+	StreamStateRetrying   = "retrying"
+	StreamStateStalled    = "stalled"
+	StreamStateDiskBuffer = "disconnected-diskbuffer"
+)
+
+type CommandStreamStatusData struct {
+	JobId        string `json:"jobid"`
+	StreamId     string `json:"streamid,omitempty"`
+	State        string `json:"state"` // StreamState* constant
+	SentNotAcked int64  `json:"sentnotacked"`
+	BufCount     int64  `json:"bufcount"`
+	RWnd         int    `json:"rwnd"`
+	LastAckAgeMs int64  `json:"lastackagems,omitempty"`
+	RetryCount   int    `json:"retrycount,omitempty"`
+	DiskBufBytes int64  `json:"diskbufbytes,omitempty"`
+}
+
 type StreamMeta struct {
 	Id            string `json:"id"`   // streamid
 	RWnd          int64  `json:"rwnd"` // initial receive window size

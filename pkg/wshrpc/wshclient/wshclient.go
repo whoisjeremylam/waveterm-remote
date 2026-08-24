@@ -941,6 +941,12 @@ func StreamDataAckCommand(w *wshutil.WshRpc, data wshrpc.CommandStreamAckData, o
 	return err
 }
 
+// command "streamstatusreport", wshserver.StreamStatusReportCommand
+func StreamStatusReportCommand(w *wshutil.WshRpc, data wshrpc.CommandStreamStatusData, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "streamstatusreport", data, opts)
+	return err
+}
+
 // command "streamtest", wshserver.StreamTestCommand
 func StreamTestCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) chan wshrpc.RespOrErrorUnion[int] {
 	return sendRpcRequestResponseStreamHelper[int](w, "streamtest", nil, opts)
