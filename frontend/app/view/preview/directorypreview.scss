@@ -173,7 +173,7 @@
                     min-width: var(--min-row-width);
 
                     &.selected {
-                        background-color: rgb(from var(--accent-color) r g b / 0.2);
+                        background-color: rgb(from var(--accent-color) r g b / 0.35);
                         color: var(--main-text-color);
 
                         .dir-table-body-cell {

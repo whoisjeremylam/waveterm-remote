@@ -1,5 +1,15 @@
 # Active Tasks
 
+## Files widget follow-ups (from multiselect QA 2026-08-17)
+
+- [x] 2026-08-17 — **Add Cmd+R refresh to files-widget directory view** — done in QA-fixes phase 7 (commit a415c708).
+- [x] 2026-08-17 — **Bump selection highlight visibility** — done in QA-fixes phase 5? No — verify. NOTE: `.selected` bump was NOT in the 7-phase spec's committed scope; check `directorypreview.scss` and apply if still at 0.2.
+
+## Files widget QA fixes (2026-08-17) — implemented, awaiting final user QA on next CI build
+
+All punch-list items from the multiselect QA pass are implemented across 7 phases (spec: [[specs/files-widget-qa-fixes.md]], state: [[phase-state.md]]). Highlights: stale-closure menu fix, full-file paste destinations, dir drag in-app + clean copy-unsupported error, row-level drop targeting, always-confirm deletes with named text, no-flash confirm overlay, empty-click deselect, chunked uploads (>3.7MB works again) with progress overlay, loud oversize-RPC failures, Cmd+R refresh, editable path input, fork About dialog.
+Deferred/follow-ups: raise 50MB upload cap (safe now); move-onto-existing overwrite retry; HTML5 fallback for dir-only drags; self-drop guard; mergeError dead constant cleanup.
+
 ## ⚠️ Open action — manual QA (Jeremy)
 
 - [ ] **Run the reconnection UX-3.2 QA matrix (Q1–Q17)** — these are manual tests that must be done on a real machine with real SSH hosts (network flaps, sleep/wake, VPN, remote reboots + visual UI checks cannot be automated). Steps + expected results: [[specs/reconnection-p1-p2-verification.md]].
