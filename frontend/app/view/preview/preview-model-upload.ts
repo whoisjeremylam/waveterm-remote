@@ -57,9 +57,44 @@ export type UploadProgress = {
     speedBps: number;
 };
 
+// Terminal states a download can reach, matching Electron's DownloadItem
+// `done` event states ("completed" | "cancelled" | "interrupted"). Emain
+// normalizes the raw event state to this union before sending it over the
+// "download-progress" IPC channel.
+export type DownloadDoneState = "completed" | "cancelled" | "interrupted";
+
 export type DownloadProgress = {
     fileName: string;
+    sent: number;
+    total: number;
+    // Set once the download reaches a terminal state (Electron's `done`
+    // event). Undefined while the download is in flight.
+    done?: DownloadDoneState;
 };
+
+// Human-readable terminal status for a finished download, shown by the banner
+// in place of the live percentage once `done` is set.
+export function formatDownloadDoneText(done: DownloadDoneState): string {
+    switch (done) {
+        case "completed":
+            return "Download complete";
+        case "cancelled":
+            return "Download cancelled";
+        default:
+            return "Download failed";
+    }
+}
+
+// Computes the download percentage (0-100, clamped) from bytes received and
+// total bytes. Returns 0 when the total is unknown/non-positive or the bytes
+// are non-finite, so the caller can render an indeterminate state rather than a
+// bogus percentage.
+export function downloadPercent(sent: number, total: number): number {
+    if (!Number.isFinite(sent) || !Number.isFinite(total) || sent <= 0 || total <= 0) {
+        return 0;
+    }
+    return Math.min(100, Math.floor((sent / total) * 100));
+}
 
 // Thrown by raceWithCancel when a transfer is cancelled. Extends Error (with a
 // distinct name) so the upload loop can tell a user-initiated cancel apart from

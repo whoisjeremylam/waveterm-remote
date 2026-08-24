@@ -7,7 +7,9 @@ import {
     computeSpeedBps,
     createCancelToken,
     DefaultMaxUploadSize,
+    downloadPercent,
     formatBytesSize,
+    formatDownloadDoneText,
     formatSpeed,
     planUploadChunks,
     raceWithCancel,
@@ -230,6 +232,42 @@ describe("reconcileChunkFailure", () => {
     it("null remote size (unstatable/missing file) -> failed", () => {
         expect(reconcileChunkFailure(null, 100)).toBe("failed");
         expect(reconcileChunkFailure(null, 0)).toBe("failed");
+    });
+});
+
+describe("formatDownloadDoneText", () => {
+    it("maps each terminal state to its banner text", () => {
+        expect(formatDownloadDoneText("completed")).toBe("Download complete");
+        expect(formatDownloadDoneText("cancelled")).toBe("Download cancelled");
+        expect(formatDownloadDoneText("interrupted")).toBe("Download failed");
+    });
+});
+
+describe("downloadPercent", () => {
+    it("computes a clamped 0-100 percentage", () => {
+        expect(downloadPercent(0, 100)).toBe(0);
+        expect(downloadPercent(1, 100)).toBe(1);
+        expect(downloadPercent(42, 100)).toBe(42);
+        expect(downloadPercent(100, 100)).toBe(100);
+        expect(downloadPercent(200, 100)).toBe(100); // clamped
+    });
+
+    it("rounds down to the nearest whole percent", () => {
+        expect(downloadPercent(333, 1000)).toBe(33);
+        expect(downloadPercent(999, 1000)).toBe(99);
+    });
+
+    it("returns 0 for an unknown (non-positive) total", () => {
+        expect(downloadPercent(10, 0)).toBe(0);
+        expect(downloadPercent(10, -1)).toBe(0);
+    });
+
+    it("returns 0 for non-finite or non-positive bytes", () => {
+        expect(downloadPercent(0, 100)).toBe(0);
+        expect(downloadPercent(-1, 100)).toBe(0);
+        expect(downloadPercent(NaN, 100)).toBe(0);
+        expect(downloadPercent(Infinity, 100)).toBe(0);
+        expect(downloadPercent(50, NaN)).toBe(0);
     });
 });
 

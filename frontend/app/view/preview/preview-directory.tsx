@@ -56,7 +56,7 @@ import {
 } from "./preview-directory-utils";
 import { ErrorOverlay } from "./preview-error-overlay";
 import { type PreviewModel } from "./preview-model";
-import { formatSpeed } from "./preview-model-upload";
+import { downloadPercent, formatDownloadDoneText, formatSpeed } from "./preview-model-upload";
 import type { PreviewEnv } from "./previewenv";
 
 const PageJumpSize = 20;
@@ -1325,7 +1325,30 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 )}
                 {downloadProgress && (
                     <div className="dir-transfer-banner">
-                        <div className="dir-transfer-banner-text">Downloading {downloadProgress.fileName}…</div>
+                        {downloadProgress.done ? (
+                            <div className="dir-transfer-banner-text">{formatDownloadDoneText(downloadProgress.done)}</div>
+                        ) : (
+                            <>
+                                <div className="dir-transfer-banner-top">
+                                    <div className="dir-transfer-banner-text">
+                                        Downloading {downloadProgress.fileName}
+                                        {downloadProgress.total > 0
+                                            ? ` — ${downloadPercent(downloadProgress.sent, downloadProgress.total)}%`
+                                            : "…"}
+                                    </div>
+                                </div>
+                                {downloadProgress.total > 0 && (
+                                    <div className="dir-transfer-progress-bar">
+                                        <div
+                                            className="dir-transfer-progress-fill"
+                                            style={{
+                                                width: `${downloadPercent(downloadProgress.sent, downloadProgress.total)}%`,
+                                            }}
+                                        />
+                                    </div>
+                                )}
+                            </>
+                        )}
                     </div>
                 )}
                 <DirectoryTable

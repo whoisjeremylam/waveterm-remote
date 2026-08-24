@@ -291,6 +291,49 @@ export function initIpcHandlers() {
         event.sender.downloadURL(streamingUrl);
     });
 
+    // Real download progress: Electron's native download (triggered by the
+    // `download` handler above) emits progress on the session's `will-download`
+    // event, which carries the initiating webContents as its third argument. We
+    // forward started/progress/terminal states to that renderer over a dedicated
+    // IPC channel ("download-progress"), exposed in preload as
+    // onDownloadProgress. Registered once at startup on the default session —
+    // Wave windows declare no custom partition, so downloadURL targets it.
+    //
+    // Transport rationale (vs. Wave's event system): the Go-backed wave event
+    // bus is round-tripped through the wavesrv process and keyed to WOS objects;
+    // download progress is a transient, per-webContents UI concern with no WOS
+    // lifetime, so a direct emain→renderer webContents.send is the cheapest safe
+    // path and matches the existing push pattern (reinject-key, zoom-factor-
+    // change, etc.).
+    electron.session.defaultSession.on("will-download", (_event, item, webContents) => {
+        if (webContents == null || webContents.isDestroyed()) {
+            return;
+        }
+        const pushProgress = (done?: "completed" | "cancelled" | "interrupted") => {
+            if (webContents.isDestroyed()) {
+                return;
+            }
+            webContents.send("download-progress", {
+                fileName: item.getFilename(),
+                sent: item.getReceivedBytes(),
+                total: item.getTotalBytes(),
+                ...(done != null ? { done } : {}),
+            });
+        };
+        item.on("updated", (_event, state) => {
+            // `updated` also fires with "interrupted" for non-fatal stalls; the
+            // terminal interruption is always delivered via `done`, so ignore it
+            // here to avoid a premature/duplicate failure state.
+            if (state === "interrupted") {
+                return;
+            }
+            pushProgress();
+        });
+        item.once("done", (_event, state) => {
+            pushProgress(state === "completed" ? "completed" : state === "cancelled" ? "cancelled" : "interrupted");
+        });
+    });
+
     electron.ipcMain.on("start-file-drag", (event, payload: { items: { remoteUri: string; fileName: string }[] }) => {
         fireAndForget(() => startFileDrag(event.sender, payload));
     });

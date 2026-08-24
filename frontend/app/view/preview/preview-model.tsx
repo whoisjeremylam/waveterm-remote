@@ -35,6 +35,7 @@ import {
     UploadChunkTimeoutMs,
 } from "./preview-model-upload";
 import type { CancelToken, DownloadProgress, UploadProgress } from "./preview-model-upload";
+import { claimDownloadProgressSlot } from "./download-progress";
 import type { PreviewEnv } from "./previewenv";
 
 // TODO drive this using config
@@ -1109,7 +1110,8 @@ export class PreviewModel implements ViewModel {
     }
 
     // Shows a transient banner status (e.g. "Upload cancelled") that clears
-    // itself after a short delay, mirroring the download-progress auto-clear.
+    // itself after a short delay. The download banner's terminal state
+    // ("Download complete"/etc.) uses this same transient-clear pattern.
     setTransientUploadStatus(status: string) {
         globalStore.set(this.uploadStatus, status);
         setTimeout(() => {
@@ -1123,14 +1125,30 @@ export class PreviewModel implements ViewModel {
 
     downloadFile(remoteUri: string) {
         try {
-            // Electron's native download (emain `downloadURL`) provides no
-            // streaming progress callback, so we show an indeterminate banner
-            // that auto-clears after a short interval.
             const fileName = remoteUri.split("/").at(-1) ?? remoteUri;
-            globalStore.set(this.downloadProgress, { fileName });
-            setTimeout(() => {
-                globalStore.set(this.downloadProgress, null);
-            }, 4000);
+            // Route real download progress from Electron (emain `will-download`
+            // → "download-progress" IPC) into this model's banner atom. The slot
+            // is window/tab-wide and single-slot: a concurrent download from
+            // another block overwrites the handler, so progress follows the most
+            // recent download (documented in download-progress.ts).
+            claimDownloadProgressSlot((progress) => {
+                globalStore.set(this.downloadProgress, progress);
+                if (progress.done != null) {
+                    // Brief terminal status ("Download complete"/"Download
+                    // failed"/"Download cancelled"), then clear — mirroring the
+                    // upload transient-status pattern. The reference-equality
+                    // guard ensures a newer download's progress isn't cleared by
+                    // a stale timer.
+                    const terminal = progress;
+                    setTimeout(() => {
+                        if (globalStore.get(this.downloadProgress) === terminal) {
+                            globalStore.set(this.downloadProgress, null);
+                        }
+                    }, 3000);
+                }
+            });
+            // Initial indeterminate state until the first progress event lands.
+            globalStore.set(this.downloadProgress, { fileName, sent: 0, total: 0 });
             getApi().downloadFile(remoteUri);
         } catch (e) {
             globalStore.set(this.downloadProgress, null);
