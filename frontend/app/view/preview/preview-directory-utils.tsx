@@ -82,6 +82,22 @@ export function buildSelectionItems(
         }));
 }
 
+// Joins a directory path with a relative entry name to form a full-file
+// destination path. Trailing slashes on destDir are stripped (except for the
+// filesystem root "/") so the result never contains a double slash. An empty
+// relName is a passthrough: the cleaned directory path is returned unchanged
+// (callers never pass an empty relName in practice, so no error is warranted).
+export function joinRemoteDir(destDir: string, relName: string): string {
+    let dir = destDir ?? "";
+    while (dir.length > 1 && dir.endsWith("/")) {
+        dir = dir.slice(0, -1);
+    }
+    if (relName == null || relName === "") {
+        return dir;
+    }
+    return `${dir}/${relName}`;
+}
+
 export type SelectionState = { selectedPaths: Set<string>; anchor: string | null };
 
 // plain click -> {path}; cmd-click -> toggle path (anchor=path);

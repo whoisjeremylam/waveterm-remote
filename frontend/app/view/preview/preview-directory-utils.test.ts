@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, resolveDeleteItems, shouldConfirmDelete } from "./preview-directory-utils";
+import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, joinRemoteDir, resolveDeleteItems, shouldConfirmDelete } from "./preview-directory-utils";
 
 describe("buildDropFileCopyOpts", () => {
     const yearTimeout = 31536000000; // one year
@@ -71,6 +71,28 @@ describe("decideNativeDropRoute", () => {
     it("rejects when dirPath is null or undefined", () => {
         expect(decideNativeDropRoute(multiSourceSameParent, null)).toBe("reject");
         expect(decideNativeDropRoute(multiSourceSameParent, undefined)).toBe("reject");
+    });
+});
+
+describe("joinRemoteDir", () => {
+    it("joins a plain directory and entry name", () => {
+        expect(joinRemoteDir("/home/user", "a.txt")).toBe("/home/user/a.txt");
+    });
+
+    it("strips a trailing slash on dirPath before joining", () => {
+        expect(joinRemoteDir("/home/user/", "a.txt")).toBe("/home/user/a.txt");
+    });
+
+    it("does not produce a double slash when dirPath is the filesystem root", () => {
+        expect(joinRemoteDir("/", "a.txt")).toBe("/a.txt");
+    });
+
+    it("passes through an empty relName, returning the cleaned directory", () => {
+        expect(joinRemoteDir("/home/user/", "")).toBe("/home/user");
+    });
+
+    it("handles a remote URI directory with a trailing slash", () => {
+        expect(joinRemoteDir("wsh://conn//home/user/", "a.txt")).toBe("wsh://conn//home/user/a.txt");
     });
 });
 

@@ -48,6 +48,7 @@ import {
     resolveDeleteItems,
     shouldConfirmDelete,
     isIconValid,
+    joinRemoteDir,
     makeDirectoryDefaultMenuItems,
     mergeError,
     overwriteError,
@@ -748,10 +749,10 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 return; // pasting into the source directory is a no-op
             }
             fireAndForget(async () => {
-                const desturi = await model.formatRemoteUri(targetDir, globalStore.get);
+                const destDirUri = await model.formatRemoteUri(targetDir, globalStore.get);
                 for (const s of clipboard.sources) {
                     await handleDropCopyOrMove(
-                        { srcuri: s.uri, desturi, opts: buildDropFileCopyOpts(s.isDir, clipboard.cut) },
+                        { srcuri: s.uri, desturi: joinRemoteDir(destDirUri, s.relName), opts: buildDropFileCopyOpts(s.isDir, clipboard.cut) },
                         s.isDir,
                         clipboard.cut
                     );
@@ -1053,10 +1054,10 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             if (route === "inapp") {
                 // In-app drop: our own drag from the directory widget to a different dir.
                 try {
-                    const desturi = await model.formatRemoteUri(dirPath, globalStore.get);
+                    const destDirUri = await model.formatRemoteUri(dirPath, globalStore.get);
                     for (const f of dragSource.files) {
                         await handleDropCopyOrMove(
-                            { srcuri: f.uri, desturi, opts: buildDropFileCopyOpts(f.isDir, dragSource.move) },
+                            { srcuri: f.uri, desturi: joinRemoteDir(destDirUri, f.relName), opts: buildDropFileCopyOpts(f.isDir, dragSource.move) },
                             f.isDir,
                             dragSource.move
                         );
