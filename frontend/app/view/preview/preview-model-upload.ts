@@ -31,6 +31,69 @@ export type DownloadProgress = {
     fileName: string;
 };
 
+// Thrown by raceWithCancel when a transfer is cancelled. Extends Error (with a
+// distinct name) so the upload loop can tell a user-initiated cancel apart from
+// a genuine RPC/IO failure via instanceof.
+export class CancelledError extends Error {
+    constructor(message = "Upload cancelled") {
+        super(message);
+        this.name = "CancelledError";
+    }
+}
+
+// A cancellation signal that upload code races against. cancel() flips the
+// signal exactly once and resolves the internal deferred; whenCancelled() is
+// the promise side of that deferred. The deferred RESOLVES (never rejects) so a
+// token that is never raced cannot leak an unhandled promise rejection —
+// raceWithCancel turns the resolution into a CancelledError.
+export type CancelToken = {
+    isCancelled: () => boolean;
+    whenCancelled: () => Promise<void>;
+    cancel: () => void;
+};
+
+export function createCancelToken(): CancelToken {
+    let cancelled = false;
+    let resolveCancelled: (() => void) | null = null;
+    const whenCancelledPromise = new Promise<void>((resolve) => {
+        resolveCancelled = resolve;
+    });
+    return {
+        isCancelled: () => cancelled,
+        whenCancelled: () => whenCancelledPromise,
+        cancel: () => {
+            if (cancelled) {
+                return;
+            }
+            cancelled = true;
+            resolveCancelled?.();
+        },
+    };
+}
+
+// Races a promise against a cancellation signal.
+//
+// - If the token is already cancelled, rejects with CancelledError immediately
+//   (before awaiting the wrapped promise).
+// - If the token flips while the wrapped promise is pending, rejects with
+//   CancelledError promptly — the cancel path resolves the token's deferred
+//   directly (no busy-polling/timers).
+// - Otherwise resolves/rejects exactly as the wrapped promise does.
+export async function raceWithCancel<T>(promise: Promise<T>, token: CancelToken): Promise<T> {
+    if (token.isCancelled()) {
+        throw new CancelledError();
+    }
+    const cancelSignal = token.whenCancelled().then((): never => {
+        throw new CancelledError();
+    });
+    // If the wrapped promise wins the race, cancelSignal stays pending; if the
+    // token is later cancelled with no active race, this no-op handler prevents
+    // an unhandled-rejection warning (Promise.race still observes the rejection
+    // via its own subscription).
+    cancelSignal.catch(() => {});
+    return Promise.race([promise, cancelSignal]);
+}
+
 // Splits a file into {offset, length} chunk descriptors. The offset/length are
 // used on the client to slice the file bytes; they are NOT sent to the server
 // (the first chunk is written with FileWriteCommand which truncates, and the

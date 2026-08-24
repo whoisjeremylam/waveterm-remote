@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { computeSpeedBps, formatSpeed, planUploadChunks, readChunkAsBase64 } from "./preview-model-upload";
+import {
+    CancelledError,
+    computeSpeedBps,
+    createCancelToken,
+    formatSpeed,
+    planUploadChunks,
+    raceWithCancel,
+    readChunkAsBase64,
+} from "./preview-model-upload";
 
 const CHUNK = 2 * 1024 * 1024; // 2MB
 
@@ -135,5 +143,74 @@ describe("formatSpeed", () => {
         expect(formatSpeed(1024)).toBe("1 kB/s");
         expect(formatSpeed(8.2 * 1024 * 1024)).toBe("8.2 MB/s");
         expect(formatSpeed(1.5 * 1024 * 1024 * 1024)).toBe("1.5 GB/s");
+    });
+});
+
+describe("createCancelToken", () => {
+    it("starts uncancelled and flips exactly once on cancel()", () => {
+        const token = createCancelToken();
+        expect(token.isCancelled()).toBe(false);
+        token.cancel();
+        expect(token.isCancelled()).toBe(true);
+        token.cancel(); // idempotent
+        expect(token.isCancelled()).toBe(true);
+    });
+
+    it("whenCancelled resolves once cancelled (and never rejects)", async () => {
+        const token = createCancelToken();
+        let resolved = false;
+        const waiting = token.whenCancelled().then(() => {
+            resolved = true;
+        });
+        // Not resolved yet: nothing scheduled the deferred.
+        await Promise.resolve();
+        expect(resolved).toBe(false);
+        token.cancel();
+        await waiting;
+        expect(resolved).toBe(true);
+    });
+});
+
+describe("raceWithCancel", () => {
+    it("throws CancelledError immediately when cancelled before start", async () => {
+        const token = createCancelToken();
+        token.cancel();
+        await expect(raceWithCancel(Promise.resolve(42), token)).rejects.toBeInstanceOf(CancelledError);
+    });
+
+    it("rejects promptly when cancelled mid-flight, even though the work never settles", async () => {
+        const token = createCancelToken();
+        const work = new Promise<number>(() => {
+            // never settles: simulates a stalled chunk RPC
+        });
+        const raced = raceWithCancel(work, token);
+        token.cancel();
+        await expect(raced).rejects.toBeInstanceOf(CancelledError);
+    });
+
+    it("resolves with the wrapped value when not cancelled", async () => {
+        const token = createCancelToken();
+        await expect(raceWithCancel(Promise.resolve(123), token)).resolves.toBe(123);
+    });
+
+    it("propagates the wrapped promise's rejection when not cancelled", async () => {
+        const token = createCancelToken();
+        await expect(raceWithCancel(Promise.reject(new Error("boom")), token)).rejects.toThrow("boom");
+    });
+
+    it("lets the wrapped promise win the race even if cancellation fires later", async () => {
+        const token = createCancelToken();
+        const result = await raceWithCancel(Promise.resolve("done"), token);
+        expect(result).toBe("done");
+        // Cancelling after completion must not affect an already-settled race.
+        token.cancel();
+        expect(token.isCancelled()).toBe(true);
+    });
+
+    it("throws on any subsequent race against an already-cancelled token", async () => {
+        const token = createCancelToken();
+        token.cancel();
+        await expect(raceWithCancel(Promise.resolve(1), token)).rejects.toBeInstanceOf(CancelledError);
+        await expect(raceWithCancel(Promise.resolve(2), token)).rejects.toBeInstanceOf(CancelledError);
     });
 });

@@ -754,6 +754,17 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const setErrorMsg = useSetAtom(model.errorMsgAtom);
     const [confirmDeleteMsg, setConfirmDeleteMsg] = useState<ErrorMsg | null>(null);
     const confirmDelete = useCallback((msg: ErrorMsg) => setConfirmDeleteMsg(msg), []);
+    const uploadCancel = useAtomValue(model.uploadCancel);
+    const uploadStatus = useAtomValue(model.uploadStatus);
+    const handleCancelUpload = useCallback(
+        (e: React.MouseEvent<HTMLButtonElement>) => {
+            // Keep the click inside the banner from reaching the container's
+            // background-click handler (which would clear the selection).
+            e.stopPropagation();
+            uploadCancel?.cancel();
+        },
+        [uploadCancel]
+    );
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
     const directoryDropdownOpen = useAtomValue(model.directoryDropdownOpen);
@@ -1245,6 +1256,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 target.closest("[data-rowindex]") ||
                 target.closest(".dir-table-head") ||
                 target.closest(".dir-search-banner") ||
+                target.closest(".dir-transfer-banner") ||
                 target.closest(".dir-drop-overlay")
             ) {
                 return;
@@ -1277,23 +1289,38 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 onDrop={handleNativeDrop}
             >
                 {isDragOver && <div className="dir-drop-overlay">{getDropBannerText(activeDragSource)}</div>}
-                {uploadProgress && (
+                {(uploadProgress || uploadStatus) && (
                     <div className="dir-transfer-banner">
-                        <div className="dir-transfer-banner-text">
-                            Uploading {uploadProgress.fileName} —{" "}
-                            {uploadProgress.total > 0
-                                ? Math.min(100, Math.floor((uploadProgress.sent / uploadProgress.total) * 100))
-                                : 100}
-                            % · {formatSpeed(uploadProgress.speedBps)}
-                        </div>
-                        <div className="dir-transfer-progress-bar">
-                            <div
-                                className="dir-transfer-progress-fill"
-                                style={{
-                                    width: `${uploadProgress.total > 0 ? Math.min(100, Math.floor((uploadProgress.sent / uploadProgress.total) * 100)) : 100}%`,
-                                }}
-                            />
-                        </div>
+                        {uploadStatus ? (
+                            <div className="dir-transfer-banner-text">{uploadStatus}</div>
+                        ) : (
+                            <>
+                                <div className="dir-transfer-banner-top">
+                                    <div className="dir-transfer-banner-text">
+                                        Uploading {uploadProgress.fileName} —{" "}
+                                        {uploadProgress.total > 0
+                                            ? Math.min(100, Math.floor((uploadProgress.sent / uploadProgress.total) * 100))
+                                            : 100}
+                                        % · {formatSpeed(uploadProgress.speedBps)}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        className="dir-transfer-cancel"
+                                        onClick={handleCancelUpload}
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                                <div className="dir-transfer-progress-bar">
+                                    <div
+                                        className="dir-transfer-progress-fill"
+                                        style={{
+                                            width: `${uploadProgress.total > 0 ? Math.min(100, Math.floor((uploadProgress.sent / uploadProgress.total) * 100)) : 100}%`,
+                                        }}
+                                    />
+                                </div>
+                            </>
+                        )}
                     </div>
                 )}
                 {downloadProgress && (

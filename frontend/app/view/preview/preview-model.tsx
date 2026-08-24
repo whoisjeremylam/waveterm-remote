@@ -21,8 +21,16 @@ import type * as MonacoTypes from "monaco-editor";
 import { createRef } from "react";
 import { PreviewView } from "./preview";
 import { makeDirectoryDefaultMenuItems } from "./preview-directory-utils";
-import { computeSpeedBps, planUploadChunks, readChunkAsBase64, UploadChunkSize } from "./preview-model-upload";
-import type { DownloadProgress, UploadProgress } from "./preview-model-upload";
+import {
+    CancelledError,
+    computeSpeedBps,
+    createCancelToken,
+    planUploadChunks,
+    raceWithCancel,
+    readChunkAsBase64,
+    UploadChunkSize,
+} from "./preview-model-upload";
+import type { CancelToken, DownloadProgress, UploadProgress } from "./preview-model-upload";
 import type { PreviewEnv } from "./previewenv";
 
 // TODO drive this using config
@@ -179,6 +187,8 @@ export class PreviewModel implements ViewModel {
     directoryColumnVisibility: PrimitiveAtom<VisibilityState>;
     uploadProgress: PrimitiveAtom<UploadProgress | null>;
     downloadProgress: PrimitiveAtom<DownloadProgress | null>;
+    uploadCancel: PrimitiveAtom<CancelToken | null>;
+    uploadStatus: PrimitiveAtom<string | null>;
     directoryKeyDownHandler: (waveEvent: WaveKeyboardEvent) => boolean;
     codeEditKeyDownHandler: (waveEvent: WaveKeyboardEvent) => boolean;
     env: PreviewEnv;
@@ -205,6 +215,8 @@ export class PreviewModel implements ViewModel {
         this.directorySelectablePaths = atom<string[]>([]);
         this.uploadProgress = atom(null) as PrimitiveAtom<UploadProgress | null>;
         this.downloadProgress = atom(null) as PrimitiveAtom<DownloadProgress | null>;
+        this.uploadCancel = atom(null) as PrimitiveAtom<CancelToken | null>;
+        this.uploadStatus = atom(null) as PrimitiveAtom<string | null>;
         this.directorySearchActive = atom(false);
         this.directoryDropdownOpen = atom(false);
         this.previewTextRef = createRef();
@@ -917,57 +929,110 @@ export class PreviewModel implements ViewModel {
         const cleanTargetDir = targetDir.replace(/\/+$/, "");
         const remoteDir = await this.formatRemoteUri(cleanTargetDir, globalStore.get);
         let successCount = 0;
-        for (const file of files) {
-            if (file.size > MaxUploadSize) {
-                const errorStatus: ErrorMsg = {
-                    status: "Upload Failed",
-                    text: `File "${file.name}" exceeds 50MB size limit`,
-                };
-                globalStore.set(this.errorMsgAtom, errorStatus);
-                continue;
-            }
-            try {
-                const filePath = `${remoteDir}/${file.name}`;
-                const chunks = planUploadChunks(file.size, UploadChunkSize);
-                const startedAt = Date.now();
-                for (let i = 0; i < chunks.length; i++) {
-                    const chunk = chunks[i];
-                    // Read this chunk lazily via Blob.slice(...).arrayBuffer() so
-                    // only ~one chunk (~3MB) of file bytes is held in memory at a
-                    // time, instead of the whole file.
-                    const data64 = await readChunkAsBase64(file, chunk.offset, chunk.length);
-                    const sent = chunk.offset + chunk.length;
-                    globalStore.set(this.uploadProgress, {
-                        fileName: file.name,
-                        sent,
-                        total: file.size,
-                        speedBps: computeSpeedBps(sent, startedAt, Date.now()),
-                    });
-                    if (i === 0) {
-                        // First chunk creates/truncates the file.
-                        await this.env.rpc.FileWriteCommand(TabRpcClient, { info: { path: filePath }, data64 });
-                    } else {
-                        // Subsequent chunks append sequentially; the server's
-                        // O_APPEND maintains the correct write offset (we do not
-                        // send data.At because FileAppendCommand forces Append=true
-                        // and RemoteWriteFileCommand rejects append+offset).
-                        await this.env.rpc.FileAppendCommand(TabRpcClient, { info: { path: filePath }, data64 });
-                    }
+        // One fresh cancellation token per uploadFiles run. Its trigger is
+        // published to the uploadCancel atom so the banner's Cancel button can
+        // fire it; each chunk RPC is raced against it so cancel takes effect in
+        // milliseconds even while a chunk is in flight.
+        const cancelToken = createCancelToken();
+        globalStore.set(this.uploadCancel, cancelToken);
+        // Clear any lingering transient status from a previous (cancelled) run
+        // so a new upload shows its progress banner, not the old status.
+        globalStore.set(this.uploadStatus, null);
+        try {
+            for (const file of files) {
+                if (file.size > MaxUploadSize) {
+                    const errorStatus: ErrorMsg = {
+                        status: "Upload Failed",
+                        text: `File "${file.name}" exceeds 50MB size limit`,
+                    };
+                    globalStore.set(this.errorMsgAtom, errorStatus);
+                    continue;
                 }
-                successCount++;
-            } catch (e) {
-                const errorStatus: ErrorMsg = {
-                    status: "Upload Failed",
-                    text: `Failed to upload "${file.name}": ${e}`,
-                };
-                globalStore.set(this.errorMsgAtom, errorStatus);
-            } finally {
-                globalStore.set(this.uploadProgress, null);
+                const filePath = `${remoteDir}/${file.name}`;
+                try {
+                    const chunks = planUploadChunks(file.size, UploadChunkSize);
+                    const startedAt = Date.now();
+                    for (let i = 0; i < chunks.length; i++) {
+                        const chunk = chunks[i];
+                        // Read this chunk lazily via Blob.slice(...).arrayBuffer() so
+                        // only ~one chunk (~3MB) of file bytes is held in memory at a
+                        // time, instead of the whole file. Both the slice/encode step
+                        // and the RPC are raced against cancellation.
+                        const data64 = await raceWithCancel(
+                            readChunkAsBase64(file, chunk.offset, chunk.length),
+                            cancelToken
+                        );
+                        const sent = chunk.offset + chunk.length;
+                        globalStore.set(this.uploadProgress, {
+                            fileName: file.name,
+                            sent,
+                            total: file.size,
+                            speedBps: computeSpeedBps(sent, startedAt, Date.now()),
+                        });
+                        if (i === 0) {
+                            // First chunk creates/truncates the file.
+                            await raceWithCancel(
+                                this.env.rpc.FileWriteCommand(TabRpcClient, { info: { path: filePath }, data64 }),
+                                cancelToken
+                            );
+                        } else {
+                            // Subsequent chunks append sequentially; the server's
+                            // O_APPEND maintains the correct write offset (we do not
+                            // send data.At because FileAppendCommand forces Append=true
+                            // and RemoteWriteFileCommand rejects append+offset).
+                            await raceWithCancel(
+                                this.env.rpc.FileAppendCommand(TabRpcClient, { info: { path: filePath }, data64 }),
+                                cancelToken
+                            );
+                        }
+                    }
+                    successCount++;
+                } catch (e) {
+                    if (e instanceof CancelledError) {
+                        // User-initiated cancel: stop the whole run, best-effort
+                        // delete the partial destination, and show a transient
+                        // status. Not an error — no error banner, no success count.
+                        this.setTransientUploadStatus("Upload cancelled");
+                        try {
+                            await this.env.rpc.FileDeleteCommand(TabRpcClient, {
+                                path: filePath,
+                                recursive: false,
+                            });
+                        } catch (_deleteErr) {
+                            // Best-effort cleanup: the in-flight append may still
+                            // land server-side after we return, but a failed delete
+                            // leaves the partial file for the user to remove.
+                        }
+                        break;
+                    }
+                    const errorStatus: ErrorMsg = {
+                        status: "Upload Failed",
+                        text: `Failed to upload "${file.name}": ${e}`,
+                    };
+                    globalStore.set(this.errorMsgAtom, errorStatus);
+                } finally {
+                    globalStore.set(this.uploadProgress, null);
+                }
             }
+        } finally {
+            globalStore.set(this.uploadCancel, null);
         }
         if (successCount > 0) {
             this.refresh();
         }
+    }
+
+    // Shows a transient banner status (e.g. "Upload cancelled") that clears
+    // itself after a short delay, mirroring the download-progress auto-clear.
+    setTransientUploadStatus(status: string) {
+        globalStore.set(this.uploadStatus, status);
+        setTimeout(() => {
+            // Only clear if we are still showing this same status — a new upload
+            // may have started and set its own status in the meantime.
+            if (globalStore.get(this.uploadStatus) === status) {
+                globalStore.set(this.uploadStatus, null);
+            }
+        }, 3000);
     }
 
     downloadFile(remoteUri: string) {

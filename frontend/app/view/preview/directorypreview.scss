@@ -53,6 +53,37 @@
             overflow: hidden;
             text-overflow: ellipsis;
         }
+        .dir-transfer-banner-top {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+
+            .dir-transfer-banner-text {
+                flex: 1 1 auto;
+                min-width: 0;
+            }
+        }
+        .dir-transfer-cancel {
+            // The banner itself is pointer-events:none (clicks pass through to the
+            // table); the button opts back in so it is clickable.
+            pointer-events: auto;
+            flex: 0 0 auto;
+            padding: 2px 10px;
+            font-family: inherit;
+            font-size: 11px;
+            font-weight: 500;
+            line-height: 16px;
+            white-space: nowrap;
+            color: var(--main-text-color);
+            background: var(--button-red-bg);
+            border: 1px solid var(--button-red-border-color);
+            border-radius: 4px;
+            cursor: pointer;
+
+            &:hover {
+                background: var(--button-red-hover-bg);
+            }
+        }
         .dir-transfer-progress-bar {
             height: 4px;
             border-radius: 2px;
