@@ -25,9 +25,11 @@ import {
     CancelledError,
     computeSpeedBps,
     createCancelToken,
+    formatBytesSize,
     planUploadChunks,
     raceWithCancel,
     readChunkAsBase64,
+    resolveMaxUploadSize,
     UploadChunkSize,
 } from "./preview-model-upload";
 import type { CancelToken, DownloadProgress, UploadProgress } from "./preview-model-upload";
@@ -925,7 +927,10 @@ export class PreviewModel implements ViewModel {
     }
 
     async uploadFiles(files: File[], targetDir: string) {
-        const MaxUploadSize = 50 * 1024 * 1024; // 50MB (client cap; chunking makes raising this safe later)
+        // Effective per-file upload cap: 5GB by default, overridable via the
+        // `files:maxuploadsize` setting (bytes). Missing/garbage/out-of-range
+        // values fall back to the default (see resolveMaxUploadSize).
+        const maxUploadSize = resolveMaxUploadSize(globalStore.get(this.env.getSettingsKeyAtom("files:maxuploadsize")));
         const cleanTargetDir = targetDir.replace(/\/+$/, "");
         const remoteDir = await this.formatRemoteUri(cleanTargetDir, globalStore.get);
         let successCount = 0;
@@ -940,10 +945,10 @@ export class PreviewModel implements ViewModel {
         globalStore.set(this.uploadStatus, null);
         try {
             for (const file of files) {
-                if (file.size > MaxUploadSize) {
+                if (file.size > maxUploadSize) {
                     const errorStatus: ErrorMsg = {
                         status: "Upload Failed",
-                        text: `File "${file.name}" exceeds 50MB size limit`,
+                        text: `File "${file.name}" exceeds ${formatBytesSize(maxUploadSize)} size limit`,
                     };
                     globalStore.set(this.errorMsgAtom, errorStatus);
                     continue;

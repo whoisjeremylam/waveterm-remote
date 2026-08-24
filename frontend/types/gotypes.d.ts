@@ -1465,6 +1465,7 @@ declare global {
         "markdown:fixedfontsize"?: number;
         "preview:showhiddenfiles"?: boolean;
         "preview:defaultsort"?: string;
+        "files:maxuploadsize"?: number;
         "tab:preset"?: string;
         "tab:confirmclose"?: boolean;
         "tab:background"?: string;

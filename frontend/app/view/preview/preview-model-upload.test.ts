@@ -6,10 +6,13 @@ import {
     CancelledError,
     computeSpeedBps,
     createCancelToken,
+    DefaultMaxUploadSize,
+    formatBytesSize,
     formatSpeed,
     planUploadChunks,
     raceWithCancel,
     readChunkAsBase64,
+    resolveMaxUploadSize,
 } from "./preview-model-upload";
 
 const CHUNK = 2 * 1024 * 1024; // 2MB
@@ -143,6 +146,67 @@ describe("formatSpeed", () => {
         expect(formatSpeed(1024)).toBe("1 kB/s");
         expect(formatSpeed(8.2 * 1024 * 1024)).toBe("8.2 MB/s");
         expect(formatSpeed(1.5 * 1024 * 1024 * 1024)).toBe("1.5 GB/s");
+    });
+});
+
+describe("resolveMaxUploadSize", () => {
+    const MB = 1024 * 1024;
+    const GB = 1024 ** 3;
+
+    it("passes valid values through unchanged", () => {
+        expect(resolveMaxUploadSize(DefaultMaxUploadSize)).toBe(DefaultMaxUploadSize);
+        expect(resolveMaxUploadSize(500 * MB)).toBe(500 * MB);
+        expect(resolveMaxUploadSize(7.5 * GB)).toBe(7.5 * GB);
+    });
+
+    it("treats the 3MB floor and 100GB ceiling as inclusive boundaries", () => {
+        expect(resolveMaxUploadSize(3 * MB)).toBe(3 * MB);
+        expect(resolveMaxUploadSize(100 * GB)).toBe(100 * GB);
+    });
+
+    it("falls back to the default for missing/garbage values", () => {
+        expect(resolveMaxUploadSize(undefined)).toBe(DefaultMaxUploadSize);
+        expect(resolveMaxUploadSize(null)).toBe(DefaultMaxUploadSize);
+        expect(resolveMaxUploadSize("5368709120")).toBe(DefaultMaxUploadSize);
+        expect(resolveMaxUploadSize({})).toBe(DefaultMaxUploadSize);
+        expect(resolveMaxUploadSize(NaN)).toBe(DefaultMaxUploadSize);
+        expect(resolveMaxUploadSize(Infinity)).toBe(DefaultMaxUploadSize);
+    });
+
+    it("falls back to the default for zero, negative, and non-integer values", () => {
+        expect(resolveMaxUploadSize(0)).toBe(DefaultMaxUploadSize);
+        expect(resolveMaxUploadSize(-1)).toBe(DefaultMaxUploadSize);
+        expect(resolveMaxUploadSize(3.5)).toBe(DefaultMaxUploadSize);
+    });
+
+    it("falls back to the default for out-of-range values", () => {
+        expect(resolveMaxUploadSize(3 * MB - 1)).toBe(DefaultMaxUploadSize);
+        expect(resolveMaxUploadSize(100 * GB + 1)).toBe(DefaultMaxUploadSize);
+    });
+});
+
+describe("formatBytesSize", () => {
+    it("renders the default 5GB cap as 5GB", () => {
+        expect(formatBytesSize(5 * 1024 ** 3)).toBe("5GB");
+    });
+
+    it("renders whole-number sizes without a decimal", () => {
+        expect(formatBytesSize(500 * 1024 * 1024)).toBe("500MB");
+        expect(formatBytesSize(3 * 1024 * 1024)).toBe("3MB");
+        expect(formatBytesSize(100 * 1024 ** 3)).toBe("100GB");
+    });
+
+    it("renders fractional sizes with three significant figures", () => {
+        expect(formatBytesSize(1.5 * 1024 ** 3)).toBe("1.5GB");
+    });
+
+    it("renders zero as 0B", () => {
+        expect(formatBytesSize(0)).toBe("0B");
+    });
+
+    it("renders invalid and negative input as a dash", () => {
+        expect(formatBytesSize(NaN)).toBe("-");
+        expect(formatBytesSize(-1)).toBe("-");
     });
 });
 

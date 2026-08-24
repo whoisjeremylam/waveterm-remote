@@ -13,6 +13,29 @@ import base64 from "base64-js";
 // send cap.
 export const UploadChunkSize = 3 * 1024 * 1024;
 
+// Per-file upload size cap (Phase 3). The default is 5GB; the
+// `files:maxuploadsize` setting (bytes) can override it. See
+// resolveMaxUploadSize for the validation rules.
+export const DefaultMaxUploadSize = 5 * 1024 ** 3; // 5GB
+export const MinMaxUploadSize = 3 * 1024 * 1024; // 3MB floor (one chunk)
+export const CeilMaxUploadSize = 100 * 1024 ** 3; // 100GB ceiling
+
+// Resolves a configured max-upload-size value (bytes) to an effective cap.
+// A positive integer within [MinMaxUploadSize, CeilMaxUploadSize] passes
+// through unchanged; everything else — undefined, null, strings (even numeric
+// ones), non-integers, NaN/Infinity, zero, negative, below the floor, or above
+// the ceiling — falls back to DefaultMaxUploadSize so a bad config value can
+// never silently break or shrink uploads.
+export function resolveMaxUploadSize(configured: unknown): number {
+    if (typeof configured !== "number" || !Number.isInteger(configured)) {
+        return DefaultMaxUploadSize;
+    }
+    if (configured < MinMaxUploadSize || configured > CeilMaxUploadSize) {
+        return DefaultMaxUploadSize;
+    }
+    return configured;
+}
+
 export type UploadChunk = {
     offset: number;
     length: number;
@@ -161,4 +184,23 @@ export function formatSpeed(bytesPerSec: number): string {
     const idx = Math.min(Math.floor(Math.log(bytesPerSec) / Math.log(divisor)), speedUnits.length - 1);
     const value = bytesPerSec / Math.pow(divisor, idx);
     return `${parseFloat(value.toPrecision(3))} ${speedUnits[idx]}`;
+}
+
+const byteSizeUnits = ["B", "KB", "MB", "GB", "TB"];
+
+// Formats a byte count as a human-readable size with full binary (1024-based)
+// units — e.g. "5GB", "500MB", "3MB", "100GB". Unlike getBestUnit (which emits
+// compact lowercase suffixes like "5g" for table cells), this produces the
+// full "MB"/"GB" form used in the "exceeds NGB size limit" upload error.
+export function formatBytesSize(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes < 0) {
+        return "-";
+    }
+    if (bytes === 0) {
+        return "0B";
+    }
+    const divisor = 1024;
+    const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(divisor)), byteSizeUnits.length - 1);
+    const value = bytes / Math.pow(divisor, idx);
+    return `${parseFloat(value.toPrecision(3))}${byteSizeUnits[idx]}`;
 }
