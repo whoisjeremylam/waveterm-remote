@@ -381,6 +381,8 @@ function TableBody({
         }
     }, [focusIndex]);
 
+    const allRows = table.getRowModel().flatRows;
+
     const handleFileContextMenu = useCallback(
         async (e: any, finfo: FileInfo) => {
             e.preventDefault();
@@ -499,10 +501,9 @@ function TableBody({
             );
             ContextMenuModel.getInstance().showContextMenu(menu, e);
         },
-        [setRefreshVersion, conn]
+        [setRefreshVersion, conn, allRows, dirPath, connName, model, table, setErrorMsg]
     );
 
-    const allRows = table.getRowModel().flatRows;
     const dotdotRow = allRows.find((row) => row.getValue("name") === "..");
     const otherRows = allRows.filter((row) => row.getValue("name") !== "..");
 
@@ -956,7 +957,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         return () => {
             model.directoryKeyDownHandler = null;
         };
-    }, [filteredData, selectedPath, searchText, focusIndex, pasteClipboard, conn, dirPath]);
+    }, [filteredData, selectedPath, searchText, focusIndex, pasteClipboard, conn, dirPath, model, setErrorMsg, blockData, env]);
 
     useEffect(() => {
         if (filteredData.length != 0 && focusIndex > filteredData.length - 1) {
