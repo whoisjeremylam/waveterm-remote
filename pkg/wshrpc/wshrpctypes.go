@@ -188,6 +188,7 @@ type WshRpcInterface interface {
 	// streams
 	StreamDataCommand(ctx context.Context, data CommandStreamData) error
 	StreamDataAckCommand(ctx context.Context, data CommandStreamAckData) error
+	StreamStatusReportCommand(ctx context.Context, data CommandStreamStatusData) error
 
 	// jobs
 	AuthenticateToJobManagerCommand(ctx context.Context, data CommandAuthenticateToJobData) error
