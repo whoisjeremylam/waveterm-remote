@@ -2223,6 +2223,60 @@ func waitForStreamLoopExit(jobId string, streamId string, timeout time.Duration)
 	log.Printf("[job:%s] warning: output loop [stream:%s] did not exit within %v; proceeding without seq adjustment", jobId, streamId, timeout)
 }
 
+// classifyGapLoss tags a detected seq gap with the most likely loss class for
+// diagnostics: a previous reader in-process implies the supersession race
+// class; no previous reader implies the bytes died with an earlier process
+// (restart/update/crash). Spec stream-gap-on-reconnect.md.
+func classifyGapLoss(prevReaderOk bool) string {
+	if prevReaderOk {
+		return "supersession"
+	}
+	return "process-restart"
+}
+
+// drainJobReaderBuffer persists any acked-but-unwritten bytes from reader via
+// appendFn. Safe on closed readers — bytes ACKed before Close live only in the
+// buffer and are otherwise lost (acked + consumed remotely, never written).
+// Returns the number of bytes persisted; 0 also covers append errors (the loss
+// then surfaces as a gap on the next connect, same as pre-fix behavior).
+func drainJobReaderBuffer(jobId string, reader *streamclient.Reader, appendFn func(data []byte) error) int {
+	drained := reader.DrainBuffered()
+	if len(drained) == 0 {
+		return 0
+	}
+	if err := appendFn(drained); err != nil {
+		log.Printf("[job:%s] error appending drained data to WaveFS (%d bytes lost): %v", jobId, len(drained), err)
+		return 0
+	}
+	log.Printf("[job:%s] drained %d acked-but-unwritten buffered byte(s) to WaveFS", jobId, len(drained))
+	return len(drained)
+}
+
+// DrainAllJobReaders persists buffered tail bytes for every live job reader.
+// Called from doShutdown before the filestore flush so app updates/quits do
+// not lose acked-but-unwritten bytes (Fix B2). Covers graceful shutdown only;
+// crash/kill -9 needs the ACK-after-append redesign (follow-up spec B1).
+func DrainAllJobReaders(ctx context.Context) {
+	total := drainAllJobReadersWith(func(jobId string, data []byte) error {
+		return handleAppendJobFile(ctx, jobId, JobOutputFileName, data)
+	})
+	if total > 0 {
+		log.Printf("[streamgap] shutdown drain persisted %d byte(s) total", total)
+	}
+}
+
+// drainAllJobReadersWith iterates all live job readers, returning total bytes
+// recovered. appendFn injectable for tests.
+func drainAllJobReadersWith(appendFn func(jobId string, data []byte) error) int {
+	total := 0
+	jobReaders.ForEach(func(jobId string, reader *streamclient.Reader) {
+		total += drainJobReaderBuffer(jobId, reader, func(data []byte) error {
+			return appendFn(jobId, data)
+		})
+	})
+	return total
+}
+
 // RestartBlockStream restarts the output stream for a block's job, re-establishing
 // the seq/ACK handshake with the remote StreamManager without reconnecting the SSH
 // connection and without killing the shell. This is the manual recovery path
@@ -2334,6 +2388,18 @@ func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rt
 	// (present both in the file and in totalGap), shifting every future stream seq
 	// and potentially causing "client seq beyond stream end" failures on reconnect.
 	waitForStreamLoopExit(jobId, oldStreamId, 1*time.Second)
+
+	// Post-close drain (Fix A, spec stream-gap-on-reconnect.md): bytes that
+	// arrived (and were ACKed) between the pre-drain and Close(), losing the
+	// Read-vs-Close race, are still in prevReader's buffer. DrainBuffered works
+	// after Close. Must run before the re-stat so recovered bytes count toward
+	// currentSeq.
+	if prevReaderOk {
+		drainJobReaderBuffer(jobId, prevReader, func(data []byte) error {
+			return handleAppendJobFile(ctx, jobId, JobOutputFileName, data)
+		})
+	}
+
 	waveFile2, statErr2 := filestore.WFS.Stat(ctx, jobId, JobOutputFileName)
 	if statErr2 == nil {
 		recomputedSeq := waveFile2.Size + totalGap
@@ -2416,7 +2482,8 @@ func restartStreaming(ctx context.Context, jobId string, knownConnected bool, rt
 	if rtnData.Seq > currentSeq {
 		gap := rtnData.Seq - currentSeq
 		totalGap += gap
-		log.Printf("[job:%s] detected gap: our seq=%d, server seq=%d, gap=%d, new totalGap=%d", jobId, currentSeq, rtnData.Seq, gap, totalGap)
+		lossClass := classifyGapLoss(prevReaderOk)
+		log.Printf("[job:%s] detected gap (%s): our seq=%d, server seq=%d, gap=%d, new totalGap=%d", jobId, lossClass, currentSeq, rtnData.Seq, gap, totalGap)
 
 		metaErr := filestore.WFS.WriteMeta(ctx, jobId, JobOutputFileName, wshrpc.FileMeta{
 			MetaKey_TotalGap: totalGap,
