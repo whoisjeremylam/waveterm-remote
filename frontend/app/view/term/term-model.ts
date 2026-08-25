@@ -142,7 +142,7 @@ export class TermViewModel implements ViewModel {
                 rtn.push({
                     elemtype: "iconbutton",
                     icon: "bolt",
-                    title: "Switch to Wave App",
+                    title: "Switch to RemoteTerm App",
                     click: () => {
                         this.setTermMode("vdom");
                     },

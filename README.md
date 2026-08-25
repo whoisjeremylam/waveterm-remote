@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://www.waveterm.dev">
+  <a href="https://remoteterm.io">
 	<picture>
 		<source media="(prefers-color-scheme: dark)" srcset="./assets/wave-dark.png">
 		<source media="(prefers-color-scheme: light)" srcset="./assets/wave-light.png">
@@ -12,12 +12,6 @@
 > **Fork:** This is a fork of [Wave Terminal](https://github.com/wavetermdev/waveterm) optimized for remote development workflows.
 
 # RemoteTerm
-
-<div align="center">
-
-[English](README.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
-
-</div>
 
 RemoteTerm is an open-source terminal for macOS, Linux, and Windows. No accounts required.
 
@@ -37,11 +31,11 @@ This fork is tuned for developers who work on remote machines, with the local ap
 
 **Private by default.** Zero telemetry, analytics, and cloud data collection. Always.
 
-![WaveTerm Screenshot](./assets/wave-screenshot.webp)
+![RemoteTerm Screenshot](./assets/wave-screenshot.webp)
 
 ## Key Features
 
-- Durable SSH Sessions - Remote terminal sessions survive connection interruptions, network changes, and Wave restarts with automatic reconnection
+- Durable SSH Sessions - Remote terminal sessions survive connection interruptions, network changes, and app restarts with automatic reconnection
 - Flexible drag & drop interface to organize terminal blocks, editors, web browsers, and previews
 - Built-in editor for editing remote files with syntax highlighting and modern editor features
 - Rich file preview system for remote files (markdown, images, video, PDFs, CSVs, directories)
@@ -54,13 +48,25 @@ This fork is tuned for developers who work on remote machines, with the local ap
 - Connected file management with `wsh file` - seamlessly copy and sync files between local and remote SSH hosts
 - Inline image rendering - display images directly in the terminal using Sixel, iTerm2, or Kitty protocols
 
+## Download
+
+Pre-built binaries are produced by GitHub Actions CI on the [fork's repo](https://github.com/whoisjeremylam/remoteterm) — grab the latest build from [Releases](https://github.com/whoisjeremylam/remoteterm/releases) or from the artifacts of a recent successful workflow run.
+
+## Quickstart
+
+1. Add a host to your `~/.ssh/config` (RemoteTerm reads it automatically).
+2. Launch RemoteTerm.
+3. Click the connection dropdown in the terminal header and pick your host.
+
+Port forwarding (`LocalForward` / `RemoteForward`) from your SSH config is applied automatically — no extra setup.
+
 ## Installation
 
-Wave Terminal works on macOS, Linux, and Windows.
+RemoteTerm works on macOS, Linux, and Windows.
 
 ### Minimum requirements
 
-Wave Terminal runs on the following platforms:
+RemoteTerm runs on the following platforms:
 
 - macOS 11 or later (arm64, x64)
 - Windows 10 1809 or later (x64)
@@ -74,11 +80,11 @@ The WSH helper runs on the following platforms:
 
 ## Building from Source
 
-See [Building Wave Terminal](BUILD.md).
+See [Building from Source](BUILD.md).
 
 ## Contributing
 
-Wave uses GitHub Issues for issue tracking.
+Issues and feature requests belong in [this fork's issue tracker](https://github.com/whoisjeremylam/remoteterm/issues) — please don't file fork-specific bugs against upstream Wave Terminal.
 
 Find more information in our [Contributions Guide](CONTRIBUTING.md), which includes:
 
@@ -87,4 +93,6 @@ Find more information in our [Contributions Guide](CONTRIBUTING.md), which inclu
 
 ## License
 
-Wave Terminal is licensed under the Apache-2.0 License. For more information on our dependencies, see [here](./ACKNOWLEDGEMENTS.md).
+RemoteTerm is licensed under the Apache-2.0 License. For more information on our dependencies, see [here](./ACKNOWLEDGEMENTS.md).
+
+RemoteTerm is forked from [Wave Terminal](https://github.com/wavetermdev/waveterm) — all credit for the underlying platform goes to the upstream project.

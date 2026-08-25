@@ -631,3 +631,20 @@ Gates are soft (delay/retry, user Connect can bypass). They do not prove the SSH
 **Deferred:** B3 (non-blocking `inputCh` send), B4 (per-link sender / don't hold `router.lock` around `SendRpcMessage`), C2 (concatenating BlockFile flush).
 
 **Files:** `pkg/streamclient/streambroker.go`, `pkg/wshutil/wshstreamadapter.go`, `pkg/wshutil/wshrouter.go`, tests in `pkg/streamclient/ack_retry_test.go` and `pkg/wshutil/wshrouter_recvloop_test.go`.
+
+## 2026-08-24: RemoteTerm external rename — external surfaces only, upstream identifiers kept
+
+**Context:** The fork's public identity is **RemoteTerm**. A partial rename had already landed (`package.json` name/productName/appId, `app.setName()`, window titles, About modal, app menu, TERM_PROGRAM). The review spec (`.pi/specs/remoteterm-rename-review.md`) tiered the remaining work: Tier A (user-facing) renames, Tier B (internal/upstream identifiers) kept as-is to preserve clean upstream merges.
+
+**Decision:**
+
+1. **External-only rename.** Rename UI strings, window titles, menus, dialogs, onboarding, packaging metadata, and repo docs. Do NOT rename Go import paths, internal TS identifiers, `WAVETERM_*` env vars, or the on-disk `~/.waveterm` data dir — merge friction and user-data migration risk outweigh branding purity.
+2. **GitHub repo renamed** to `github.com/whoisjeremylam/remoteterm`; all docs/links updated. (GitHub redirects the old `waveterm-remote` URL.)
+3. **Domain is `remoteterm.io`** (`remoteterm.dev` was taken). `package.json` `homepage` and the About modal "Website" button point at it; the domain is not yet registered — accepted as a temporary dead link. `appId` changed `dev.remoteterm.app` → `io.remoteterm.app` (correct reverse-DNS while install base is small; changes macOS bundle ID / Windows AppUserModelID / Linux desktop file identity).
+4. **Upgrade modals suppressed.** `onboarding-upgrade-*` (Wave AI feature history) no longer opens on version bump, and the widgets-bar "Release Notes" entry is removed. Files left on disk unreferenced to avoid upstream delete-conflicts.
+5. **Onboarding:** GitHub star links → fork repo; upstream Discord section removed.
+6. **Stale upstream docs deleted:** `README.ko.md`, `README.zh-TW.md`, `ROADMAP.md`. CONTRIBUTING/SECURITY/BUILD/CODE_OF_CONDUCT left as upstream.
+
+**Deferred (with rationale):** `docs/` Docusaurus site (no fork docs host — in-app links stay on `docs.waveterm.dev`, accurate for the shared codebase); `build/deb-postinstall.tpl` `/opt/Wave` paths and `Taskfile.yml` `APP_NAME` (packaging identity / migration risk); `wsh` CLI help and Go dialog strings (code, not chrome); logo artwork (wave motif acceptable; `aria-label` already RemoteTerm); data-dir/env-var rename (needs tested migration, own spec).
+
+**Files:** `package.json`, `index.html`, `electron-builder.config.cjs`, `frontend/app/{onboarding/onboarding.tsx, modals/{about,modalsrenderer,modalregistry}.tsx, workspace/widgets.tsx, element/quicktips.tsx}`, `README.md`, `AGENTS.md`, `.pi/`, `.github/ISSUE_TEMPLATE/bug-report.yml`.

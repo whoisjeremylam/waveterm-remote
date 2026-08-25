@@ -111,8 +111,8 @@ Kitchen-sink branch: reconnection UX P0 + password cold-start + new-tab dropdown
   - [x] Bug #2 (P0): connStates reconciliation race — replaced `processed bool` with generation counters (`actualGen` / `procGen`); `reconcileConn` now sends follow-up signal if `actualGen != procGen` at finish
   - [x] Bug #3 (P0): singleflight caches transient reconnect failures — split `reconnectGroup` into `reconnectConnGroup` and `reconnectRouteGroup`; route-level `attemptAutoReconnect` now calls `ReconnectJobRoute` instead of sharing the connection-level cache
   - [x] Decision 2026-05-23: Server reboot / `wsh` death → manual reconnect (do NOT auto-restart fresh shell). Auto-restart would change durable-session semantics from "resume existing shell" to "keep shell open at all costs," creating context-loss confusion and `wsh` re-install loops.
-  - GitHub issue (problem): https://github.com/whoisjeremylam/waveterm-remote/issues/7
-  - GitHub issue (implementation): https://github.com/whoisjeremylam/waveterm-remote/issues/8
+  - GitHub issue (problem): https://github.com/whoisjeremylam/remoteterm/issues/7
+  - GitHub issue (implementation): https://github.com/whoisjeremylam/remoteterm/issues/8
   - Branch: `fix/auto-reconnect-detection-gaps`
   - [x] Phase 1 (Gap C): Auto-disconnect on stall — `ConnMonitor` detects stall but doesn't set `Status=Disconnected`
     - Commit `b4c4dbea`: Add configurable `ConnStallDisconnectThreshold` to `ConnKeywords`

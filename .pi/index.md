@@ -1,11 +1,11 @@
-# waveterm-remote Fork
+# RemoteTerm Fork
 
 A fork of [Wave Terminal](https://github.com/wavetermdev/waveterm) optimized for **remote development workflows**.
 
 ## Upstream
 
 - Original: `https://github.com/wavetermdev/waveterm`
-- This fork: `https://github.com/whoisjeremylam/waveterm-remote`
+- This fork: `https://github.com/whoisjeremylam/remoteterm`
 - CWD origin points to this fork
 
 ## Purpose

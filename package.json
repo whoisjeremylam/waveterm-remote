@@ -8,9 +8,9 @@
     "description": "Open-Source Remote Development Terminal — SSH-first, local client",
     "license": "Apache-2.0",
     "version": "0.17.0",
-    "homepage": "https://remoteterm.dev",
+    "homepage": "https://remoteterm.io",
     "build": {
-        "appId": "dev.remoteterm.app"
+        "appId": "io.remoteterm.app"
     },
     "private": true,
     "main": "./dist/main/index.js",

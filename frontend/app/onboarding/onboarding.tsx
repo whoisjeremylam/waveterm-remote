@@ -65,7 +65,7 @@ const InitPage = ({
                         <div>
                             <a
                                 target="_blank"
-                                href="https://github.com/wavetermdev/waveterm?ref=install"
+                                href="https://github.com/whoisjeremylam/remoteterm"
                                 rel="noopener"
                                 className="text-accent"
                                 onClick={handleStarClick}
@@ -80,40 +80,12 @@ const InitPage = ({
                                 for individual users. Please show your support by giving us a star on{" "}
                                 <a
                                     target="_blank"
-                                    href="https://github.com/wavetermdev/waveterm?ref=install"
+                                    href="https://github.com/whoisjeremylam/remoteterm"
                                     rel="noopener"
                                     className="text-accent"
                                     onClick={handleStarClick}
                                 >
-                                    Github&nbsp;(wavetermdev/waveterm)
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                    <div className="flex w-full items-center gap-[18px]">
-                        <div>
-                            <a
-                                target="_blank"
-                                href="https://discord.gg/XfvZ334gwU"
-                                rel="noopener"
-                                className="text-accent"
-                            >
-                                <i className="text-[25px] text-white/50 fa-solid fa-people-group"></i>
-                            </a>
-                        </div>
-                        <div className="flex flex-col items-start gap-1 flex-1">
-                            <div className="text-foreground text-base leading-[18px]">Join our Community</div>
-                            <div className="text-secondary leading-5">
-                                Get help, submit feature requests, report bugs, or just chat with fellow terminal
-                                enthusiasts.
-                                <br />
-                                <a
-                                    target="_blank"
-                                    href="https://discord.gg/XfvZ334gwU"
-                                    rel="noopener"
-                                    className="text-accent"
-                                >
-                                    Join the Wave&nbsp;Discord&nbsp;Channel
+                                    GitHub&nbsp;(whoisjeremylam/remoteterm)
                                 </a>
                             </div>
                         </div>
