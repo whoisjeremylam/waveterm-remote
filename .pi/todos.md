@@ -9,9 +9,21 @@
 
 All punch-list items from the multiselect QA pass are implemented across 7 phases (spec: [[specs/files-widget-qa-fixes.md]], state: [[phase-state.md]]). Highlights: stale-closure menu fix, full-file paste destinations, dir drag in-app + clean copy-unsupported error, row-level drop targeting, always-confirm deletes with named text, no-flash confirm overlay, empty-click deselect, chunked uploads (>3.7MB works again) with progress overlay, loud oversize-RPC failures, Cmd+R refresh, editable path input, fork About dialog.
 
-## Next planned work — large transfers (spec ready, approved 2026-08-17) → ALL 5 PHASES IMPLEMENTED, awaiting user QA
+## Files widget QA round 2 findings (2026-08-17 build) — punch list v2, NOT started
 
-Spec: [[specs/files-widget-large-transfers.md]] — 5 phases all committed: ① streaming chunk reads + 3MB chunks + speed readout (4c14f14d), ② immediate cancellation via cancel-token race, deletes partial (b572dd19), ③ 5GB default cap via `files:maxuploadsize` config (3b2fcc70 — includes Go schema field + regenerated types), ④ chunk timeout 120s + retry + stat reconciliation (0fccea26), ⑤ real download progress via emain will-download (7ee40785). QA on next CI build: upload a >50MB file (expect success + % + speed), cancel mid-upload (partial deleted), download with real %. Config knob: `files:maxuploadsize` in settings.json (bytes).
+Decisions locked with Jeremy: overwrite dialog buttons = **Overwrite / Cancel**, focused default = the **destructive affirmative**; Tab cycles highlighted button; Space/Enter activates; Esc cancels; underlying widget keys fully suppressed while a confirm is open. Dir-overwrite variant to propose: [Merge] [Replace] [Cancel]. Transfer banner = two lines (filename+% / bar+speed+cancel); failure states persist-until-dismissed. Internal-drag UX: drop the full-width banner; rows self-highlight as drop targets + tiny corner chip "Copying/Moving N items"; external drops keep the loud upload banner.
+
+1. **Off-grid click leaves `..` highlighted** — root-caused: handleContainerClick sets focusIndex=0 → `.focused` class lands on `..` row (index 0); also syncs selectedPath to parent via pre-existing effect (Enter would navigate up). Fix: focusIndex=-1 "no-focus" state tolerated by arrow handlers/scroll effect/Enter/row class.
+2. **Hidden files shown by default** — `preview-model.tsx:207` `?? true` → `?? false` (unset installs only; explicit toggles persist).
+3. **Confirm-dialog focus management** — applies to delete-confirm AND copy-overwrite dialog (see decisions above).
+4. **Copy-overwrite dialog wording** — currently "Delete Then Copy"/"Sync". New: files → Overwrite/Cancel; dirs → propose Merge/Replace/Cancel.
+5. **Terminal-block drag-drop** — separate path (termutil createRemoteTempFileFromBlob): whole-file single RPC, silent >3.7MB failure (console-only catch), hard 50MB throw, spinner-only overlay, whole-file memory. MANDATE: reuse preview-model-upload.ts pure helpers (planUploadChunks/readChunkAsBase64/raceWithCancel/resolveMaxUploadSize/formatBytesSize) — no second implementation; unify cap source.
+6. **Directory dropdown ignores show-hidden setting** — FileListCommand(path, undefined) lists dotfiles always. Fix: pass filter or client-side filter keyed off same showHiddenFiles value; decide SCM-widget behavior (shared component).
+7. **Stale internal-drop banner** — root-caused: folder-row drop stopPropagation prevents container reset of dragCounterRef/isDragOver; after dropSource cleared, banner shows external text. Fix: shared cleanup between row-drop and container-drop paths. Superseded in severity by the chip redesign but root fix still required.
+8. **Transfer banner redesign** — two-line layout; truncated text today hides %/speed/filename; failure states persist-until-dismissed (was 3s transient); consider faster stall detection than 2×120s timeout chain; low-pri: surface effective maxuploadsize cap.
+9. Low-pri backlog: mergeError dead constant cleanup; self-drop guard (dir onto own row); dir-only HTML5 drag fallback; raise-cap memory notes done.
+
+Closed this round: #17 Cmd+R works (wiring identical to header button); move-to-row works (narrow banner complaint folded into item 8).
 
 ## ⚠️ Open action — manual QA (Jeremy)
 
