@@ -41,6 +41,7 @@ import {
     cleanMimetype,
     decideNativeDropRoute,
     getBestUnit,
+    getDragChipText,
     getDropBannerText,
     getLastModifiedTime,
     getSortIcon,
@@ -57,7 +58,7 @@ import {
 } from "./preview-directory-utils";
 import { ErrorOverlay } from "./preview-error-overlay";
 import { type PreviewModel } from "./preview-model";
-import { downloadPercent, formatDownloadDoneText, formatSpeed } from "./preview-model-upload";
+import { downloadPercent, formatDownloadDoneText, formatSpeed, isDownloadFailure, uploadPercent } from "./preview-model-upload";
 import type { PreviewEnv } from "./previewenv";
 
 interface DirectoryTableHeaderCellProps {
@@ -107,6 +108,7 @@ interface DirectoryTableProps {
     newFile: () => void;
     newDirectory: () => void;
     onRowDrop: (rowDirPath: string) => void;
+    onCleanupDragState: () => void;
     confirmDelete: (msg: ErrorMsg) => void;
 }
 
@@ -125,6 +127,7 @@ function DirectoryTable({
     newFile,
     newDirectory,
     onRowDrop,
+    onCleanupDragState,
     confirmDelete,
 }: DirectoryTableProps) {
     const env = useWaveEnv<PreviewEnv>();
@@ -319,6 +322,7 @@ function DirectoryTable({
                 setRefreshVersion={setRefreshVersion}
                 osRef={osRef.current}
                 onRowDrop={onRowDrop}
+                onCleanupDragState={onCleanupDragState}
                 confirmDelete={confirmDelete}
             />
         </OverlayScrollbarsComponent>
@@ -338,6 +342,7 @@ interface TableBodyProps {
     setRefreshVersion: React.Dispatch<React.SetStateAction<number>>;
     osRef: OverlayScrollbarsComponentRef;
     onRowDrop: (rowDirPath: string) => void;
+    onCleanupDragState: () => void;
     confirmDelete: (msg: ErrorMsg) => void;
 }
 
@@ -352,6 +357,7 @@ function TableBody({
     setRefreshVersion,
     osRef,
     onRowDrop,
+    onCleanupDragState,
     confirmDelete,
 }: TableBodyProps) {
     const searchActive = useAtomValue(model.directorySearchActive);
@@ -603,6 +609,7 @@ function TableBody({
                         handleRowClick={handleRowClick}
                         onDragStartSelection={handleDragStart}
                         onRowDrop={onRowDrop}
+                        onCleanupDragState={onCleanupDragState}
                         setSearch={setSearch}
                         idx={0}
                         handleFileContextMenu={handleFileContextMenu}
@@ -617,6 +624,7 @@ function TableBody({
                         handleRowClick={handleRowClick}
                         onDragStartSelection={handleDragStart}
                         onRowDrop={onRowDrop}
+                        onCleanupDragState={onCleanupDragState}
                         setSearch={setSearch}
                         idx={dotdotRow ? idx + 1 : idx}
                         handleFileContextMenu={handleFileContextMenu}
@@ -635,12 +643,13 @@ type TableRowProps = {
     handleRowClick: (path: string, idx: number, opts: { cmd: boolean; shift: boolean }) => void;
     onDragStartSelection: (path: string, move: boolean) => void;
     onRowDrop: (rowDirPath: string) => void;
+    onCleanupDragState: () => void;
     setSearch: (_: string) => void;
     idx: number;
     handleFileContextMenu: (e: any, finfo: FileInfo) => Promise<void>;
 };
 
-function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection, onRowDrop, setSearch, idx, handleFileContextMenu }: TableRowProps) {
+function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection, onRowDrop, onCleanupDragState, setSearch, idx, handleFileContextMenu }: TableRowProps) {
     const selectedPaths = useAtomValue(model.selectedPaths);
     const isSelected = selectedPaths.has(row.getValue("path") as string);
 
@@ -652,14 +661,22 @@ function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection
         [onDragStartSelection, row]
     );
     const handleDragEnd = useCallback(() => {
-        globalStore.set(model.dragSource, null);
-        getApi().cleanupDragTemp();
-    }, [model]);
+        // A drag that ends without a drop (cancelled/aborted) must clear the
+        // same state a real drop clears, so no residue survives.
+        onCleanupDragState();
+    }, [onCleanupDragState]);
 
     // Only directory rows (excluding the ".." row) are drop targets for our own
     // in-app drags. File rows and ".." have no row-level drop handlers, so their
     // drag events fall through to the container's upload/same-dir logic.
     const isDirRow = row.getValue("name") !== ".." && Boolean(row.original.isdir);
+
+    // Drop-target highlight, driven by a local enter/leave counter so moving
+    // across a row's child cells doesn't flicker it off. dragenter fires on each
+    // child boundary (balanced by a matching dragleave); dragover fires
+    // continuously with no matching leave, so it only re-affirms the highlight.
+    const dropEnterCountRef = useRef(0);
+    const [isDropTarget, setIsDropTarget] = useState(false);
 
     const handleRowDragEnterOrOver = useCallback(
         (e: React.DragEvent) => {
@@ -668,6 +685,10 @@ function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection
                 return;
             }
             e.preventDefault();
+            if (e.type === "dragenter") {
+                dropEnterCountRef.current++;
+            }
+            setIsDropTarget(true);
         },
         [model]
     );
@@ -676,6 +697,11 @@ function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection
         (e: React.DragEvent) => {
             if (globalStore.get(model.dragSource) == null) {
                 return;
+            }
+            dropEnterCountRef.current--;
+            if (dropEnterCountRef.current <= 0) {
+                dropEnterCountRef.current = 0;
+                setIsDropTarget(false);
             }
         },
         [model]
@@ -688,6 +714,8 @@ function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection
             }
             e.preventDefault();
             e.stopPropagation();
+            dropEnterCountRef.current = 0;
+            setIsDropTarget(false);
             onRowDrop(row.getValue("path") as string);
         },
         [model, onRowDrop, row]
@@ -695,7 +723,11 @@ function TableRow({ model, row, focusIndex, handleRowClick, onDragStartSelection
 
     return (
         <div
-            className={clsx("dir-table-body-row", { focused: focusIndex === idx, selected: isSelected })}
+            className={clsx("dir-table-body-row", {
+                focused: focusIndex === idx,
+                selected: isSelected,
+                "dir-drop-target": isDropTarget,
+            })}
             data-rowindex={idx}
             draggable
             onDoubleClick={() => {
@@ -765,11 +797,43 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         },
         [uploadCancel]
     );
+    const setUploadStatus = useSetAtom(model.uploadStatus);
+    const setDownloadProgress = useSetAtom(model.downloadProgress);
+    const dismissUploadStatus = useCallback(
+        (e: React.MouseEvent<HTMLButtonElement>) => {
+            // Dismiss (X) for persistent upload failures. stopPropagation keeps
+            // the click from reaching the container's background-click handler.
+            e.stopPropagation();
+            setUploadStatus(null);
+        },
+        [setUploadStatus]
+    );
+    const dismissDownloadStatus = useCallback(
+        (e: React.MouseEvent<HTMLButtonElement>) => {
+            // Dismiss (X) for persistent download failures.
+            e.stopPropagation();
+            setDownloadProgress(null);
+        },
+        [setDownloadProgress]
+    );
     const [isDragOver, setIsDragOver] = useState(false);
     const dragCounterRef = useRef(0);
     const directoryDropdownOpen = useAtomValue(model.directoryDropdownOpen);
     const uploadProgress = useAtomValue(model.uploadProgress);
     const downloadProgress = useAtomValue(model.downloadProgress);
+
+    // Single shared drag cleanup, invoked by every path that can end a drag:
+    // container drops (in-app + reject) AND row drops. It resets the
+    // container's drag-enter counter and overlay state, clears the internal
+    // drag source, and releases any native temp files staged for OS drag-out.
+    // Without this, a row drop (which stops propagation before the container's
+    // onDrop fires) would leave the container overlay showing stale text.
+    const cleanupDragState = useCallback(() => {
+        dragCounterRef.current = 0;
+        setIsDragOver(false);
+        globalStore.set(model.dragSource, null);
+        getApi().cleanupDragTemp();
+    }, [model]);
 
     const handleDropCopyOrMove = useCallback(
         async (data: CommandFileCopyData, isDir: boolean, move: boolean) => {
@@ -860,11 +924,10 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     );
                 }
             } finally {
-                globalStore.set(model.dragSource, null);
-                getApi().cleanupDragTemp();
+                cleanupDragState();
             }
         },
-        [model, handleDropCopyOrMove]
+        [model, handleDropCopyOrMove, cleanupDragState]
     );
 
     const pasteClipboard = useCallback(
@@ -1194,8 +1257,6 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         async (e: React.DragEvent) => {
             e.preventDefault();
             e.stopPropagation();
-            dragCounterRef.current = 0;
-            setIsDragOver(false);
 
             const dragSource = globalStore.get(model.dragSource);
             const route = decideNativeDropRoute(dragSource, dirPath);
@@ -1211,12 +1272,17 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                         );
                     }
                 } finally {
-                    globalStore.set(model.dragSource, null);
-                    getApi().cleanupDragTemp();
+                    cleanupDragState();
                 }
                 return;
             }
             if (route === "upload") {
+                // External drop (no internal drag source): the upload banner is
+                // driven by the drag-enter/leave counter, so reset it here and let
+                // uploadFiles drive the transfer banner instead. No drag source to
+                // clear.
+                dragCounterRef.current = 0;
+                setIsDragOver(false);
                 const files = Array.from(e.dataTransfer.files);
                 if (files.length === 0) {
                     return;
@@ -1224,11 +1290,10 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 await model.uploadFiles(files, dirPath);
                 return;
             }
-            // "reject": no-op (and clear any stale drag source for safety)
-            globalStore.set(model.dragSource, null);
-            getApi().cleanupDragTemp();
+            // "reject": no-op (and clear any stale drag state for safety)
+            cleanupDragState();
         },
-        [dirPath, model, handleDropCopyOrMove]
+        [dirPath, model, handleDropCopyOrMove, cleanupDragState]
     );
 
     const handleFileContextMenu = useCallback(
@@ -1299,7 +1364,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         <Fragment>
             <div
                 ref={refs.setReference}
-                className={clsx("dir-table-container", { "drag-over": isDragOver })}
+                className={clsx("dir-table-container", { "drag-over": isDragOver && activeDragSource == null })}
                 onChangeCapture={(e) => {
                     const event = e as React.ChangeEvent<HTMLInputElement>;
                     if (!entryManagerProps) {
@@ -1314,36 +1379,49 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 onDragLeave={handleNativeDragLeave}
                 onDrop={handleNativeDrop}
             >
-                {isDragOver && <div className="dir-drop-overlay">{getDropBannerText(activeDragSource)}</div>}
+                {isDragOver && activeDragSource == null && (
+                    <div className="dir-drop-overlay">{getDropBannerText(activeDragSource)}</div>
+                )}
+                {activeDragSource != null && (
+                    <div className="dir-drag-chip">{getDragChipText(activeDragSource)}</div>
+                )}
                 {(uploadProgress || uploadStatus) && (
                     <div className="dir-transfer-banner">
                         {uploadStatus ? (
-                            <div className="dir-transfer-banner-text">{uploadStatus}</div>
+                            <div className="dir-transfer-banner-top">
+                                <div className="dir-transfer-banner-text">{uploadStatus.text}</div>
+                                {uploadStatus.persist && (
+                                    <button
+                                        type="button"
+                                        className="dir-transfer-dismiss"
+                                        onClick={dismissUploadStatus}
+                                        title="Dismiss"
+                                    >
+                                        <i className="fa-solid fa-xmark" />
+                                    </button>
+                                )}
+                            </div>
                         ) : (
                             <>
                                 <div className="dir-transfer-banner-top">
                                     <div className="dir-transfer-banner-text">
                                         Uploading {uploadProgress.fileName} —{" "}
-                                        {uploadProgress.total > 0
-                                            ? Math.min(100, Math.floor((uploadProgress.sent / uploadProgress.total) * 100))
-                                            : 100}
-                                        % · {formatSpeed(uploadProgress.speedBps)}
+                                        {uploadPercent(uploadProgress.sent, uploadProgress.total)}%
                                     </div>
-                                    <button
-                                        type="button"
-                                        className="dir-transfer-cancel"
-                                        onClick={handleCancelUpload}
-                                    >
+                                </div>
+                                <div className="dir-transfer-banner-bottom">
+                                    <div className="dir-transfer-progress-bar">
+                                        <div
+                                            className="dir-transfer-progress-fill"
+                                            style={{
+                                                width: `${uploadPercent(uploadProgress.sent, uploadProgress.total)}%`,
+                                            }}
+                                        />
+                                    </div>
+                                    <span className="dir-transfer-speed">{formatSpeed(uploadProgress.speedBps)}</span>
+                                    <button type="button" className="dir-transfer-cancel" onClick={handleCancelUpload}>
                                         Cancel
                                     </button>
-                                </div>
-                                <div className="dir-transfer-progress-bar">
-                                    <div
-                                        className="dir-transfer-progress-fill"
-                                        style={{
-                                            width: `${uploadProgress.total > 0 ? Math.min(100, Math.floor((uploadProgress.sent / uploadProgress.total) * 100)) : 100}%`,
-                                        }}
-                                    />
                                 </div>
                             </>
                         )}
@@ -1351,8 +1429,22 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 )}
                 {downloadProgress && (
                     <div className="dir-transfer-banner">
-                        {downloadProgress.done ? (
-                            <div className="dir-transfer-banner-text">{formatDownloadDoneText(downloadProgress.done)}</div>
+                        {downloadProgress.done != null ? (
+                            <div className="dir-transfer-banner-top">
+                                <div className="dir-transfer-banner-text">
+                                    {formatDownloadDoneText(downloadProgress.done)}
+                                </div>
+                                {isDownloadFailure(downloadProgress.done) && (
+                                    <button
+                                        type="button"
+                                        className="dir-transfer-dismiss"
+                                        onClick={dismissDownloadStatus}
+                                        title="Dismiss"
+                                    >
+                                        <i className="fa-solid fa-xmark" />
+                                    </button>
+                                )}
+                            </div>
                         ) : (
                             <>
                                 <div className="dir-transfer-banner-top">
@@ -1364,13 +1456,15 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                                     </div>
                                 </div>
                                 {downloadProgress.total > 0 && (
-                                    <div className="dir-transfer-progress-bar">
-                                        <div
-                                            className="dir-transfer-progress-fill"
-                                            style={{
-                                                width: `${downloadPercent(downloadProgress.sent, downloadProgress.total)}%`,
-                                            }}
-                                        />
+                                    <div className="dir-transfer-banner-bottom">
+                                        <div className="dir-transfer-progress-bar">
+                                            <div
+                                                className="dir-transfer-progress-fill"
+                                                style={{
+                                                    width: `${downloadPercent(downloadProgress.sent, downloadProgress.total)}%`,
+                                                }}
+                                            />
+                                        </div>
                                     </div>
                                 )}
                             </>
@@ -1390,6 +1484,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     newFile={newFile}
                     newDirectory={newDirectory}
                     onRowDrop={handleRowDrop}
+                    onCleanupDragState={cleanupDragState}
                     confirmDelete={confirmDelete}
                 />
                 {confirmDeleteMsg && (

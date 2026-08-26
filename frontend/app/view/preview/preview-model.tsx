@@ -26,6 +26,7 @@ import {
     computeSpeedBps,
     createCancelToken,
     formatBytesSize,
+    isDownloadFailure,
     planUploadChunks,
     raceWithCancel,
     readChunkAsBase64,
@@ -34,7 +35,7 @@ import {
     UploadChunkSize,
     UploadChunkTimeoutMs,
 } from "./preview-model-upload";
-import type { CancelToken, DownloadProgress, UploadProgress } from "./preview-model-upload";
+import type { CancelToken, DownloadProgress, UploadProgress, UploadStatusState } from "./preview-model-upload";
 import { claimDownloadProgressSlot } from "./download-progress";
 import type { PreviewEnv } from "./previewenv";
 
@@ -193,7 +194,7 @@ export class PreviewModel implements ViewModel {
     uploadProgress: PrimitiveAtom<UploadProgress | null>;
     downloadProgress: PrimitiveAtom<DownloadProgress | null>;
     uploadCancel: PrimitiveAtom<CancelToken | null>;
-    uploadStatus: PrimitiveAtom<string | null>;
+    uploadStatus: PrimitiveAtom<UploadStatusState | null>;
     directoryKeyDownHandler: (waveEvent: WaveKeyboardEvent) => boolean;
     codeEditKeyDownHandler: (waveEvent: WaveKeyboardEvent) => boolean;
     env: PreviewEnv;
@@ -224,7 +225,7 @@ export class PreviewModel implements ViewModel {
         this.uploadProgress = atom(null) as PrimitiveAtom<UploadProgress | null>;
         this.downloadProgress = atom(null) as PrimitiveAtom<DownloadProgress | null>;
         this.uploadCancel = atom(null) as PrimitiveAtom<CancelToken | null>;
-        this.uploadStatus = atom(null) as PrimitiveAtom<string | null>;
+        this.uploadStatus = atom(null) as PrimitiveAtom<UploadStatusState | null>;
         this.directorySearchActive = atom(false);
         this.directoryDropdownOpen = atom(false);
         this.previewTextRef = createRef();
@@ -996,7 +997,7 @@ export class PreviewModel implements ViewModel {
                             // before this chunk) and stop the whole run without
                             // deleting the partial file (the user may re-upload).
                             const pct = file.size > 0 ? Math.floor((chunk.offset / file.size) * 100) : 0;
-                            this.setTransientUploadStatus(`Upload interrupted at ${pct}%`);
+                            this.setUploadStatus(`Upload interrupted at ${pct}%`, true);
                             stopped = true;
                             break;
                         }
@@ -1009,7 +1010,7 @@ export class PreviewModel implements ViewModel {
                         // User-initiated cancel: stop the whole run, best-effort
                         // delete the partial destination, and show a transient
                         // status. Not an error — no error banner, no success count.
-                        this.setTransientUploadStatus("Upload cancelled");
+                        this.setUploadStatus("Upload cancelled", false);
                         stopped = true;
                         try {
                             await this.env.rpc.FileDeleteCommand(TabRpcClient, {
@@ -1039,7 +1040,7 @@ export class PreviewModel implements ViewModel {
             // Brief terminal confirmation after the last successful file, then
             // re-read the directory so the new files appear. Skipped when the run
             // stopped early (cancelled or interrupted) so that status stays visible.
-            this.setTransientUploadStatus("Upload complete");
+            this.setUploadStatus("Upload complete", false);
             this.refresh();
         }
     }
@@ -1112,11 +1113,16 @@ export class PreviewModel implements ViewModel {
         return reconcileChunkFailure(remoteSize, expectedSent);
     }
 
-    // Shows a transient banner status (e.g. "Upload cancelled") that clears
-    // itself after a short delay. The download banner's terminal state
-    // ("Download complete"/etc.) uses this same transient-clear pattern.
-    setTransientUploadStatus(status: string) {
-        globalStore.set(this.uploadStatus, status);
+    // Shows a terminal banner status for an upload. Transient statuses
+    // (success/cancelled) clear themselves after a short delay; persistent
+    // statuses (failures/interruptions) stay visible until the user dismisses
+    // them via the banner's X affordance.
+    setUploadStatus(text: string, persist: boolean) {
+        globalStore.set(this.uploadStatus, { text, persist });
+        if (persist) {
+            return;
+        }
+        const status = { text, persist };
         setTimeout(() => {
             // Only clear if we are still showing this same status — a new upload
             // may have started and set its own status in the meantime.
@@ -1136,12 +1142,12 @@ export class PreviewModel implements ViewModel {
             // recent download (documented in download-progress.ts).
             claimDownloadProgressSlot((progress) => {
                 globalStore.set(this.downloadProgress, progress);
-                if (progress.done != null) {
+                if (progress.done != null && !isDownloadFailure(progress.done)) {
                     // Brief terminal status ("Download complete"/"Download
-                    // failed"/"Download cancelled"), then clear — mirroring the
-                    // upload transient-status pattern. The reference-equality
-                    // guard ensures a newer download's progress isn't cleared by
-                    // a stale timer.
+                    // cancelled"), then clear. Failures ("Download failed"/
+                    // interrupted) persist until dismissed via the banner's X.
+                    // The reference-equality guard ensures a newer download's
+                    // progress isn't cleared by a stale timer.
                     const terminal = progress;
                     setTimeout(() => {
                         if (globalStore.get(this.downloadProgress) === terminal) {

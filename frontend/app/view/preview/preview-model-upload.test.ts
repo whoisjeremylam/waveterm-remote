@@ -11,11 +11,13 @@ import {
     formatBytesSize,
     formatDownloadDoneText,
     formatSpeed,
+    isDownloadFailure,
     planUploadChunks,
     raceWithCancel,
     readChunkAsBase64,
     reconcileChunkFailure,
     resolveMaxUploadSize,
+    uploadPercent,
 } from "./preview-model-upload";
 
 const CHUNK = 2 * 1024 * 1024; // 2MB
@@ -240,6 +242,37 @@ describe("formatDownloadDoneText", () => {
         expect(formatDownloadDoneText("completed")).toBe("Download complete");
         expect(formatDownloadDoneText("cancelled")).toBe("Download cancelled");
         expect(formatDownloadDoneText("interrupted")).toBe("Download failed");
+    });
+});
+
+describe("isDownloadFailure", () => {
+    it("completed and cancelled are not failures", () => {
+        expect(isDownloadFailure("completed")).toBe(false);
+        expect(isDownloadFailure("cancelled")).toBe(false);
+    });
+
+    it("interrupted is a failure (persists until dismissed)", () => {
+        expect(isDownloadFailure("interrupted")).toBe(true);
+    });
+});
+
+describe("uploadPercent", () => {
+    it("computes a clamped 0-100 percentage", () => {
+        expect(uploadPercent(0, 100)).toBe(0);
+        expect(uploadPercent(42, 100)).toBe(42);
+        expect(uploadPercent(200, 100)).toBe(100);
+    });
+
+    it("renders 100 for an unknown/non-positive total (empty file completes instantly)", () => {
+        expect(uploadPercent(0, 0)).toBe(100);
+        expect(uploadPercent(10, -1)).toBe(100);
+        expect(uploadPercent(10, NaN)).toBe(100);
+    });
+
+    it("renders 0 for non-finite or non-positive sent bytes", () => {
+        expect(uploadPercent(-1, 100)).toBe(0);
+        expect(uploadPercent(NaN, 100)).toBe(0);
+        expect(uploadPercent(Infinity, 100)).toBe(0);
     });
 });
 

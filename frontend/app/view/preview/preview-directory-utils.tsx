@@ -88,6 +88,18 @@ export function getDropBannerText(dragSource: DragSourceState | null): string {
     return dragSource.move ? "Drop to move here" : "Drop to copy here";
 }
 
+// Returns the small corner-chip text shown during an internal drag, in place of
+// the full-width banner. The mode is taken from dragSource.move (Cmd/Ctrl+drag
+// = move) and the count from the dragged file set.
+export function getDragChipText(dragSource: DragSourceState | null): string {
+    if (dragSource == null) {
+        return "";
+    }
+    const count = dragSource.files.length;
+    const noun = count === 1 ? "item" : "items";
+    return `${dragSource.move ? "Moving" : "Copying"} ${count} ${noun}`;
+}
+
 // Builds the per-item FileCopyOpts for an in-app drop. Directory copies are
 // unsupported backend-side (RemoteFileCopyCommand refuses recursive copies), so
 // copy opts never set recursive. Directory moves set recursive=true, though

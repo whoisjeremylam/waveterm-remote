@@ -57,6 +57,15 @@ export type UploadProgress = {
     speedBps: number;
 };
 
+// A terminal banner status for an upload. `persist` distinguishes failures
+// ("Upload interrupted at N%") — which stay visible until the user dismisses
+// them — from transient confirmations ("Upload cancelled"/"Upload complete")
+// that auto-clear after a brief delay.
+export type UploadStatusState = {
+    text: string;
+    persist: boolean;
+};
+
 // Terminal states a download can reach, matching Electron's DownloadItem
 // `done` event states ("completed" | "cancelled" | "interrupted"). Emain
 // normalizes the raw event state to this union before sending it over the
@@ -85,12 +94,33 @@ export function formatDownloadDoneText(done: DownloadDoneState): string {
     }
 }
 
+// A download terminal state is a failure unless it completed or was cancelled.
+// Failures ("Download failed"/interrupted) must persist in the banner until
+// dismissed; completed/cancelled keep a brief auto-clear.
+export function isDownloadFailure(done: DownloadDoneState): boolean {
+    return done !== "completed" && done !== "cancelled";
+}
+
 // Computes the download percentage (0-100, clamped) from bytes received and
 // total bytes. Returns 0 when the total is unknown/non-positive or the bytes
 // are non-finite, so the caller can render an indeterminate state rather than a
 // bogus percentage.
 export function downloadPercent(sent: number, total: number): number {
     if (!Number.isFinite(sent) || !Number.isFinite(total) || sent <= 0 || total <= 0) {
+        return 0;
+    }
+    return Math.min(100, Math.floor((sent / total) * 100));
+}
+
+// Computes the upload percentage (0-100, clamped) for the transfer banner. An
+// unknown/non-positive total means an empty file, which completes instantly —
+// so it renders 100 rather than a bogus 0. Non-finite or non-positive sent
+// bytes render 0.
+export function uploadPercent(sent: number, total: number): number {
+    if (!Number.isFinite(total) || total <= 0) {
+        return 100;
+    }
+    if (!Number.isFinite(sent) || sent <= 0) {
         return 0;
     }
     return Math.min(100, Math.floor((sent / total) * 100));

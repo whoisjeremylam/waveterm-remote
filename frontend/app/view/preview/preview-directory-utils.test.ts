@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, formatDeleteConfirmText, getDropBannerText, getFirstFocusableIndex, joinRemoteDir, moveFocusIndex, osDraggableItems, resolveDeleteItems } from "./preview-directory-utils";
+import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, formatDeleteConfirmText, getDragChipText, getDropBannerText, getFirstFocusableIndex, joinRemoteDir, moveFocusIndex, osDraggableItems, resolveDeleteItems } from "./preview-directory-utils";
 
 describe("getFirstFocusableIndex", () => {
     it("skips the .. row at index 0 when present", () => {
@@ -155,6 +155,33 @@ describe("getDropBannerText", () => {
 
     it("internal move drag advertises move", () => {
         expect(getDropBannerText(internalMove)).toBe("Drop to move here");
+    });
+});
+
+describe("getDragChipText", () => {
+    it("returns an empty string when there is no drag source", () => {
+        expect(getDragChipText(null)).toBe("");
+    });
+
+    it("describes a single-file copy", () => {
+        expect(
+            getDragChipText({
+                move: false,
+                files: [{ uri: "u", absParent: "/d", relName: "a.txt", isDir: false }],
+            })
+        ).toBe("Copying 1 item");
+    });
+
+    it("describes a multi-file move", () => {
+        expect(
+            getDragChipText({
+                move: true,
+                files: [
+                    { uri: "u1", absParent: "/d", relName: "a.txt", isDir: false },
+                    { uri: "u2", absParent: "/d", relName: "b.txt", isDir: false },
+                ],
+            })
+        ).toBe("Moving 2 items");
     });
 });
 
