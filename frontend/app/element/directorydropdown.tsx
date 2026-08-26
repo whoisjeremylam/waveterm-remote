@@ -15,6 +15,10 @@ type DirectoryDropdownProps = {
     onClose: () => void;
     anchorRef: React.RefObject<HTMLElement>;
     dirsOnly?: boolean;
+    // When false, dotfiles/dot-directories are hidden. Defaults to true (current
+    // behavior). FileListCommand has no server-side hidden filter, so filtering
+    // is done client-side; the `..` parent entry is always kept.
+    showHidden?: boolean;
 };
 
 type DirEntry = {
@@ -30,6 +34,7 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
     onClose,
     anchorRef,
     dirsOnly = false,
+    showHidden = true,
 }: DirectoryDropdownProps) {
     const [entries, setEntries] = useState<DirEntry[]>([]);
     const [loading, setLoading] = useState(true);
@@ -88,6 +93,7 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
                 if (result) {
                     for (const item of result) {
                         if (item.name !== "." && item.name !== "..") {
+                            if (!showHidden && item.name.startsWith(".")) continue;
                             if (dirsOnly && !item.isdir) continue;
                             dirs.push({
                                 name: item.name,
@@ -112,7 +118,7 @@ export const DirectoryDropdown = memo(function DirectoryDropdown({
             });
             setEntries(dirs);
         },
-        [connection, dirsOnly]
+        [connection, dirsOnly, showHidden]
     );
 
     // Load entries from browsePath (local dropdown state), not currentPath

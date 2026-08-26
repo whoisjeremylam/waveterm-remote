@@ -1514,6 +1514,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                     onClose={() => globalStore.set(model.directoryDropdownOpen, false)}
                     anchorRef={model.previewTextRef}
                     dirsOnly
+                    showHidden={showHiddenFiles}
                 />
             )}
         </Fragment>
