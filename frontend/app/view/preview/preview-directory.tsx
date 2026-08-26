@@ -51,6 +51,7 @@ import {
     joinRemoteDir,
     makeDirectoryDefaultMenuItems,
     mergeError,
+    moveFocusIndex,
     osDraggableItems,
     overwriteError,
 } from "./preview-directory-utils";
@@ -58,8 +59,6 @@ import { ErrorOverlay } from "./preview-error-overlay";
 import { type PreviewModel } from "./preview-model";
 import { downloadPercent, formatDownloadDoneText, formatSpeed } from "./preview-model-upload";
 import type { PreviewEnv } from "./previewenv";
-
-const PageJumpSize = 20;
 
 interface DirectoryTableHeaderCellProps {
     header: Header<FileInfo, unknown>;
@@ -741,7 +740,7 @@ interface DirectoryPreviewProps {
 function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const env = useWaveEnv<PreviewEnv>();
     const [searchText, setSearchText] = useState("");
-    const [focusIndex, setFocusIndex] = useState(0);
+    const [focusIndex, setFocusIndex] = useState(-1);
     const [unfilteredData, setUnfilteredData] = useState<FileInfo[]>([]);
     const showHiddenFiles = useAtomValue(model.showHiddenFiles);
     const [selectedPath, setSelectedPath] = useState("");
@@ -752,6 +751,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
     const dirPath = finfo?.path;
     const activeDragSource = useAtomValue(model.dragSource);
     const setErrorMsg = useSetAtom(model.errorMsgAtom);
+    const activeErrorMsg = useAtomValue(model.errorMsgAtom);
     const [confirmDeleteMsg, setConfirmDeleteMsg] = useState<ErrorMsg | null>(null);
     const confirmDelete = useCallback((msg: ErrorMsg) => setConfirmDeleteMsg(msg), []);
     const uploadCancel = useAtomValue(model.uploadCancel);
@@ -795,26 +795,36 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 const allowRetry = copyError.includes(overwriteError) || copyError.includes(mergeError);
                 let errorMsg: ErrorMsg;
                 if (allowRetry) {
+                    // Directory conflicts offer both merge and replace; file
+                    // conflicts only offer overwrite. `merge=true` preserves and
+                    // merges contents; `overwrite=true` (replace) deletes the
+                    // existing content first. The destructive affirmative is
+                    // flagged so the confirm overlay focuses it by default.
+                    const retry = (opts: { overwrite?: boolean; merge?: boolean }) => async () => {
+                        if (opts.overwrite) {
+                            data.opts.overwrite = true;
+                        }
+                        if (opts.merge) {
+                            data.opts.merge = true;
+                        }
+                        await handleDropCopyOrMove(data, isDir, move);
+                    };
                     errorMsg = {
-                        status: "Confirm Overwrite File(s)",
-                        text: `This ${move ? "move" : "copy"} operation will overwrite an existing file. Would you like to continue?`,
+                        status: "Confirm Overwrite",
+                        text: isDir
+                            ? `This ${move ? "move" : "copy"} operation conflicts with an existing directory. Would you like to merge or replace it?`
+                            : `This ${move ? "move" : "copy"} operation will overwrite an existing file. Would you like to continue?`,
                         level: "warning",
-                        buttons: [
-                            {
-                                text: `Delete Then ${move ? "Move" : "Copy"}`,
-                                onClick: async () => {
-                                    data.opts.overwrite = true;
-                                    await handleDropCopyOrMove(data, isDir, move);
-                                },
-                            },
-                            {
-                                text: "Sync",
-                                onClick: async () => {
-                                    data.opts.merge = true;
-                                    await handleDropCopyOrMove(data, isDir, move);
-                                },
-                            },
-                        ],
+                        buttons: isDir
+                            ? [
+                                  { text: "Merge", onClick: retry({ merge: true }) },
+                                  { text: "Replace", onClick: retry({ overwrite: true }), destructive: true },
+                                  { text: "Cancel", onClick: () => {} },
+                              ]
+                            : [
+                                  { text: "Overwrite", onClick: retry({ overwrite: true }), destructive: true },
+                                  { text: "Cancel", onClick: () => {} },
+                              ],
                     };
                 } else {
                     errorMsg = {
@@ -935,6 +945,13 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
 
     useEffect(() => {
         model.directoryKeyDownHandler = (waveEvent: WaveKeyboardEvent): boolean => {
+            // While a confirm dialog (delete confirm or copy-overwrite prompt) is
+            // open, swallow every widget key so nothing leaks through to the
+            // directory handlers below (Enter opening a file, Cmd+F/A, arrows,
+            // search, delete, etc.). The dialog itself handles Tab/Enter/Space/Esc.
+            if (confirmDeleteMsg != null || (activeErrorMsg?.buttons?.length ?? 0) > 0) {
+                return true;
+            }
             if (checkKeyPressed(waveEvent, "Cmd:r")) {
                 model.refresh();
                 return true;
@@ -956,13 +973,14 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 const cleared = applyClearSelection();
                 globalStore.set(model.selectedPaths, cleared.selectedPaths);
                 globalStore.set(model.selectionAnchor, cleared.anchor);
+                setFocusIndex(-1);
                 return;
             }
             if (checkKeyPressed(waveEvent, "Shift:ArrowUp")) {
-                const newFocusIndex = Math.max(focusIndex - 1, 0);
+                const dotdotPresent = filteredData.some((f) => f.name === "..");
+                const newFocusIndex = moveFocusIndex(focusIndex, filteredData.length, dotdotPresent, "up");
                 setFocusIndex(newFocusIndex);
                 const selectablePaths = globalStore.get(model.directorySelectablePaths);
-                const dotdotPresent = filteredData.some((f) => f.name === "..");
                 const selectableIdx = dotdotPresent ? newFocusIndex - 1 : newFocusIndex;
                 const focusedPath = selectablePaths[selectableIdx];
                 if (focusedPath != null) {
@@ -977,10 +995,10 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 return true;
             }
             if (checkKeyPressed(waveEvent, "Shift:ArrowDown")) {
-                const newFocusIndex = Math.min(focusIndex + 1, filteredData.length - 1);
+                const dotdotPresent = filteredData.some((f) => f.name === "..");
+                const newFocusIndex = moveFocusIndex(focusIndex, filteredData.length, dotdotPresent, "down");
                 setFocusIndex(newFocusIndex);
                 const selectablePaths = globalStore.get(model.directorySelectablePaths);
-                const dotdotPresent = filteredData.some((f) => f.name === "..");
                 const selectableIdx = dotdotPresent ? newFocusIndex - 1 : newFocusIndex;
                 const focusedPath = selectablePaths[selectableIdx];
                 if (focusedPath != null) {
@@ -995,24 +1013,32 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
                 return true;
             }
             if (checkKeyPressed(waveEvent, "ArrowUp")) {
-                setFocusIndex((idx) => Math.max(idx - 1, 0));
+                const dotdotPresent = filteredData.some((f) => f.name === "..");
+                setFocusIndex(moveFocusIndex(focusIndex, filteredData.length, dotdotPresent, "up"));
                 return true;
             }
             if (checkKeyPressed(waveEvent, "ArrowDown")) {
-                setFocusIndex((idx) => Math.min(idx + 1, filteredData.length - 1));
+                const dotdotPresent = filteredData.some((f) => f.name === "..");
+                setFocusIndex(moveFocusIndex(focusIndex, filteredData.length, dotdotPresent, "down"));
                 return true;
             }
             if (checkKeyPressed(waveEvent, "PageUp")) {
-                setFocusIndex((idx) => Math.max(idx - PageJumpSize, 0));
+                const dotdotPresent = filteredData.some((f) => f.name === "..");
+                setFocusIndex(moveFocusIndex(focusIndex, filteredData.length, dotdotPresent, "pageup"));
                 return true;
             }
             if (checkKeyPressed(waveEvent, "PageDown")) {
-                setFocusIndex((idx) => Math.min(idx + PageJumpSize, filteredData.length - 1));
+                const dotdotPresent = filteredData.some((f) => f.name === "..");
+                setFocusIndex(moveFocusIndex(focusIndex, filteredData.length, dotdotPresent, "pagedown"));
                 return true;
             }
             if (checkKeyPressed(waveEvent, "Enter")) {
                 if (filteredData.length == 0) {
                     return;
+                }
+                if (selectedPath == null || selectedPath == "") {
+                    // No focused row (e.g. after an off-grid click or Escape).
+                    return true;
                 }
                 model.goHistory(selectedPath);
                 setSearchText("");
@@ -1080,7 +1106,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
         return () => {
             model.directoryKeyDownHandler = null;
         };
-    }, [filteredData, selectedPath, searchText, focusIndex, pasteClipboard, conn, dirPath, model, setErrorMsg, blockData, env, confirmDelete]);
+    }, [filteredData, selectedPath, searchText, focusIndex, pasteClipboard, conn, dirPath, model, setErrorMsg, blockData, env, confirmDelete, activeErrorMsg]);
 
     useEffect(() => {
         if (filteredData.length != 0 && focusIndex > filteredData.length - 1) {
@@ -1264,7 +1290,7 @@ function DirectoryPreview({ model }: DirectoryPreviewProps) {
             const cleared = applyClearSelection();
             globalStore.set(model.selectedPaths, cleared.selectedPaths);
             globalStore.set(model.selectionAnchor, cleared.anchor);
-            setFocusIndex(0);
+            setFocusIndex(-1);
         },
         [model, setEntryManagerProps, setFocusIndex]
     );

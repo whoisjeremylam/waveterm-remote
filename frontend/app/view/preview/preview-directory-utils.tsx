@@ -11,6 +11,52 @@ import { type PreviewModel } from "./preview-model";
 
 export type NativeDropRoute = "inapp" | "upload" | "reject";
 
+export const PageJumpSize = 20;
+
+export type FocusDirection = "up" | "down" | "pageup" | "pagedown";
+
+// The ".." row is never keyboard-focusable: when present it occupies index 0,
+// so focusable rows begin at index 1; otherwise at index 0.
+export function getFirstFocusableIndex(hasDotDot: boolean): number {
+    return hasDotDot ? 1 : 0;
+}
+
+// Computes the next focus index for arrow/page navigation within a directory
+// table. `current` may be -1 (no row focused, e.g. after an off-grid click or
+// Escape): focus then enters at the first row for "down"/"pagedown" or the last
+// row for "up"/"pageup", always skipping the ".." row. A current index below
+// the first focusable row (the ".." row itself, or -1) is treated as "no
+// focus". Returns -1 when there are no focusable rows.
+export function moveFocusIndex(
+    current: number,
+    rowCount: number,
+    hasDotDot: boolean,
+    direction: FocusDirection,
+    pageSize: number = PageJumpSize
+): number {
+    const first = getFirstFocusableIndex(hasDotDot);
+    const last = rowCount - 1;
+    if (rowCount <= 0 || first > last) {
+        return -1;
+    }
+    const clamp = (i: number) => Math.min(Math.max(i, first), last);
+    if (current < first) {
+        return direction === "up" || direction === "pageup" ? last : first;
+    }
+    switch (direction) {
+        case "up":
+            return clamp(current - 1);
+        case "down":
+            return clamp(current + 1);
+        case "pageup":
+            return clamp(current - pageSize);
+        case "pagedown":
+            return clamp(current + pageSize);
+        default:
+            return clamp(current);
+    }
+}
+
 // Decides how a native drop should be handled:
 //  - our own widget drag (dragSource set) to a different directory -> "inapp" (copy)
 //  - our own widget drag dropped back into its own parent directory -> "reject" (no-op)
@@ -347,7 +393,7 @@ export function handleFileDeleteBatch(
         text: formatDeleteConfirmText(items),
         level: "warning",
         buttons: [
-            { text: "Delete", onClick: doDelete },
+            { text: "Delete", onClick: doDelete, destructive: true },
             { text: "Cancel", onClick: () => {} },
         ],
     });

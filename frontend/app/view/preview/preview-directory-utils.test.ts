@@ -2,7 +2,74 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, formatDeleteConfirmText, getDropBannerText, joinRemoteDir, osDraggableItems, resolveDeleteItems } from "./preview-directory-utils";
+import { applyClearSelection, applySelectAll, applySelectionClick, buildDragFileItems, buildDropFileCopyOpts, buildSelectionItems, decideNativeDropRoute, formatDeleteConfirmText, getDropBannerText, getFirstFocusableIndex, joinRemoteDir, moveFocusIndex, osDraggableItems, resolveDeleteItems } from "./preview-directory-utils";
+
+describe("getFirstFocusableIndex", () => {
+    it("skips the .. row at index 0 when present", () => {
+        expect(getFirstFocusableIndex(true)).toBe(1);
+    });
+
+    it("starts at index 0 when there is no .. row", () => {
+        expect(getFirstFocusableIndex(false)).toBe(0);
+    });
+});
+
+describe("moveFocusIndex", () => {
+    it("enters at the first selectable row from no-focus (down), skipping ..", () => {
+        expect(moveFocusIndex(-1, 5, true, "down")).toBe(1);
+    });
+
+    it("enters at the first row from no-focus (down) when .. is absent", () => {
+        expect(moveFocusIndex(-1, 5, false, "down")).toBe(0);
+    });
+
+    it("enters at the last row from no-focus (up)", () => {
+        expect(moveFocusIndex(-1, 5, true, "up")).toBe(4);
+        expect(moveFocusIndex(-1, 5, false, "up")).toBe(4);
+    });
+
+    it("pagedown/pageup from no-focus enter at first/last respectively", () => {
+        expect(moveFocusIndex(-1, 5, true, "pagedown")).toBe(1);
+        expect(moveFocusIndex(-1, 5, true, "pageup")).toBe(4);
+    });
+
+    it("moves down one row from a focused row", () => {
+        expect(moveFocusIndex(2, 5, true, "down")).toBe(3);
+    });
+
+    it("moves up one row from a focused row", () => {
+        expect(moveFocusIndex(2, 5, true, "up")).toBe(1);
+    });
+
+    it("ArrowUp from the first selectable row stays put (skips ..)", () => {
+        expect(moveFocusIndex(1, 5, true, "up")).toBe(1);
+    });
+
+    it("treats a focus on the .. row (index 0) as no-focus and re-enters", () => {
+        expect(moveFocusIndex(0, 5, true, "down")).toBe(1);
+        expect(moveFocusIndex(0, 5, true, "up")).toBe(4);
+    });
+
+    it("clamps at the last row", () => {
+        expect(moveFocusIndex(4, 5, true, "down")).toBe(4);
+    });
+
+    it("clamps a large pagedown at the last row", () => {
+        expect(moveFocusIndex(0, 3, false, "pagedown")).toBe(2);
+    });
+
+    it("clamps an out-of-range index back into range", () => {
+        expect(moveFocusIndex(5, 3, false, "down")).toBe(2);
+    });
+
+    it("returns -1 when there are no rows", () => {
+        expect(moveFocusIndex(-1, 0, false, "down")).toBe(-1);
+    });
+
+    it("returns -1 when only the .. row exists (no focusable rows)", () => {
+        expect(moveFocusIndex(-1, 1, true, "down")).toBe(-1);
+    });
+});
 
 describe("buildDropFileCopyOpts", () => {
     const yearTimeout = 31536000000; // one year

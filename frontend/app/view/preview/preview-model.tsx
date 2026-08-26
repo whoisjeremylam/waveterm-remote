@@ -204,7 +204,10 @@ export class PreviewModel implements ViewModel {
         this.nodeModel = nodeModel;
         this.tabModel = tabModel;
         this.env = waveEnv;
-        let showHiddenFiles = globalStore.get(this.env.getSettingsKeyAtom("preview:showhiddenfiles")) ?? true;
+        // Fork decision: remote-dev dotfiles are noise, so hidden files are
+        // hidden by default. Explicit user toggles still persist via the
+        // "preview:showhiddenfiles" setting.
+        let showHiddenFiles = globalStore.get(this.env.getSettingsKeyAtom("preview:showhiddenfiles")) ?? false;
         this.showHiddenFiles = atom<boolean>(showHiddenFiles);
         this.refreshVersion = atom(0);
         const defaultSort = globalStore.get(this.env.getSettingsKeyAtom("preview:defaultsort")) ?? "name";

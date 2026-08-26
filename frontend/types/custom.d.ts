@@ -469,6 +469,7 @@ declare global {
     type ErrorButtonDef = {
         text: string;
         onClick: () => void;
+        destructive?: boolean;
     };
 
     type ErrorMsg = {
