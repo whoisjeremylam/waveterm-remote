@@ -9,7 +9,21 @@
 
 All punch-list items from the multiselect QA pass are implemented across 7 phases (spec: [[specs/files-widget-qa-fixes.md]], state: [[phase-state.md]]). Highlights: stale-closure menu fix, full-file paste destinations, dir drag in-app + clean copy-unsupported error, row-level drop targeting, always-confirm deletes with named text, no-flash confirm overlay, empty-click deselect, chunked uploads (>3.7MB works again) with progress overlay, loud oversize-RPC failures, Cmd+R refresh, editable path input, fork About dialog.
 
-## Files widget QA round 2 findings (2026-08-17 build) — punch list v2, NOT started
+## Files widget QA round 2 findings (2026-08-17 build) — ALL 3 FIX PHASES IMPLEMENTED, awaiting user QA
+
+Spec: [[specs/files-widget-qa2-fixes.md]] · state: [[phase-state.md]] · commits: 5b9bc8b4, b03ae283, 0f848d15.
+
+QA checklist for next build:
+1. Off-grid click / Escape → zero row highlight; arrows re-enter list skipping `..`; Enter inert after off-grid
+2. Hidden files hidden by default (fresh settings); toggle persists
+3. Delete confirm: destructive button autofocused (red), Tab cycles, Enter/Space = Delete, Esc = Cancel; no key leakage (Cmd+F/A/arrows/delete inert while open)
+4. Copy-overwrite wording: files [Overwrite][Cancel]; dirs [Merge][Replace][Cancel]; same keyboard treatment
+5. Internal drag: corner chip "Copying/Moving N items" + hovered dir-row accent highlight; NO full-width banner; drops onto rows AND empty space leave zero residue
+6. External OS drop: full-width upload banner unchanged
+7. Upload failure (wifi off): "Upload interrupted at N%" PERSISTS with X dismiss; success/cancel auto-clear
+8. Two-line transfer banner readable at narrow widths
+9. Terminal drag-drop: >50MB file succeeds with % in overlay; over-cap shows inline error in overlay (not console); screenshot paste still works
+10. Dropdown respects Hide Hidden Files toggle; SCM dropdown unchanged
 
 Decisions locked with Jeremy: overwrite dialog buttons = **Overwrite / Cancel**, focused default = the **destructive affirmative**; Tab cycles highlighted button; Space/Enter activates; Esc cancels; underlying widget keys fully suppressed while a confirm is open. Dir-overwrite variant to propose: [Merge] [Replace] [Cancel]. Transfer banner = two lines (filename+% / bar+speed+cancel); failure states persist-until-dismissed. Internal-drag UX: drop the full-width banner; rows self-highlight as drop targets + tiny corner chip "Copying/Moving N items"; external drops keep the loud upload banner.
 
