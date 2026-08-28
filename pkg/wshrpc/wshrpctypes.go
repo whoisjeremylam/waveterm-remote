@@ -423,37 +423,50 @@ type ConnConfigRequest struct {
 }
 
 type ConnStatus struct {
-	Status                        string   `json:"status"`
-	ConnHealthStatus              string   `json:"connhealthstatus,omitempty"`
-	WshEnabled                    bool     `json:"wshenabled"`
-	Connection                    string   `json:"connection"`
-	Connected                     bool     `json:"connected"`
-	HasConnected                  bool     `json:"hasconnected"` // true if it has *ever* connected successfully
-	ActiveConnNum                 int      `json:"activeconnnum"`
-	ConnectCount                  int64    `json:"connectcount"`
-	LastConnectTime               int64    `json:"lastconnecttime"`
-	Error                         string   `json:"error,omitempty"`
-	ErrorCode                     string   `json:"errorcode,omitempty"`
-	WshError                      string   `json:"wsherror,omitempty"`
-	NoWshReason                   string   `json:"nowshreason,omitempty"`
-	WshVersion                    string   `json:"wshversion,omitempty"`
-	LastActivityBeforeStalledTime int64    `json:"lastactivitybeforestalledtime,omitempty"`
-	KeepAliveSentTime             int64    `json:"keepalivesenttime,omitempty"`
-	ReconnectAttempt              int      `json:"reconnectattempt,omitempty"`
-	ReconnectNextAttempt          int64    `json:"reconnectnextattempt,omitempty"`
-	ReconnectError                string   `json:"reconnecterror,omitempty"`
-	ReconnectGaveUp               bool     `json:"reconnectgaveup,omitempty"`     // UX-1.1: scheduler exhausted retries
-	ReconnectStopReason           string   `json:"reconnectstopreason,omitempty"` // UX-1.1: "max-duration", "auth-failed", etc.
-	ForwardingRules               []string `json:"forwardingrules,omitempty"`
-	CanAutoReconnect              bool     `json:"canautoreconnect"` // true if scheduler can auto-reconnect without user input
+	Status                        string                 `json:"status"`
+	ConnHealthStatus              string                 `json:"connhealthstatus,omitempty"`
+	WshEnabled                    bool                   `json:"wshenabled"`
+	Connection                    string                 `json:"connection"`
+	Connected                     bool                   `json:"connected"`
+	HasConnected                  bool                   `json:"hasconnected"` // true if it has *ever* connected successfully
+	ActiveConnNum                 int                    `json:"activeconnnum"`
+	ConnectCount                  int64                  `json:"connectcount"`
+	LastConnectTime               int64                  `json:"lastconnecttime"`
+	Error                         string                 `json:"error,omitempty"`
+	ErrorCode                     string                 `json:"errorcode,omitempty"`
+	WshError                      string                 `json:"wsherror,omitempty"`
+	NoWshReason                   string                 `json:"nowshreason,omitempty"`
+	WshVersion                    string                 `json:"wshversion,omitempty"`
+	LastActivityBeforeStalledTime int64                  `json:"lastactivitybeforestalledtime,omitempty"`
+	KeepAliveSentTime             int64                  `json:"keepalivesenttime,omitempty"`
+	ReconnectAttempt              int                    `json:"reconnectattempt,omitempty"`
+	ReconnectNextAttempt          int64                  `json:"reconnectnextattempt,omitempty"`
+	ReconnectError                string                 `json:"reconnecterror,omitempty"`
+	ReconnectGaveUp               bool                   `json:"reconnectgaveup,omitempty"`     // UX-1.1: scheduler exhausted retries
+	ReconnectStopReason           string                 `json:"reconnectstopreason,omitempty"` // UX-1.1: "max-duration", "auth-failed", etc.
+	ForwardingRules               []ForwardingRuleStatus `json:"forwardingrules,omitempty"`
+	CanAutoReconnect              bool                   `json:"canautoreconnect"` // true if scheduler can auto-reconnect without user input
 	// SuppressAutoReconnect is true after user Disconnect, Stop auto-retry,
 	// password Cancel, or permanent handshake failure. Auto paths no-op until
 	// explicit Reconnect (UX-0.1, UX-0.4, UX-0.5).
 	SuppressAutoReconnect bool `json:"suppressautoreconnect,omitempty"`
-	FlappingMode   bool `json:"flappingmode,omitempty"` // true when ≥3 reconnect attempts in last 30s (UX-2.2)
+	FlappingMode          bool `json:"flappingmode,omitempty"` // true when ≥3 reconnect attempts in last 30s (UX-2.2)
 	// AuthQueueWaiting is true while this connection is blocked on the per-window
 	// password prompt lock waiting for another conn to finish signing in (UX-1.6).
 	AuthQueueWaiting bool `json:"authqueuewaiting,omitempty"`
+}
+
+// ForwardingRuleStatus describes a single configured port forwarding rule for a
+// connection, including its runtime state. Rule is the raw OpenSSH-style spec
+// (e.g. "8080 localhost:80").
+type ForwardingRuleStatus struct {
+	Rule      string `json:"rule"`
+	Note      string `json:"note,omitempty"`
+	Direction string `json:"direction"` // "local" | "remote"
+	Source    string `json:"source"`    // "sshconfig" | "connections"
+	Enabled   bool   `json:"enabled"`
+	Status    string `json:"status"` // "active" | "error" | "disabled"
+	Error     string `json:"error,omitempty"`
 }
 
 type WebSelectorOpts struct {

@@ -162,8 +162,8 @@ In addition to the regular ssh config file, wave also has its own config file to
 | ssh:proxyjump | A list of strings specifying the names of hosts that must be successively visited with tcp forwarding to establish a connection. Can be used to overwrite the value in `~/.ssh/config` or to set it if the ssh config is being ignored.|
 | ssh:userknownhostsfile | A list containing the paths of any user host key database files used to keep track of authorized connections. Can be used to overwrite the value in `~/.ssh/config` or to set it if the ssh config is being ignored.|
 | ssh:globalknownhostsfile | A list containing the paths of any global host key database files used to keep track of authorized connections. Can be used to overwrite the value in `~/.ssh/config` or to set it if the ssh config is being ignored.|
-| ssh:localforward | A list of strings for local port forwarding rules. Format: `"8080 localhost:80"`. Can be used to override or supplement `~/.ssh/config` values.|
-| ssh:remoteforward | A list of strings for remote port forwarding rules. Format: `"9090 localhost:3000"`. Can be used to override or supplement `~/.ssh/config` values.|
+| ssh:localforward | A list of local port forwarding rules. Each entry is either a bare string (`"8080 localhost:80"`) or an object with `rule` (required), `note` (optional description), and `enabled` (optional boolean, defaults to `true`): `{"rule":"8080 localhost:80","note":"Postgres","enabled":true}`. These are **merged** (appended) with the `~/.ssh/config` `LocalForward` values, so rules from both sources are applied. |
+| ssh:remoteforward | A list of remote port forwarding rules, using the same string-or-object shape as `ssh:localforward` (`rule`, `note`, `enabled`). These are **merged** (appended) with the `~/.ssh/config` `RemoteForward` values, so rules from both sources are applied. |
 
 ### SSH Agent Detection
 

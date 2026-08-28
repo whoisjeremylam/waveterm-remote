@@ -87,13 +87,13 @@ export function PortForwardStatusIndicator({
     });
     const { getReferenceProps, getFloatingProps } = useInteractions([hover]);
 
-    // Don't render if no forwarding rules are active
+    // Don't render if no forwarding rules are configured
     if (!forwardingRules || forwardingRules.length === 0) {
         return null;
     }
 
     const count = forwardingRules.length;
-    const hasErrors = forwardingRules.some((r) => r.includes("[ERROR:"));
+    const hasErrors = forwardingRules.some((r) => r.status === "error");
     const iconColor = hasErrors ? "text-yellow-500" : "text-emerald-500";
     const textColor = hasErrors ? "text-yellow-500" : "text-emerald-500";
 
@@ -127,14 +127,16 @@ export function PortForwardStatusIndicator({
                             </div>
                             <div className="flex flex-col gap-1">
                                 {forwardingRules.map((rule, idx) => {
-                                    const errorMatch = rule.match(/\[ERROR:\s*(.+?)\]/);
-                                    const isError = !!errorMatch;
+                                    const isError = rule.status === "error";
+                                    const isDisabled = rule.status === "disabled";
                                     return (
                                         <div
                                             key={idx}
-                                            className={`text-xs font-mono bg-zinc-900 rounded px-2 py-1 ${isError ? "text-yellow-400" : "text-secondary"}`}
+                                            className={`text-xs font-mono bg-zinc-900 rounded px-2 py-1 ${isError ? "text-yellow-400" : isDisabled ? "text-zinc-500" : "text-secondary"}`}
                                         >
-                                            {rule}
+                                            {rule.direction === "remote" ? "R: " : "L: "}
+                                            {rule.rule}
+                                            {rule.note && <span className="font-sans text-zinc-500"> — {rule.note}</span>}
                                         </div>
                                     );
                                 })}

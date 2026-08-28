@@ -1457,18 +1457,24 @@ func findSshConfigKeywords(hostPattern string) (connKeywords *wconfig.ConnKeywor
 	sshKeywords.SshGlobalKnownHostsFile = strings.Fields(rawGlobalKnownHostsFile) // TODO - smarter splitting escaped spaces and quotes
 
 	localForwardRaw := WaveSshConfigUserSettings().GetAll(hostPattern, "LocalForward")
-	for i := 0; i < len(localForwardRaw); i++ {
-		localForwardRaw[i] = trimquotes.TryTrimQuotes(localForwardRaw[i])
+	sshKeywords.SshLocalForward = make([]wconfig.PortForwardRule, 0, len(localForwardRaw))
+	for _, raw := range localForwardRaw {
+		sshKeywords.SshLocalForward = append(sshKeywords.SshLocalForward, wconfig.PortForwardRule{
+			Rule:   trimquotes.TryTrimQuotes(raw),
+			Source: wconfig.PortForwardSourceSshConfig,
+		})
 	}
-	sshKeywords.SshLocalForward = localForwardRaw
 
 	remoteForwardRaw := WaveSshConfigUserSettings().GetAll(hostPattern, "RemoteForward")
-	for i := 0; i < len(remoteForwardRaw); i++ {
-		remoteForwardRaw[i] = trimquotes.TryTrimQuotes(remoteForwardRaw[i])
+	sshKeywords.SshRemoteForward = make([]wconfig.PortForwardRule, 0, len(remoteForwardRaw))
+	for _, raw := range remoteForwardRaw {
+		sshKeywords.SshRemoteForward = append(sshKeywords.SshRemoteForward, wconfig.PortForwardRule{
+			Rule:   trimquotes.TryTrimQuotes(raw),
+			Source: wconfig.PortForwardSourceSshConfig,
+		})
 	}
-	sshKeywords.SshRemoteForward = remoteForwardRaw
 
-	log.Printf("[sshconfig] host=%q LocalForward=%v RemoteForward=%v", hostPattern, localForwardRaw, remoteForwardRaw)
+	log.Printf("[sshconfig] host=%q LocalForward=%v RemoteForward=%v", hostPattern, sshKeywords.SshLocalForward, sshKeywords.SshRemoteForward)
 
 	return sshKeywords, nil
 }
@@ -1546,8 +1552,8 @@ func findSshDefaults(hostPattern string) (connKeywords *wconfig.ConnKeywords, ou
 	sshKeywords.SshProxyJump = []string{}
 	sshKeywords.SshUserKnownHostsFile = strings.Fields(ssh_config.Default("UserKnownHostsFile"))
 	sshKeywords.SshGlobalKnownHostsFile = strings.Fields(ssh_config.Default("GlobalKnownHostsFile"))
-	sshKeywords.SshLocalForward = []string{}
-	sshKeywords.SshRemoteForward = []string{}
+	sshKeywords.SshLocalForward = []wconfig.PortForwardRule{}
+	sshKeywords.SshRemoteForward = []wconfig.PortForwardRule{}
 	return sshKeywords, nil
 }
 
@@ -1621,11 +1627,16 @@ func mergeKeywords(oldKeywords *wconfig.ConnKeywords, newKeywords *wconfig.ConnK
 	if newKeywords.SshGlobalKnownHostsFile != nil {
 		outKeywords.SshGlobalKnownHostsFile = newKeywords.SshGlobalKnownHostsFile
 	}
+	// Port forwarding rules merge across sources: ~/.ssh/config entries are
+	// kept and connections.json (and CLI flag) entries are appended, rather
+	// than replacing them. This mirrors ssh's behavior where multiple
+	// LocalForward/RemoteForward directives accumulate. Use an explicit copy
+	// so appending never mutates the shared backing array of oldKeywords.
 	if newKeywords.SshLocalForward != nil {
-		outKeywords.SshLocalForward = newKeywords.SshLocalForward
+		outKeywords.SshLocalForward = append(append([]wconfig.PortForwardRule{}, outKeywords.SshLocalForward...), newKeywords.SshLocalForward...)
 	}
 	if newKeywords.SshRemoteForward != nil {
-		outKeywords.SshRemoteForward = newKeywords.SshRemoteForward
+		outKeywords.SshRemoteForward = append(append([]wconfig.PortForwardRule{}, outKeywords.SshRemoteForward...), newKeywords.SshRemoteForward...)
 	}
 	if newKeywords.SshPasswordSecretName != nil {
 		outKeywords.SshPasswordSecretName = newKeywords.SshPasswordSecretName

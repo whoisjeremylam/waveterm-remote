@@ -34,14 +34,21 @@ The merged `ConnKeywords` are consumed inside `ConnectToClient()` to build `ssh.
 
 ### 1. `pkg/wconfig/settingsconfig.go` — ConnKeywords struct
 
-Add two fields to `ConnKeywords`:
+Add a `PortForwardRule` type and two fields to `ConnKeywords`:
 
 ```go
-SshLocalForward  []string `json:"ssh:localforward,omitempty"`
-SshRemoteForward []string `json:"ssh:remoteforward,omitempty"`
+type PortForwardRule struct {
+    Rule    string `json:"rule"`
+    Note    string `json:"note,omitempty"`
+    Enabled *bool  `json:"enabled,omitempty"` // nil means enabled
+    Source  string `json:"-"`                 // "sshconfig" | "connections" (internal)
+}
+
+SshLocalForward  []PortForwardRule `json:"ssh:localforward,omitempty"`
+SshRemoteForward []PortForwardRule `json:"ssh:remoteforward,omitempty"`
 ```
 
-Placement: after `SshGlobalKnownHostsFile`, before the closing `}`.
+`PortForwardRule` marshals/unmarshals as either a bare string (`"8080 localhost:80"`) for backward compatibility, or an object (`{"rule":"8080 localhost:80","note":"...","enabled":true}`). `Source` is internal-only and never serialized to `connections.json`.
 
 ### 2. `pkg/remote/sshclient.go` — Config parsing
 
@@ -51,41 +58,41 @@ Add after the `GlobalKnownHostsFile` parsing block (before the `return`):
 
 ```go
 localForwardRaw := WaveSshConfigUserSettings().GetAll(hostPattern, "LocalForward")
-for i := 0; i < len(localForwardRaw); i++ {
-    localForwardRaw[i] = trimquotes.TryTrimQuotes(localForwardRaw[i])
+sshKeywords.SshLocalForward = make([]wconfig.PortForwardRule, 0, len(localForwardRaw))
+for _, raw := range localForwardRaw {
+    sshKeywords.SshLocalForward = append(sshKeywords.SshLocalForward, wconfig.PortForwardRule{
+        Rule:   trimquotes.TryTrimQuotes(raw),
+        Source: wconfig.PortForwardSourceSshConfig,
+    })
 }
-sshKeywords.SshLocalForward = localForwardRaw
-
-remoteForwardRaw := WaveSshConfigUserSettings().GetAll(hostPattern, "RemoteForward")
-for i := 0; i < len(remoteForwardRaw); i++ {
-    remoteForwardRaw[i] = trimquotes.TryTrimQuotes(remoteForwardRaw[i])
-}
-sshKeywords.SshRemoteForward = remoteForwardRaw
+// ... same for RemoteForward with SshRemoteForward
 ```
 
-This follows the exact pattern used for `IdentityFile` (multi-value keyword via `GetAll` + quote trimming).
+This follows the exact pattern used for `IdentityFile` (multi-value keyword via `GetAll` + quote trimming), and tags each rule with `Source=sshconfig`.
 
 #### 2b. `findSshDefaults()` — Default values
 
 Add to the defaults function:
 
 ```go
-sshKeywords.SshLocalForward = []string{}
-sshKeywords.SshRemoteForward = []string{}
+sshKeywords.SshLocalForward = []wconfig.PortForwardRule{}
+sshKeywords.SshRemoteForward = []wconfig.PortForwardRule{}
 ```
 
 #### 2c. `mergeKeywords()` — Cascade merging
 
-Add to the merge function (follows the `SshProxyJump` pattern):
+Forwarding rules **merge** (append) across sources rather than replace, matching how OpenSSH accumulates multiple `LocalForward`/`RemoteForward` directives. `~/.ssh/config` entries are kept and `connections.json` (and CLI flag) entries are appended after them. Add to the merge function:
 
 ```go
 if newKeywords.SshLocalForward != nil {
-    outKeywords.SshLocalForward = newKeywords.SshLocalForward
+    outKeywords.SshLocalForward = append(append([]wconfig.PortForwardRule{}, outKeywords.SshLocalForward...), newKeywords.SshLocalForward...)
 }
 if newKeywords.SshRemoteForward != nil {
-    outKeywords.SshRemoteForward = newKeywords.SshRemoteForward
+    outKeywords.SshRemoteForward = append(append([]wconfig.PortForwardRule{}, outKeywords.SshRemoteForward...), newKeywords.SshRemoteForward...)
 }
 ```
+
+The explicit `[]wconfig.PortForwardRule{}` copy avoids mutating `oldKeywords`' backing array (which is shared by the shallow struct copy `outKeywords := *oldKeywords`).
 
 #### 2d. `ConnectToClient()` — Return merged keywords
 
@@ -325,14 +332,14 @@ func TestMergeKeywords_LocalForward(t *testing.T) {
         wantRemote []string
     }{
         {
-            name: "new overrides old",
-            old:  &wconfig.ConnKeywords{SshLocalForward: []string{"8080 localhost:80"}},
-            new:  &wconfig.ConnKeywords{SshLocalForward: []string{"9090 localhost:90"}},
-            wantLocal: []string{"9090 localhost:90"},
+            name: "new merges with old",
+            old:  &wconfig.ConnKeywords{SshLocalForward: []wconfig.PortForwardRule{{Rule: "8080 localhost:80"}}},
+            new:  &wconfig.ConnKeywords{SshLocalForward: []wconfig.PortForwardRule{{Rule: "9090 localhost:90"}}},
+            wantLocal: []string{"8080 localhost:80", "9090 localhost:90"},
         },
         {
             name: "nil new preserves old",
-            old:  &wconfig.ConnKeywords{SshLocalForward: []string{"8080 localhost:80"}},
+            old:  &wconfig.ConnKeywords{SshLocalForward: []wconfig.PortForwardRule{{Rule: "8080 localhost:80"}}},
             new:  &wconfig.ConnKeywords{},
             wantLocal: []string{"8080 localhost:80"},
         },

@@ -148,10 +148,10 @@ type SSHConn struct {
 	ReconnectError       string
 	ReconnectGaveUp      bool   // true when scheduler exhausted retries (max duration, auth-failed, etc.)
 	ReconnectStopReason  string // reason: "max-duration", "auth-failed", "connection-refused", "no-jobs"
-	FlappingMode         bool // ≥3 reconnect attempts in last 30s (UX-2.2)
+	FlappingMode         bool   // ≥3 reconnect attempts in last 30s (UX-2.2)
 
-	LocalForwardListeners  []ForwardingRule
-	RemoteForwardListeners []ForwardingRule
+	LocalForwardRules  []ForwardingRule
+	RemoteForwardRules []ForwardingRule
 
 	PendingAuth     bool          // true while waiting for user auth input
 	pendingAuthDone chan struct{} // closed when PendingAuth transitions to false
@@ -186,9 +186,40 @@ type SSHConn struct {
 }
 
 type ForwardingRule struct {
-	Listener net.Listener
-	Rule     string // e.g., "127.0.0.1:8080 -> localhost:80"
-	Error    string // non-empty if the listener failed to bind (UX-2.8)
+	Rule     string       // raw spec from config, e.g. "8080 localhost:80"
+	Note     string       // user note from connections.json (empty for ssh config rules)
+	Source   string       // wconfig.PortForwardSource* value
+	Enabled  bool         // false when explicitly disabled
+	Listener net.Listener // nil unless the forward is actively listening
+	Status   string       // ForwardStatus* value
+	Error    string       // optional error message when Status == ForwardStatusError
+}
+
+// ForwardStatus values for ForwardingRule.Status.
+const (
+	ForwardStatusActive   = "active"
+	ForwardStatusError    = "error"
+	ForwardStatusDisabled = "disabled"
+)
+
+// toStatus converts a ForwardingRule into the RPC status shape. The direction is
+// implied by which list the rule lives in and passed by the caller. An empty
+// source (a rule read from connections.json, where Source is never serialized)
+// defaults to the connections.json source.
+func (r ForwardingRule) toStatus(direction string) wshrpc.ForwardingRuleStatus {
+	source := r.Source
+	if source == "" {
+		source = wconfig.PortForwardSourceConnections
+	}
+	return wshrpc.ForwardingRuleStatus{
+		Rule:      r.Rule,
+		Note:      r.Note,
+		Direction: direction,
+		Source:    source,
+		Enabled:   r.Enabled,
+		Status:    r.Status,
+		Error:     r.Error,
+	}
 }
 
 var ConnServerCmdTemplate = strings.TrimSpace(
@@ -336,20 +367,12 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 		lastActivityBeforeStalledTime = monitor.LastActivityTime.Load()
 		keepAliveSentTime = monitor.KeepAliveSentTime.Load()
 	}
-	var forwardingRules []string
-	for _, rule := range conn.LocalForwardListeners {
-		entry := "L: " + rule.Rule
-		if rule.Error != "" {
-			entry += " [ERROR: " + rule.Error + "]"
-		}
-		forwardingRules = append(forwardingRules, entry)
+	var forwardingRules []wshrpc.ForwardingRuleStatus
+	for _, rule := range conn.LocalForwardRules {
+		forwardingRules = append(forwardingRules, rule.toStatus("local"))
 	}
-	for _, rule := range conn.RemoteForwardListeners {
-		entry := "R: " + rule.Rule
-		if rule.Error != "" {
-			entry += " [ERROR: " + rule.Error + "]"
-		}
-		forwardingRules = append(forwardingRules, entry)
+	for _, rule := range conn.RemoteForwardRules {
+		forwardingRules = append(forwardingRules, rule.toStatus("remote"))
 	}
 	// Determine if auto-reconnect is possible without user input:
 	// - Password is cached from a previous session, OR
@@ -382,9 +405,9 @@ func (conn *SSHConn) DeriveConnStatus() wshrpc.ConnStatus {
 		ReconnectStopReason:           conn.ReconnectStopReason,
 		ForwardingRules:               forwardingRules,
 		CanAutoReconnect:              canAutoReconnect,
-		SuppressAutoReconnect: conn.SuppressAutoReconnect,
-		FlappingMode:          conn.FlappingMode,
-		AuthQueueWaiting:      conn.AuthQueueWaiting,
+		SuppressAutoReconnect:         conn.SuppressAutoReconnect,
+		FlappingMode:                  conn.FlappingMode,
+		AuthQueueWaiting:              conn.AuthQueueWaiting,
 	}
 }
 
@@ -674,8 +697,8 @@ func (conn *SSHConn) closeInternal_withlifecyclelock(expectedClient *ssh.Client)
 	var oldListener net.Listener
 	var oldController *ssh.Session
 	var oldMonitor *ConnMonitor
-	var oldLocalForwardListeners []ForwardingRule
-	var oldRemoteForwardListeners []ForwardingRule
+	var oldLocalForwardRules []ForwardingRule
+	var oldRemoteForwardRules []ForwardingRule
 	conn.WithLock(func() {
 		// If expectedClient is provided and does not match the current Client,
 		// a new connection has been established — do not steal its resources.
@@ -691,10 +714,10 @@ func (conn *SSHConn) closeInternal_withlifecyclelock(expectedClient *ssh.Client)
 		conn.ConnController = nil
 		oldMonitor = conn.Monitor
 		conn.Monitor = nil
-		oldLocalForwardListeners = conn.LocalForwardListeners
-		conn.LocalForwardListeners = nil
-		oldRemoteForwardListeners = conn.RemoteForwardListeners
-		conn.RemoteForwardListeners = nil
+		oldLocalForwardRules = conn.LocalForwardRules
+		conn.LocalForwardRules = nil
+		oldRemoteForwardRules = conn.RemoteForwardRules
+		conn.RemoteForwardRules = nil
 	})
 
 	// Run potentially-blocking cleanup in a goroutine so lifecycleLock
@@ -730,12 +753,12 @@ func (conn *SSHConn) closeInternal_withlifecyclelock(expectedClient *ssh.Client)
 		if oldMonitor != nil {
 			oldMonitor.Close()
 		}
-		for _, rule := range oldLocalForwardListeners {
+		for _, rule := range oldLocalForwardRules {
 			if rule.Listener != nil {
 				rule.Listener.Close()
 			}
 		}
-		for _, rule := range oldRemoteForwardListeners {
+		for _, rule := range oldRemoteForwardRules {
 			if rule.Listener != nil {
 				rule.Listener.Close()
 			}
@@ -2166,79 +2189,126 @@ func normalizeTcpListenAddr(addr string) string {
 	return "127.0.0.1:" + addr
 }
 
-// startPortForwarding sets up local and remote port forwarding tunnels
-// based on the merged SSH config keywords.
+// startPortForwarding sets up local and remote port forwarding tunnels based on
+// the merged SSH config keywords. Every configured rule is recorded on the conn
+// (active, error, or disabled) so the connection status can report it.
 func (conn *SSHConn) startPortForwarding(ctx context.Context, keywords *wconfig.ConnKeywords) {
 	client := conn.GetClient()
 	if client == nil {
 		return
 	}
 
-	// LocalForward: listen locally, dial through SSH to remote
 	for _, fwd := range keywords.SshLocalForward {
-		parsed, err := parseForwardRule(fwd, forwardLocal)
-		if err != nil {
-			conn.Infof(ctx, "LocalForward: skipping malformed rule %q: %v\n", fwd, err)
-			log.Printf("LocalForward: skipping malformed rule %q: %v", fwd, err)
-			continue
-		}
-		switch {
-		case parsed.ListenType == forwardUnix || parsed.DialType == forwardUnix:
-			conn.Infof(ctx, "LocalForward: skipping rule %q: Unix socket forwarding not supported\n", fwd)
-			log.Printf("LocalForward: skipping rule %q: Unix socket forwarding not supported", fwd)
-			continue
-		case parsed.DialType == forwardSOCKS:
-			// Shouldn't happen for LocalForward, but handle gracefully
-			conn.Infof(ctx, "LocalForward: skipping rule %q: SOCKS proxy mode not supported\n", fwd)
-			continue
-		case parsed.ListenType == forwardTCPListen && parsed.DialType == forwardTCPDial:
-			conn.startLocalForwardTCP(ctx, client, fwd, parsed.ListenAddr, parsed.DialAddr)
-		}
+		conn.startForwardRule(ctx, client, fwd, forwardLocal)
+	}
+	for _, fwd := range keywords.SshRemoteForward {
+		conn.startForwardRule(ctx, client, fwd, forwardRemote)
+	}
+}
+
+// startForwardRule records and (when applicable) starts a single forwarding
+// rule. Disabled rules are recorded without a listener; malformed/unsupported
+// rules and bind failures are recorded with Status=error and a message.
+func (conn *SSHConn) startForwardRule(ctx context.Context, client *ssh.Client, fwd wconfig.PortForwardRule, direction sshForwardDirection) {
+	label := forwardDirectionLabel(direction)
+
+	if fwd.Enabled != nil && !*fwd.Enabled {
+		conn.recordForwardRule(direction, ForwardingRule{
+			Rule:    fwd.Rule,
+			Note:    fwd.Note,
+			Source:  fwd.Source,
+			Enabled: false,
+			Status:  ForwardStatusDisabled,
+		})
+		return
 	}
 
-	// RemoteForward: listen on remote via SSH, dial locally
-	for _, fwd := range keywords.SshRemoteForward {
-		parsed, err := parseForwardRule(fwd, forwardRemote)
-		if err != nil {
-			conn.Infof(ctx, "RemoteForward: skipping malformed rule %q: %v\n", fwd, err)
-			log.Printf("RemoteForward: skipping malformed rule %q: %v", fwd, err)
-			continue
-		}
-		switch {
-		case parsed.ListenType == forwardUnix || parsed.DialType == forwardUnix:
-			conn.Infof(ctx, "RemoteForward: skipping rule %q: Unix socket forwarding not supported\n", fwd)
-			log.Printf("RemoteForward: skipping rule %q: Unix socket forwarding not supported", fwd)
-			continue
-		case parsed.DialType == forwardSOCKS:
-			conn.Infof(ctx, "RemoteForward: skipping rule %q: SOCKS proxy mode not supported\n", fwd)
-			log.Printf("RemoteForward: skipping rule %q: SOCKS proxy mode not supported", fwd)
-			continue
-		case parsed.ListenType == forwardTCPListen && parsed.DialType == forwardTCPDial:
+	parsed, err := parseForwardRule(fwd.Rule, direction)
+	if err != nil {
+		conn.Infof(ctx, "%s: skipping malformed rule %q: %v\n", label, fwd.Rule, err)
+		conn.recordForwardRule(direction, ForwardingRule{
+			Rule:    fwd.Rule,
+			Note:    fwd.Note,
+			Source:  fwd.Source,
+			Enabled: true,
+			Status:  ForwardStatusError,
+			Error:   err.Error(),
+		})
+		return
+	}
+
+	switch {
+	case parsed.ListenType == forwardUnix || parsed.DialType == forwardUnix:
+		conn.Infof(ctx, "%s: skipping rule %q: Unix socket forwarding not supported\n", label, fwd.Rule)
+		conn.recordForwardRule(direction, ForwardingRule{
+			Rule:    fwd.Rule,
+			Note:    fwd.Note,
+			Source:  fwd.Source,
+			Enabled: true,
+			Status:  ForwardStatusError,
+			Error:   "Unix socket forwarding not supported",
+		})
+	case parsed.DialType == forwardSOCKS:
+		conn.Infof(ctx, "%s: skipping rule %q: SOCKS proxy mode not supported\n", label, fwd.Rule)
+		conn.recordForwardRule(direction, ForwardingRule{
+			Rule:    fwd.Rule,
+			Note:    fwd.Note,
+			Source:  fwd.Source,
+			Enabled: true,
+			Status:  ForwardStatusError,
+			Error:   "SOCKS proxy mode not supported",
+		})
+	case parsed.ListenType == forwardTCPListen && parsed.DialType == forwardTCPDial:
+		if direction == forwardLocal {
+			conn.startLocalForwardTCP(ctx, client, fwd, parsed.ListenAddr, parsed.DialAddr)
+		} else {
 			conn.startRemoteForwardTCP(ctx, client, fwd, parsed.ListenAddr, parsed.DialAddr)
 		}
 	}
 }
 
+// recordForwardRule appends a rule to the local or remote list under the conn lock.
+func (conn *SSHConn) recordForwardRule(direction sshForwardDirection, rule ForwardingRule) {
+	conn.WithLock(func() {
+		if direction == forwardLocal {
+			conn.LocalForwardRules = append(conn.LocalForwardRules, rule)
+		} else {
+			conn.RemoteForwardRules = append(conn.RemoteForwardRules, rule)
+		}
+	})
+}
+
+// forwardDirectionLabel returns the human-readable direction label for logging.
+func forwardDirectionLabel(direction sshForwardDirection) string {
+	if direction == forwardLocal {
+		return "LocalForward"
+	}
+	return "RemoteForward"
+}
+
 // startLocalForwardTCP starts a TCP LocalForward tunnel.
 // Listens on localAddr, dials dialAddr through the SSH client.
-func (conn *SSHConn) startLocalForwardTCP(ctx context.Context, client *ssh.Client, rule, localAddr, dialAddr string) {
+func (conn *SSHConn) startLocalForwardTCP(ctx context.Context, client *ssh.Client, fwd wconfig.PortForwardRule, localAddr, dialAddr string) {
 	listener, err := net.Listen("tcp", localAddr)
 	if err != nil {
-		conn.Infof(ctx, "LocalForward %s: failed to listen on %s: %v\n", rule, localAddr, err)
-		// UX-2.8: Store the failed rule so the frontend can display the error.
-		conn.WithLock(func() {
-			conn.LocalForwardListeners = append(conn.LocalForwardListeners, ForwardingRule{
-				Rule:  fmt.Sprintf("%s -> %s", localAddr, dialAddr),
-				Error: err.Error(),
-			})
+		conn.Infof(ctx, "LocalForward %s: failed to listen on %s: %v\n", fwd.Rule, localAddr, err)
+		conn.recordForwardRule(forwardLocal, ForwardingRule{
+			Rule:    fwd.Rule,
+			Note:    fwd.Note,
+			Source:  fwd.Source,
+			Enabled: true,
+			Status:  ForwardStatusError,
+			Error:   err.Error(),
 		})
 		return
 	}
-	conn.WithLock(func() {
-		conn.LocalForwardListeners = append(conn.LocalForwardListeners, ForwardingRule{
-			Listener: listener,
-			Rule:     fmt.Sprintf("%s -> %s", localAddr, dialAddr),
-		})
+	conn.recordForwardRule(forwardLocal, ForwardingRule{
+		Rule:     fwd.Rule,
+		Note:     fwd.Note,
+		Source:   fwd.Source,
+		Enabled:  true,
+		Listener: listener,
+		Status:   ForwardStatusActive,
 	})
 	conn.Infof(ctx, "LocalForward started: %s -> %s\n", localAddr, dialAddr)
 	conn.Debugf(ctx, "[portforward] LocalForward listening: %s -> %s", localAddr, dialAddr)
@@ -2269,24 +2339,27 @@ func (conn *SSHConn) startLocalForwardTCP(ctx context.Context, client *ssh.Clien
 
 // startRemoteForwardTCP starts a TCP RemoteForward tunnel.
 // Listens on remoteAddr via SSH client, dials localAddr locally.
-func (conn *SSHConn) startRemoteForwardTCP(ctx context.Context, client *ssh.Client, rule, remoteAddr, localAddr string) {
+func (conn *SSHConn) startRemoteForwardTCP(ctx context.Context, client *ssh.Client, fwd wconfig.PortForwardRule, remoteAddr, localAddr string) {
 	listener, err := client.Listen("tcp", remoteAddr)
 	if err != nil {
-		conn.Infof(ctx, "RemoteForward %s: failed to listen on %s: %v\n", rule, remoteAddr, err)
-		// UX-2.8: Store the failed rule so the frontend can display the error.
-		conn.WithLock(func() {
-			conn.RemoteForwardListeners = append(conn.RemoteForwardListeners, ForwardingRule{
-				Rule:  fmt.Sprintf("%s -> %s", remoteAddr, localAddr),
-				Error: err.Error(),
-			})
+		conn.Infof(ctx, "RemoteForward %s: failed to listen on %s: %v\n", fwd.Rule, remoteAddr, err)
+		conn.recordForwardRule(forwardRemote, ForwardingRule{
+			Rule:    fwd.Rule,
+			Note:    fwd.Note,
+			Source:  fwd.Source,
+			Enabled: true,
+			Status:  ForwardStatusError,
+			Error:   err.Error(),
 		})
 		return
 	}
-	conn.WithLock(func() {
-		conn.RemoteForwardListeners = append(conn.RemoteForwardListeners, ForwardingRule{
-			Listener: listener,
-			Rule:     fmt.Sprintf("%s -> %s", remoteAddr, localAddr),
-		})
+	conn.recordForwardRule(forwardRemote, ForwardingRule{
+		Rule:     fwd.Rule,
+		Note:     fwd.Note,
+		Source:   fwd.Source,
+		Enabled:  true,
+		Listener: listener,
+		Status:   ForwardStatusActive,
 	})
 	conn.Infof(ctx, "RemoteForward started: %s -> %s\n", remoteAddr, localAddr)
 	conn.Debugf(ctx, "[portforward] RemoteForward listening: %s -> %s", remoteAddr, localAddr)

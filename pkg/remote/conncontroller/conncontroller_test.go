@@ -804,7 +804,7 @@ func TestLocalForwardStartsAndStops(t *testing.T) {
 	})
 
 	keywords := &wconfig.ConnKeywords{
-		SshLocalForward: []string{addr + " 127.0.0.1:9999"},
+		SshLocalForward: []wconfig.PortForwardRule{{Rule: addr + " 127.0.0.1:9999"}},
 	}
 
 	ctx := context.Background()
@@ -813,12 +813,24 @@ func TestLocalForwardStartsAndStops(t *testing.T) {
 	// Give goroutines time to start
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify listener was created
+	// Verify rule was recorded as active with a listener
 	conn.lock.Lock()
-	listenerCount := len(conn.LocalForwardListeners)
+	ruleCount := len(conn.LocalForwardRules)
+	var status string
+	var hasListener bool
+	if ruleCount == 1 {
+		status = conn.LocalForwardRules[0].Status
+		hasListener = conn.LocalForwardRules[0].Listener != nil
+	}
 	conn.lock.Unlock()
-	if listenerCount != 1 {
-		t.Fatalf("expected 1 LocalForwardListener, got %d", listenerCount)
+	if ruleCount != 1 {
+		t.Fatalf("expected 1 LocalForwardRule, got %d", ruleCount)
+	}
+	if status != ForwardStatusActive {
+		t.Errorf("expected status %q, got %q", ForwardStatusActive, status)
+	}
+	if !hasListener {
+		t.Error("expected a non-nil listener")
 	}
 
 	// Close and verify cleanup
@@ -829,10 +841,10 @@ func TestLocalForwardStartsAndStops(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	conn.lock.Lock()
-	listenerCount = len(conn.LocalForwardListeners)
+	ruleCount = len(conn.LocalForwardRules)
 	conn.lock.Unlock()
-	if listenerCount != 0 {
-		t.Fatalf("expected 0 LocalForwardListeners after close, got %d", listenerCount)
+	if ruleCount != 0 {
+		t.Fatalf("expected 0 LocalForwardRules after close, got %d", ruleCount)
 	}
 }
 
@@ -852,36 +864,47 @@ func TestStartPortForwarding_MalformedRule(t *testing.T) {
 	})
 
 	keywords := &wconfig.ConnKeywords{
-		SshLocalForward:  []string{"only-one-field", "also-wrong", "8080 localhost:80 127.0.0.1:9090"},
-		SshRemoteForward: []string{"valid 127.0.0.1:9090"},
+		SshLocalForward:  []wconfig.PortForwardRule{{Rule: "only-one-field"}, {Rule: "also-wrong"}, {Rule: "8080 localhost:80 127.0.0.1:9090"}},
+		SshRemoteForward: []wconfig.PortForwardRule{{Rule: "valid 127.0.0.1:9090"}},
 	}
 
 	ctx := context.Background()
 	conn.startPortForwarding(ctx, keywords)
 
-	// Give goroutines time to start
+	// Give goroutines time to run
 	time.Sleep(100 * time.Millisecond)
 
-	// Only the valid RemoteForward should have been attempted (but will fail
-	// because the mock client doesn't support Listen). The malformed rules
-	// should have been skipped. UX-2.8: failed binds are tracked with an
-	// Error field so the frontend can surface them.
+	// Malformed rules are recorded with an error status (not dropped), and the
+	// valid RemoteForward fails to bind (mock client can't Listen) and is also
+	// recorded with an error.
 	conn.lock.Lock()
-	localCount := len(conn.LocalForwardListeners)
-	remoteCount := len(conn.RemoteForwardListeners)
+	localRules := conn.LocalForwardRules
+	remoteRules := conn.RemoteForwardRules
 	conn.lock.Unlock()
-	if localCount != 0 {
-		t.Fatalf("expected 0 LocalForwardListeners (all malformed), got %d", localCount)
+
+	if len(localRules) != 3 {
+		t.Fatalf("expected 3 local rules (all error), got %d", len(localRules))
 	}
-	if remoteCount != 1 {
-		t.Fatalf("expected 1 RemoteForwardListener (failed bind tracked with error), got %d", remoteCount)
+	for i, rule := range localRules {
+		if rule.Status != ForwardStatusError {
+			t.Errorf("local rule %d: expected status %q, got %q", i, ForwardStatusError, rule.Status)
+		}
+		if rule.Error == "" {
+			t.Errorf("local rule %d: expected non-empty error message", i)
+		}
+		if rule.Listener != nil {
+			t.Errorf("local rule %d: expected nil listener", i)
+		}
 	}
-	// Verify the error is set on the failed rule
-	conn.lock.Lock()
-	rule := conn.RemoteForwardListeners[0]
-	conn.lock.Unlock()
-	if rule.Error == "" {
-		t.Fatal("expected Error field to be set on failed RemoteForwardListener")
+
+	if len(remoteRules) != 1 {
+		t.Fatalf("expected 1 remote rule (error), got %d", len(remoteRules))
+	}
+	if remoteRules[0].Status != ForwardStatusError {
+		t.Errorf("remote rule: expected status %q, got %q", ForwardStatusError, remoteRules[0].Status)
+	}
+	if remoteRules[0].Error == "" {
+		t.Error("expected Error field to be set on failed remote rule")
 	}
 }
 
@@ -902,14 +925,14 @@ func TestCloseInternal_NilForwardListener(t *testing.T) {
 
 	conn.WithLock(func() {
 		// A failed LocalForward bind leaves Listener nil with Error set.
-		conn.LocalForwardListeners = []ForwardingRule{
-			{Listener: nil, Rule: "127.0.0.1:8080 -> localhost:80", Error: "address already in use"},
-			{Listener: realListener, Rule: "127.0.0.1:9090 -> localhost:9090"},
+		conn.LocalForwardRules = []ForwardingRule{
+			{Listener: nil, Rule: "127.0.0.1:8080 localhost:80", Error: "address already in use"},
+			{Listener: realListener, Rule: "127.0.0.1:9090 localhost:9090"},
 		}
 		// A failed RemoteForward bind — the exact production crash path
 		// (ssh: tcpip-forward request denied by peer).
-		conn.RemoteForwardListeners = []ForwardingRule{
-			{Listener: nil, Rule: "127.0.0.1:9222 -> localhost:9222", Error: "ssh: tcpip-forward request denied by peer"},
+		conn.RemoteForwardRules = []ForwardingRule{
+			{Listener: nil, Rule: "127.0.0.1:9222 localhost:9222", Error: "ssh: tcpip-forward request denied by peer"},
 		}
 	})
 
@@ -922,14 +945,14 @@ func TestCloseInternal_NilForwardListener(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	conn.lock.Lock()
-	localLen := len(conn.LocalForwardListeners)
-	remoteLen := len(conn.RemoteForwardListeners)
+	localLen := len(conn.LocalForwardRules)
+	remoteLen := len(conn.RemoteForwardRules)
 	conn.lock.Unlock()
 	if localLen != 0 {
-		t.Fatalf("expected 0 LocalForwardListeners after close, got %d", localLen)
+		t.Fatalf("expected 0 LocalForwardRules after close, got %d", localLen)
 	}
 	if remoteLen != 0 {
-		t.Fatalf("expected 0 RemoteForwardListeners after close, got %d", remoteLen)
+		t.Fatalf("expected 0 RemoteForwardRules after close, got %d", remoteLen)
 	}
 }
 
@@ -943,18 +966,90 @@ func TestStartPortForwarding_NilClient(t *testing.T) {
 
 	// Client is nil by default
 	keywords := &wconfig.ConnKeywords{
-		SshLocalForward: []string{"8080 localhost:80"},
+		SshLocalForward: []wconfig.PortForwardRule{{Rule: "8080 localhost:80"}},
 	}
 
 	ctx := context.Background()
 	conn.startPortForwarding(ctx, keywords)
 
-	// Should return without panic
+	// Should return without panic and record nothing
 	conn.lock.Lock()
-	listenerCount := len(conn.LocalForwardListeners)
+	ruleCount := len(conn.LocalForwardRules)
 	conn.lock.Unlock()
-	if listenerCount != 0 {
-		t.Fatalf("expected 0 listeners with nil client, got %d", listenerCount)
+	if ruleCount != 0 {
+		t.Fatalf("expected 0 rules with nil client, got %d", ruleCount)
+	}
+}
+
+// TestStartPortForwarding_DisabledRule verifies that explicitly disabled rules
+// are recorded with a disabled status and no listener.
+func TestStartPortForwarding_DisabledRule(t *testing.T) {
+	t.Parallel()
+
+	conn := makeTestConn(Status_Connected)
+	defer cleanupTestConn(conn)
+
+	client, _ := newMockSSHClient()
+	monitor := makeTestMonitor(conn)
+	conn.WithLock(func() {
+		conn.Client = client
+		conn.Monitor = monitor
+	})
+
+	disabled := false
+	keywords := &wconfig.ConnKeywords{
+		SshLocalForward: []wconfig.PortForwardRule{{Rule: "8080 localhost:80", Note: "db", Enabled: &disabled}},
+	}
+
+	ctx := context.Background()
+	conn.startPortForwarding(ctx, keywords)
+
+	conn.lock.Lock()
+	rules := conn.LocalForwardRules
+	conn.lock.Unlock()
+
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 local rule, got %d", len(rules))
+	}
+	if rules[0].Status != ForwardStatusDisabled {
+		t.Errorf("expected status %q, got %q", ForwardStatusDisabled, rules[0].Status)
+	}
+	if rules[0].Listener != nil {
+		t.Error("expected nil listener for disabled rule")
+	}
+	if rules[0].Enabled {
+		t.Error("expected Enabled=false")
+	}
+	if rules[0].Note != "db" {
+		t.Errorf("expected note %q, got %q", "db", rules[0].Note)
+	}
+}
+
+// TestForwardingRuleToStatus verifies the ForwardingRule → ForwardingRuleStatus
+// conversion, including direction and source defaulting.
+func TestForwardingRuleToStatus(t *testing.T) {
+	t.Parallel()
+
+	local := ForwardingRule{Rule: "8080 localhost:80", Note: "db", Source: wconfig.PortForwardSourceConnections, Enabled: true, Status: ForwardStatusActive}
+	got := local.toStatus("local")
+	if got.Direction != "local" || got.Rule != "8080 localhost:80" || got.Note != "db" {
+		t.Errorf("unexpected local status: %+v", got)
+	}
+	if got.Source != wconfig.PortForwardSourceConnections || got.Status != ForwardStatusActive || !got.Enabled {
+		t.Errorf("unexpected local source/status/enabled: %+v", got)
+	}
+
+	// Empty source defaults to connections.json.
+	remote := ForwardingRule{Rule: "3000 localhost:3000", Status: ForwardStatusError, Error: "boom"}
+	got = remote.toStatus("remote")
+	if got.Direction != "remote" {
+		t.Errorf("expected direction remote, got %q", got.Direction)
+	}
+	if got.Source != wconfig.PortForwardSourceConnections {
+		t.Errorf("expected source %q, got %q", wconfig.PortForwardSourceConnections, got.Source)
+	}
+	if got.Status != ForwardStatusError || got.Error != "boom" {
+		t.Errorf("unexpected error status: %+v", got)
 	}
 }
 

@@ -6,7 +6,10 @@ package remote
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
+
+	"github.com/wavetermdev/waveterm/pkg/wconfig"
 )
 
 func TestIsPermanentConnError(t *testing.T) {
@@ -187,4 +190,85 @@ func TestIsCredentialRejected(t *testing.T) {
 	if IsCredentialRejected(ConnErrCode_Dial, AuthSubCode_HandshakeFailed) {
 		t.Fatal("dial+handshake-failed must not reject credentials")
 	}
+}
+
+func TestMergeKeywords_ForwardingMerge(t *testing.T) {
+	t.Parallel()
+
+	t.Run("localforward appends new to old preserving order", func(t *testing.T) {
+		t.Parallel()
+		localA := wconfig.PortForwardRule{Rule: "8080 localhost:80", Source: wconfig.PortForwardSourceSshConfig}
+		localB := wconfig.PortForwardRule{Rule: "9090 localhost:90", Note: "Postgres", Source: wconfig.PortForwardSourceConnections}
+		old := &wconfig.ConnKeywords{SshLocalForward: []wconfig.PortForwardRule{localA}}
+		new := &wconfig.ConnKeywords{SshLocalForward: []wconfig.PortForwardRule{localB}}
+		got := mergeKeywords(old, new)
+		want := []wconfig.PortForwardRule{localA, localB}
+		if !reflect.DeepEqual(got.SshLocalForward, want) {
+			t.Errorf("expected %v, got %v", want, got.SshLocalForward)
+		}
+	})
+
+	t.Run("remoteforward appends new to old", func(t *testing.T) {
+		t.Parallel()
+		remoteA := wconfig.PortForwardRule{Rule: "9090 localhost:3000", Source: wconfig.PortForwardSourceSshConfig}
+		remoteB := wconfig.PortForwardRule{Rule: "9999 localhost:9000", Source: wconfig.PortForwardSourceConnections}
+		old := &wconfig.ConnKeywords{SshRemoteForward: []wconfig.PortForwardRule{remoteA}}
+		new := &wconfig.ConnKeywords{SshRemoteForward: []wconfig.PortForwardRule{remoteB}}
+		got := mergeKeywords(old, new)
+		want := []wconfig.PortForwardRule{remoteA, remoteB}
+		if !reflect.DeepEqual(got.SshRemoteForward, want) {
+			t.Errorf("expected %v, got %v", want, got.SshRemoteForward)
+		}
+	})
+
+	t.Run("nil new preserves old", func(t *testing.T) {
+		t.Parallel()
+		old := &wconfig.ConnKeywords{
+			SshLocalForward:  []wconfig.PortForwardRule{{Rule: "8080 localhost:80", Source: wconfig.PortForwardSourceSshConfig}},
+			SshRemoteForward: []wconfig.PortForwardRule{{Rule: "9090 localhost:3000", Source: wconfig.PortForwardSourceSshConfig}},
+		}
+		new := &wconfig.ConnKeywords{}
+		got := mergeKeywords(old, new)
+		if !reflect.DeepEqual(got.SshLocalForward, old.SshLocalForward) {
+			t.Errorf("expected localforward %v, got %v", old.SshLocalForward, got.SshLocalForward)
+		}
+		if !reflect.DeepEqual(got.SshRemoteForward, old.SshRemoteForward) {
+			t.Errorf("expected remoteforward %v, got %v", old.SshRemoteForward, got.SshRemoteForward)
+		}
+	})
+
+	t.Run("note enabled and source survive merge", func(t *testing.T) {
+		t.Parallel()
+		enabled := false
+		old := &wconfig.ConnKeywords{SshLocalForward: []wconfig.PortForwardRule{{Rule: "8080 localhost:80", Source: wconfig.PortForwardSourceSshConfig}}}
+		new := &wconfig.ConnKeywords{SshLocalForward: []wconfig.PortForwardRule{{Rule: "9090 localhost:90", Note: "web", Enabled: &enabled, Source: wconfig.PortForwardSourceConnections}}}
+		got := mergeKeywords(old, new)
+		if len(got.SshLocalForward) != 2 {
+			t.Fatalf("expected 2 rules, got %d", len(got.SshLocalForward))
+		}
+		gotNew := got.SshLocalForward[1]
+		if gotNew.Note != "web" {
+			t.Errorf("expected note %q, got %q", "web", gotNew.Note)
+		}
+		if gotNew.Enabled == nil || *gotNew.Enabled {
+			t.Errorf("expected enabled=false, got %v", gotNew.Enabled)
+		}
+		if gotNew.Source != wconfig.PortForwardSourceConnections {
+			t.Errorf("expected source %q, got %q", wconfig.PortForwardSourceConnections, gotNew.Source)
+		}
+	})
+
+	t.Run("append does not mutate old backing array", func(t *testing.T) {
+		t.Parallel()
+		// Give old extra capacity so an in-place append would leak into it.
+		old := &wconfig.ConnKeywords{SshLocalForward: append([]wconfig.PortForwardRule{{Rule: "8080 localhost:80", Source: wconfig.PortForwardSourceSshConfig}}, make([]wconfig.PortForwardRule, 0, 4)...)}
+		new := &wconfig.ConnKeywords{SshLocalForward: []wconfig.PortForwardRule{{Rule: "9090 localhost:90", Source: wconfig.PortForwardSourceConnections}}}
+		got := mergeKeywords(old, new)
+		if !reflect.DeepEqual(old.SshLocalForward, []wconfig.PortForwardRule{{Rule: "8080 localhost:80", Source: wconfig.PortForwardSourceSshConfig}}) {
+			t.Errorf("old slice was mutated: %v", old.SshLocalForward)
+		}
+		if len(got.SshLocalForward) != 2 {
+			t.Fatalf("expected 2 rules, got %d", len(got.SshLocalForward))
+		}
+	})
 }

@@ -847,8 +847,8 @@ declare global {
         "ssh:proxyjump"?: string[];
         "ssh:userknownhostsfile"?: string[];
         "ssh:globalknownhostsfile"?: string[];
-        "ssh:localforward"?: string[];
-        "ssh:remoteforward"?: string[];
+        "ssh:localforward"?: PortForwardRule[];
+        "ssh:remoteforward"?: PortForwardRule[];
     };
 
     // wshrpc.ConnRequest
@@ -882,7 +882,7 @@ declare global {
         reconnecterror?: string;
         reconnectgaveup?: boolean;
         reconnectstopreason?: string;
-        forwardingrules?: string[];
+        forwardingrules?: ForwardingRuleStatus[];
         canautoreconnect: boolean;
         suppressautoreconnect?: boolean;
         flappingmode?: boolean;
@@ -1014,6 +1014,17 @@ declare global {
         connstatus?: ConnStatus;
         termshellintegrationstatus?: string;
         termlastcommand?: string;
+    };
+
+    // wshrpc.ForwardingRuleStatus
+    type ForwardingRuleStatus = {
+        rule: string;
+        note?: string;
+        direction: string;
+        source: string;
+        enabled: boolean;
+        status: string;
+        error?: string;
     };
 
     // wconfig.FullConfigType
@@ -1311,6 +1322,13 @@ declare global {
     type Point = {
         x: number;
         y: number;
+    };
+
+    // wconfig.PortForwardRule
+    type PortForwardRule = {
+        rule: string;
+        note?: string;
+        enabled?: boolean;
     };
 
     // wshrpc.ProcessInfo
